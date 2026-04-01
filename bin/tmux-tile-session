@@ -12,7 +12,7 @@ action=${1:-toggle}
 session=$(tmux display-message -p '#{session_name}')
 
 is_tiled() {
-  [ "$(tmux show-option -wqv @tiled)" = "1" ]
+  [ "$(tmux show-option -qv -t "$session" @tiled)" = "1" ]
 }
 
 tile() {
@@ -27,11 +27,17 @@ tile() {
   fi
 
   target=$(echo "$windows" | head -1 | cut -d: -f1)
+  local target_pane
+  target_pane=$(tmux list-panes -t "$session:$target" -F '#{pane_id}' | head -1)
 
-  # Tag each pane with its original window name for restore
+  # Tag each pane with its original window name and position for restore
+  local position=0
   while IFS=: read -r idx name; do
-    pane_id=$(tmux list-panes -t "$session:$idx" -F '#{pane_id}' | head -1)
-    tmux set-option -p -t "$pane_id" @orig_name "$name"
+    for pane_id in $(tmux list-panes -t "$session:$idx" -F '#{pane_id}'); do
+      tmux set-option -p -t "$pane_id" @orig_name "$name"
+      tmux set-option -p -t "$pane_id" @orig_pos "$position"
+    done
+    position=$((position + 1))
   done <<< "$windows"
 
   # Join all other windows into the target (reverse order preserves visual order)
@@ -39,15 +45,16 @@ tile() {
   other_indices=$(echo "$windows" | tail -n +2 | tail -r | cut -d: -f1)
 
   for idx in $other_indices; do
-    # Move all panes from this window (handles multi-pane windows)
     while tmux list-panes -t "$session:$idx" -F '#{pane_id}' 2>/dev/null | head -1 | grep -q .; do
       tmux join-pane -s "$session:$idx" -t "$session:$target" 2>/dev/null || break
     done
   done
 
   tmux select-layout -t "$session:$target" tiled
-  tmux set-option -w @tiled 1
-  tmux rename-window "tiled"
+  # Re-select the original first pane so untile restores names correctly
+  tmux select-pane -t "$target_pane"
+  tmux set-option -t "$session" @tiled 1
+  tmux rename-window "tiled ($count)"
   tmux display-message "Tiled $count windows — Ctrl-a E to restore"
 }
 
@@ -64,20 +71,35 @@ untile() {
 
   current=$(tmux display-message -p '#{pane_id}')
 
-  # Break every pane except current into its own window, restoring names
-  for pane in $panes; do
-    [ "$pane" = "$current" ] && continue
+  # Sort panes by original position so names restore to correct windows
+  local sorted_panes
+  sorted_panes=$(for pane in $panes; do
+    pos=$(tmux show-option -pqv -t "$pane" @orig_pos)
+    echo "${pos:-999} $pane"
+  done | sort -n | awk '{print $2}')
+
+  # The first pane (lowest position) stays in the current window
+  local first_pane
+  first_pane=$(echo "$sorted_panes" | head -1)
+
+  # If we're not on the first pane, switch to it so names restore correctly
+  if [ "$current" != "$first_pane" ]; then
+    tmux select-pane -t "$first_pane"
+  fi
+
+  # Break every pane except the first into its own window
+  for pane in $(echo "$sorted_panes" | tail -n +2); do
     local orig
     orig=$(tmux show-option -pqv -t "$pane" @orig_name)
-    tmux break-pane -s "$pane" -n "${orig:-restored}"
+    tmux break-pane -d -s "$pane" -n "${orig:-restored}"
   done
 
-  # Restore current pane's window name
-  local cur_orig
-  cur_orig=$(tmux show-option -pqv -t "$current" @orig_name)
-  [ -n "$cur_orig" ] && tmux rename-window "$cur_orig"
+  # Restore first pane's window name
+  local first_orig
+  first_orig=$(tmux show-option -pqv -t "$first_pane" @orig_name)
+  [ -n "$first_orig" ] && tmux rename-window "$first_orig"
 
-  tmux set-option -w -u @tiled 2>/dev/null || true
+  tmux set-option -t "$session" -u @tiled 2>/dev/null || true
   tmux display-message "Restored $count windows"
 }
 
