@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# tmux-tile-session — toggle between tiled panes and tabbed windows
+# Usage: tmux-tile-session [tile|untile|toggle]
+#
+# tile:   joins all windows in the session into one window as tiled panes
+# untile: breaks each pane back into its own window (restores tab names)
+# toggle: auto-detects current state (default)
+
+set -euo pipefail
+
+action=${1:-toggle}
+session=$(tmux display-message -p '#{session_name}')
+
+is_tiled() {
+  [ "$(tmux show-option -wqv @tiled)" = "1" ]
+}
+
+tile() {
+  local windows count target
+
+  windows=$(tmux list-windows -t "$session" -F '#{window_index}:#{window_name}')
+  count=$(echo "$windows" | wc -l | tr -d ' ')
+
+  if [ "$count" -le 1 ]; then
+    tmux display-message "Only 1 window — nothing to tile"
+    exit 0
+  fi
+
+  target=$(echo "$windows" | head -1 | cut -d: -f1)
+
+  # Tag each pane with its original window name for restore
+  while IFS=: read -r idx name; do
+    pane_id=$(tmux list-panes -t "$session:$idx" -F '#{pane_id}' | head -1)
+    tmux set-option -p -t "$pane_id" @orig_name "$name"
+  done <<< "$windows"
+
+  # Join all other windows into the target (reverse order preserves visual order)
+  local other_indices
+  other_indices=$(echo "$windows" | tail -n +2 | tail -r | cut -d: -f1)
+
+  for idx in $other_indices; do
+    # Move all panes from this window (handles multi-pane windows)
+    while tmux list-panes -t "$session:$idx" -F '#{pane_id}' 2>/dev/null | head -1 | grep -q .; do
+      tmux join-pane -s "$session:$idx" -t "$session:$target" 2>/dev/null || break
+    done
+  done
+
+  tmux select-layout -t "$session:$target" tiled
+  tmux set-option -w @tiled 1
+  tmux rename-window "tiled"
+  tmux display-message "Tiled $count windows — Ctrl-a E to restore"
+}
+
+untile() {
+  local panes count current
+
+  panes=$(tmux list-panes -F '#{pane_id}')
+  count=$(echo "$panes" | wc -l | tr -d ' ')
+
+  if [ "$count" -le 1 ]; then
+    tmux display-message "Only 1 pane — nothing to untile"
+    exit 0
+  fi
+
+  current=$(tmux display-message -p '#{pane_id}')
+
+  # Break every pane except current into its own window, restoring names
+  for pane in $panes; do
+    [ "$pane" = "$current" ] && continue
+    local orig
+    orig=$(tmux show-option -pqv -t "$pane" @orig_name)
+    tmux break-pane -s "$pane" -n "${orig:-restored}"
+  done
+
+  # Restore current pane's window name
+  local cur_orig
+  cur_orig=$(tmux show-option -pqv -t "$current" @orig_name)
+  [ -n "$cur_orig" ] && tmux rename-window "$cur_orig"
+
+  tmux set-option -w -u @tiled 2>/dev/null || true
+  tmux display-message "Restored $count windows"
+}
+
+case "$action" in
+  tile)   tile ;;
+  untile) untile ;;
+  toggle) is_tiled && untile || tile ;;
+  *)      echo "Usage: $0 {tile|untile|toggle}" >&2; exit 1 ;;
+esac

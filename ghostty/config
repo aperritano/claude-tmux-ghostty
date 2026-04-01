@@ -1,0 +1,81 @@
+# Theme: Alien Blood
+# Previous theme saved at ~/.config/ghostty/themes/crt-green.bak
+background = #0F160F
+foreground = #63DB76
+cursor-color = #73F792
+selection-background = #1D407E
+selection-foreground = #73F792
+palette = 0=#0F2612
+palette = 1=#7F2B26
+palette = 2=#2F7E25
+palette = 3=#707E24
+palette = 4=#2F6980
+palette = 5=#476B7F
+palette = 6=#317F76
+palette = 7=#647D74
+palette = 8=#3C4620
+palette = 9=#DF8108
+palette = 10=#18E000
+palette = 11=#BDE001
+palette = 12=#00AADF
+palette = 13=#0058DF
+palette = 14=#01E0C3
+palette = 15=#73F792
+
+# Font
+font-family = NotoMono Nerd Font Mono
+font-size = 14
+font-thicken = false
+# Reduced from 20% — large values cause ghost pixels during TUI scroll in tmux
+adjust-cell-height = 10%
+
+# Padding & window
+window-padding-x = 16
+window-padding-y = 16
+window-padding-balance = true
+macos-titlebar-style = transparent
+gtk-tabs-location = bottom
+
+# Cursor
+cursor-style = bar
+cursor-style-blink = false
+
+# Shell integration
+shell-integration = detect
+shell-integration-features = cursor,sudo,title
+
+# Session restore
+window-save-state = always
+
+# Scrollback
+scrollback-limit = 100000
+
+# Smooth scrolling (reduces jerkiness with tmux)
+window-vsync = true
+
+# Clipboard & notifications
+copy-on-select = true
+desktop-notifications = true
+
+# Forward right-clicks to tmux (for status bar menus)
+# Hold Shift + right-click to get Ghostty's context menu instead
+right-click-action = ignore
+
+# macOS option key
+macos-option-as-alt = true
+
+# Split keybinds (disabled — tmux handles this)
+# keybind = cmd+opt+j=new_split:right
+# keybind = cmd+opt+i=new_split:down
+# keybind = cmd+opt+enter=toggle_split_zoom
+# keybind = cmd+opt+equal=equalize_splits
+
+# Vim-style pane navigation (disabled — tmux handles this)
+# keybind = ctrl+h=goto_split:left
+# keybind = ctrl+j=goto_split:bottom
+# keybind = ctrl+k=goto_split:top
+# keybind = ctrl+l=goto_split:right
+
+# Prompt jumping
+keybind = cmd+up=jump_to_prompt:-1
+keybind = cmd+down=jump_to_prompt:1

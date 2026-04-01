@@ -1,0 +1,16 @@
+#!/bin/zsh
+# Kill the current tmux pane if it's a teammate pane (not the main session pane).
+# Called by Claude Code's SubagentStop / TeammateIdle hooks.
+#
+# Safety: only kills the pane if there are 2+ panes in the window,
+# so the last pane (main session) is never killed.
+
+# Must be inside tmux
+[[ -z "$TMUX" ]] && exit 0
+
+pane_count=$(tmux list-panes -t "$(tmux display-message -p '#{window_id}')" 2>/dev/null | wc -l | tr -d ' ')
+
+# Only kill if this isn't the last pane in the window
+if (( pane_count > 1 )); then
+  tmux kill-pane -t "$TMUX_PANE"
+fi

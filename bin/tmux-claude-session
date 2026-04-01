@@ -1,0 +1,78 @@
+#!/bin/zsh
+# Get Claude Code session ID + active sub-agents for a given tmux pane
+# Usage: tmux-claude-session /dev/ttys006
+
+tty="$1"
+[[ -z "$tty" ]] && exit 0
+
+tty_short="${tty#/dev/}"
+
+# Find claude process on this TTY
+pid=$(ps -eo pid,tty,comm | awk -v t="$tty_short" '$2 == t && $3 == "claude" {print $1; exit}')
+[[ -z "$pid" ]] && exit 0
+
+# Get its working directory
+cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | grep ^n | cut -c2-)
+[[ -z "$cwd" ]] && exit 0
+
+# Convert to Claude's project dir format (slashes and dots → dashes)
+project_dir="${cwd//\//-}"
+project_dir="${project_dir//./-}"
+project_path="$HOME/.claude/projects/${project_dir}"
+
+[[ ! -d "$project_path" ]] && exit 0
+
+# Most recently modified .jsonl = active session
+session_file=$(ls -t "$project_path"/*.jsonl 2>/dev/null | head -1)
+[[ -z "$session_file" ]] && exit 0
+
+session=$(basename "$session_file" .jsonl)
+subagents_dir="${project_path}/${session}/subagents"
+
+output="│ claude:${session:0:8}"
+
+# Check for active sub-agents (modified within last 30 seconds)
+if [[ -d "$subagents_dir" ]]; then
+  now=$(date +%s)
+  active_count=0
+  active_types=()
+
+  for meta in "$subagents_dir"/*.meta.json(N); do
+    jsonl="${meta%.meta.json}.jsonl"
+    [[ ! -f "$jsonl" ]] && continue
+
+    # Check if sub-agent JSONL was modified recently (active)
+    mod=$(stat -f %m "$jsonl" 2>/dev/null)
+    [[ -z "$mod" ]] && continue
+
+    age=$(( now - mod ))
+    if (( age < 30 )); then
+      active_count=$(( active_count + 1 ))
+      agent_type=$(cat "$meta" 2>/dev/null | sed -n 's/.*"agentType":"\([^"]*\)".*/\1/p')
+      [[ -n "$agent_type" ]] && active_types+=("$agent_type")
+    fi
+  done
+
+  if (( active_count > 0 )); then
+    # Deduplicate and summarize types
+    typeset -A type_counts
+    for t in "${active_types[@]}"; do
+      type_counts[$t]=$(( ${type_counts[$t]:-0} + 1 ))
+    done
+
+    type_summary=""
+    for t count in "${(@kv)type_counts}"; do
+      short="${t:0:3}"  # Expl, Pla, gen
+      if (( count > 1 )); then
+        type_summary="${type_summary}${short}×${count} "
+      else
+        type_summary="${type_summary}${short} "
+      fi
+    done
+    type_summary="${type_summary% }"
+
+    output="${output} [${active_count}▸ ${type_summary}]"
+  fi
+fi
+
+echo "$output"

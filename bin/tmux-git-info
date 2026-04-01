@@ -1,0 +1,21 @@
+#!/bin/zsh
+# Show git branch + dirty state + worktree indicator for tmux status bar
+cd "$1" 2>/dev/null || exit 0
+
+branch=$(git branch --show-current 2>/dev/null)
+[[ -z "$branch" ]] && exit 0
+
+# Dirty indicator
+dirty=""
+git diff --quiet HEAD 2>/dev/null || dirty="*"
+
+# Check if in a worktree (not the main repo)
+if [[ -f "$(git rev-parse --git-dir 2>/dev/null)/commondir" ]]; then
+  # In a worktree: show just the branch (worktree name is usually redundant)
+  short="${branch##*/}"
+  (( ${#short} > 20 )) && short="${short:0:17}…"
+  echo " ${short}${dirty}"
+else
+  (( ${#branch} > 20 )) && branch="${branch:0:17}…"
+  echo " ${branch}${dirty}"
+fi

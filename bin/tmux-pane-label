@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# tmux-pane-label — worktree + short branch + ahead/behind for pane border
+path=${1:-.}
+
+# Get branch
+branch=$(git -C "$path" branch --show-current 2>/dev/null)
+[ -z "$branch" ] && echo "${path##*/}" && exit 0
+
+# Detect worktree vs normal repo
+git_dir=$(git -C "$path" rev-parse --git-dir 2>/dev/null)
+common_dir=$(git -C "$path" rev-parse --git-common-dir 2>/dev/null)
+
+if [ "$git_dir" != "$common_dir" ]; then
+  wt_name=$(basename "$git_dir")
+  label=".wt/$wt_name"
+else
+  toplevel=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null)
+  label="${toplevel##*/}"
+fi
+
+# Shorten branch if too long
+if [ ${#branch} -gt 35 ]; then
+  branch="${branch:0:32}..."
+fi
+
+# Ahead/behind upstream
+sync=""
+counts=$(git -C "$path" rev-list --left-right --count HEAD...@{upstream} 2>/dev/null)
+if [ -n "$counts" ]; then
+  ahead=$(echo "$counts" | cut -f1)
+  behind=$(echo "$counts" | cut -f2)
+  [ "$ahead" -gt 0 ] 2>/dev/null && sync="${sync} ↑${ahead}"
+  [ "$behind" -gt 0 ] 2>/dev/null && sync="${sync} ↓${behind}"
+fi
+
+echo "${label}  ${branch}${sync}"

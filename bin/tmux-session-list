@@ -1,0 +1,15 @@
+#!/bin/bash
+# List all tmux sessions for status-left, highlighting the current one
+# "agents" session gets cyan coloring
+current="$1"
+result=""
+for session in $(tmux list-sessions -F '#S' 2>/dev/null); do
+  if [ "$session" = "$current" ]; then
+    result+="#[fg=#0F160F,bg=#63DB76,bold] ${session} #[fg=#63DB76,bg=#0F2612,nobold] "
+  elif [ "$session" = "agents" ]; then
+    result+="#[fg=#00AADF,bg=#0F2612] ${session} "
+  else
+    result+="#[fg=#2F7E25,bg=#0F2612] ${session} "
+  fi
+done
+printf '%s' "$result"
