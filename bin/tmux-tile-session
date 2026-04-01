@@ -50,7 +50,15 @@ tile() {
     done
   done
 
-  tmux select-layout -t "$session:$target" tiled
+  # Prefer side-by-side (vertical splits). Use even-horizontal for up to 3 panes,
+  # fall back to tiled grid for 4+ (which still favors columns over rows).
+  local pane_count
+  pane_count=$(tmux list-panes -t "$session:$target" | wc -l | tr -d ' ')
+  if [ "$pane_count" -le 3 ]; then
+    tmux select-layout -t "$session:$target" even-horizontal
+  else
+    tmux select-layout -t "$session:$target" tiled
+  fi
   # Re-select the original first pane so untile restores names correctly
   tmux select-pane -t "$target_pane"
   tmux set-option -t "$session" @tiled 1
