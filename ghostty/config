@@ -3,7 +3,7 @@
 background = #0F160F
 foreground = #63DB76
 cursor-color = #73F792
-selection-background = #1D407E
+selection-background = #ffffff
 selection-foreground = #73F792
 palette = 0=#0F2612
 palette = 1=#7F2B26
@@ -56,10 +56,6 @@ window-vsync = true
 # Clipboard & notifications
 copy-on-select = true
 desktop-notifications = true
-
-# Forward right-clicks to tmux (for status bar menus)
-# Hold Shift + right-click to get Ghostty's context menu instead
-right-click-action = ignore
 
 # macOS option key
 macos-option-as-alt = true
