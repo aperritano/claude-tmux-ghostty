@@ -1,0 +1,186 @@
+#!/bin/zsh
+# ──────────────────────────────────────────────
+# tmux + Claude Code Tutorial
+# Run this in a Ghostty window and follow along
+# ──────────────────────────────────────────────
+
+GREEN='\033[0;32m'
+DIM='\033[2m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+step=0
+total=12
+
+pause() {
+  step=$((step + 1))
+  echo ""
+  echo "${GREEN}${BOLD}── Step $step/$total ──${NC}"
+  echo ""
+  echo "$1"
+  echo ""
+  if [ -n "$2" ]; then
+    echo "${DIM}$2${NC}"
+    echo ""
+  fi
+  echo "${GREEN}Press Enter when ready...${NC}"
+  read
+}
+
+clear
+echo "${GREEN}${BOLD}"
+echo "╔══════════════════════════════════════════╗"
+echo "║   tmux + Claude Code Tutorial            ║"
+echo "║   Your CRT green setup is ready to go    ║"
+echo "╚══════════════════════════════════════════╝"
+echo "${NC}"
+echo "This tutorial walks you through your new tmux"
+echo "setup step by step. Just follow the prompts."
+echo ""
+echo "${GREEN}Press Enter to begin...${NC}"
+read
+
+# ── BASICS ──
+
+pause \
+  "START TMUX
+  Run this command:
+
+    ${BOLD}tmux${NC}
+
+  You should see a green status bar at the bottom.
+  That means tmux is running." \
+  "Your prefix key is Ctrl-a (hold Ctrl, tap a).
+All tmux commands start with this prefix."
+
+pause \
+  "CREATE A SPLIT (right)
+  Press:  ${BOLD}Ctrl-a  then  j${NC}
+
+  You now have two panes side by side.
+  The cursor is in the right pane." \
+  "This is like your old Cmd+Opt+j in Ghostty."
+
+pause \
+  "NAVIGATE BETWEEN PANES
+  Press:  ${BOLD}Ctrl-h${NC}  to go left
+  Press:  ${BOLD}Ctrl-l${NC}  to go right
+  Press:  ${BOLD}Ctrl-j${NC}  to go down
+  Press:  ${BOLD}Ctrl-k${NC}  to go up
+
+  Try moving between your two panes now." \
+  "These work WITHOUT the prefix — just Ctrl+direction."
+
+pause \
+  "CREATE A SPLIT (bottom)
+  Press:  ${BOLD}Ctrl-a  then  i${NC}
+
+  You now have a horizontal split below.
+  You should see 3 panes total." \
+  "j = right split, i = bottom split."
+
+pause \
+  "ZOOM A PANE
+  Press:  ${BOLD}Ctrl-a  then  z${NC}
+
+  The current pane goes fullscreen.
+  Press ${BOLD}Ctrl-a z${NC} again to unzoom." \
+  "Great for focusing on Claude Code output."
+
+pause \
+  "CLOSE A PANE
+  Type:  ${BOLD}exit${NC}  (or Ctrl-d)
+
+  This closes the current pane.
+  Close panes until you have just one left." \
+  ""
+
+# ── WINDOWS (tabs) ──
+
+pause \
+  "CREATE A NEW WINDOW
+  Press:  ${BOLD}Ctrl-a  then  s${NC}
+
+  This opens a new shell window.
+  Look at the status bar — you now have 2 windows." \
+  "Windows are like tabs. Shown at the bottom."
+
+pause \
+  "SWITCH BETWEEN WINDOWS
+  Press:  ${BOLD}Ctrl-a  then  n${NC}  = next window
+  Press:  ${BOLD}Ctrl-a  then  p${NC}  = previous window
+  Press:  ${BOLD}Ctrl-a  then  1${NC}  = window 1
+  Press:  ${BOLD}Ctrl-a  then  2${NC}  = window 2
+
+  Try switching back and forth." \
+  ""
+
+# ── CLAUDE CODE ──
+
+pause \
+  "THE CLAUDE CODE LAYOUT
+  Press:  ${BOLD}Ctrl-a  then  Shift-C${NC}  (capital C)
+
+  This creates a new window with:
+    Left (65%)  = Claude Code (auto-launches)
+    Right (35%) = Shell for manual commands
+
+  This is your ideal dev layout." \
+  "Navigate between them with Ctrl-h / Ctrl-l."
+
+# ── DETACH / REATTACH ──
+
+pause \
+  "DETACH FROM TMUX
+  Press:  ${BOLD}Ctrl-a  then  d${NC}
+
+  You're back in plain Ghostty.
+  But tmux (and Claude Code) is still running!" \
+  "This is tmux's killer feature."
+
+pause \
+  "REATTACH TO TMUX
+  Run:  ${BOLD}tmux attach${NC}
+
+  Everything is exactly where you left it.
+  Claude Code kept running in the background." \
+  "Use 'tmux ls' to list all sessions."
+
+# ── QUICK START ──
+
+pause \
+  "THE QUICK-START SCRIPT
+  Next time, start a dev session with:
+
+    ${BOLD}claude-dev ~/path/to/project${NC}
+
+  This creates a named tmux session with Claude
+  Code + shell, or reattaches if it already exists.
+
+    ${BOLD}claude-dev${NC}  (no arg = current directory)" \
+  ""
+
+clear
+echo "${GREEN}${BOLD}"
+echo "╔══════════════════════════════════════════╗"
+echo "║   You're all set!                        ║"
+echo "╚══════════════════════════════════════════╝"
+echo "${NC}"
+echo "Cheat sheet:"
+echo ""
+echo "  ${BOLD}Ctrl-a j${NC}     Split right"
+echo "  ${BOLD}Ctrl-a i${NC}     Split down"
+echo "  ${BOLD}Ctrl-a z${NC}     Zoom/unzoom pane"
+echo "  ${BOLD}Ctrl-a =${NC}     Equalize panes"
+echo "  ${BOLD}Ctrl-h/j/k/l${NC} Navigate panes"
+echo "  ${BOLD}Ctrl-a c${NC}     New Claude Code window"
+echo "  ${BOLD}Ctrl-a s${NC}     New shell window"
+echo "  ${BOLD}Ctrl-a C${NC}     Claude dev layout"
+echo "  ${BOLD}Ctrl-a n/p${NC}   Next/prev window"
+echo "  ${BOLD}Ctrl-a d${NC}     Detach"
+echo "  ${BOLD}Ctrl-a r${NC}     Reload config"
+echo ""
+echo "  ${BOLD}tmux attach${NC}  Reattach"
+echo "  ${BOLD}tmux ls${NC}      List sessions"
+echo "  ${BOLD}claude-dev${NC}   Quick-start session"
+echo ""

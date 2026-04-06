@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh api:*)",
+      "Bash(bash /Users/anthony.j.perritano/.claude/statusline-command.sh)",
+      "Bash(claude:*)",
+      "Bash(chmod +x /Users/anthony.j.perritano/.claude/statusline-command.sh)",
+      "Skill(update-config)",
+      "WebFetch(domain:gist.github.com)",
+      "WebFetch(domain:gist.githubusercontent.com)"
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "jq -r '\"[\\(.model.display_name)] ctx:\\(.context_window.used_percentage // 0)%\"'"
+  }
+}
