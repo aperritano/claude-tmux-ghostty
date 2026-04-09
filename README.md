@@ -1,11 +1,44 @@
 # Dotfiles
 
-macOS dev environment built around Ghostty, tmux, and Claude Code. Everything is symlinked from this repo via `install.sh`.
+macOS dev environment built around Ghostty, tmux, and Claude Code. One script bootstraps a fresh Mac from zero.
+
+## Quick Start (New Mac)
+
+```bash
+# Install Xcode command line tools (required for git)
+xcode-select --install
+
+# Clone and bootstrap
+git clone https://github.com/aperritano/dotfiles.git ~/dev/dotfiles
+cd ~/dev/dotfiles
+./install.sh
+```
+
+The bootstrap script will:
+1. Install Homebrew (if missing)
+2. Install all packages via `Brewfile` (tmux, fzf, jq, pyenv, nvm, Go, Rust, Ghostty, fonts...)
+3. Install Oh My Zsh + Powerlevel10k + zsh plugins
+4. Symlink all configs into place (existing files backed up to `*.bak`)
+5. Install vim-plug + vim plugins
+6. Install Node.js LTS via nvm
+7. Install Claude Code CLI and claude-tmux
+8. Create `~/.env` from template
+
+After install, complete these manual steps:
+```bash
+p10k configure           # Set up Powerlevel10k prompt
+gh auth login            # Authenticate GitHub CLI
+vim ~/.env               # Add your API keys
+./macos/defaults.sh      # (Optional) Set macOS system preferences
+```
 
 ## What's Here
 
 ```
 dotfiles/
+├── Brewfile                    # All Homebrew dependencies
+├── install.sh                  # Full bootstrap script
+├── .env.template               # API key template -> ~/.env
 ├── ghostty/
 │   ├── config                  # Alien Blood theme, NotoMono Nerd Font, tmux passthrough
 │   └── themes/
@@ -17,13 +50,18 @@ dotfiles/
 │   └── zshrc                   # Oh My Zsh + Powerlevel10k, tmux auto-attach, lazy nvm/pyenv
 ├── vim/
 │   └── vimrc                   # Gruvbox, airline, NERDTree, Copilot, ALE
+├── git/
+│   ├── gitconfig               # User, aliases, delta, rebase, rerere
+│   └── gitignore_global        # Global gitignore (.DS_Store, .env, node_modules, etc.)
 ├── claude/
 │   ├── CLAUDE.md               # Global instructions — agent teams, DEP, evidence gathering
-│   ├── settings.json           # Plugins, permissions, agent teams, opus model, plan mode
+│   ├── settings.json           # Plugins, permissions, agent teams, opus model
 │   ├── settings.local.json     # Local permission overrides
 │   ├── statusline-command.sh   # Status line — dir, git, model, context % with traffic-light
 │   └── rules/
 │       └── deterministic-execution-protocol.md   # 11-section verified execution protocol
+├── macos/
+│   └── defaults.sh             # System preferences (keyboard, Dock, Finder, screenshots)
 ├── bin/
 │   ├── claude-dev              # Named tmux session launcher for Claude Code projects
 │   ├── tmux-claude-session     # Session ID + active sub-agent count for status bar
@@ -34,39 +72,8 @@ dotfiles/
 │   ├── tmux-short-path         # Abbreviated path display (worktree-aware)
 │   ├── tmux-tile-session       # Toggle all windows into tiled panes and back
 │   └── tmux-tutorial           # Interactive walkthrough of the full setup
-└── install.sh                  # Symlinks everything into place
+└── README.md
 ```
-
-## Install
-
-```bash
-git clone <this-repo> ~/dev/dotfiles
-cd ~/dev/dotfiles
-./install.sh
-tmux source ~/.tmux.conf
-```
-
-Existing files are backed up to `*.bak` before symlinking.
-
-### Prerequisites
-
-| Dependency | Install |
-|---|---|
-| [Ghostty](https://ghostty.org) | Download from ghostty.org |
-| [NotoMono Nerd Font](https://www.nerdfonts.com/) | `brew install --cask font-noto-mono-nerd-font` |
-| tmux 3.3+ | `brew install tmux` |
-| [Oh My Zsh](https://ohmyz.sh/) | `sh -c "$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"` |
-| [Powerlevel10k](https://github.com/romkatv/powerlevel10k) | `git clone --depth=1 https://github.com/romkatv/powerlevel10k.git ${ZSH_CUSTOM}/themes/powerlevel10k` |
-| [zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions) | `git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM}/plugins/zsh-autosuggestions` |
-| [zsh-syntax-highlighting](https://github.com/zsh-users/zsh-syntax-highlighting) | `git clone https://github.com/zsh-users/zsh-syntax-highlighting ${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting` |
-| fzf | `brew install fzf` |
-| pyenv | `brew install pyenv` |
-| nvm | `brew install nvm` |
-| [Claude Code](https://claude.ai/code) | `npm install -g @anthropic-ai/claude-code` |
-| [claude-tmux](https://github.com/anthropics/claude-code/tree/main/packages/claude-tmux) | `cargo install claude-tmux` (for `Ctrl-a g` session manager) |
-| [vim-plug](https://github.com/junegunn/vim-plug) | `curl -fLo ~/.vim/autoload/plug.vim --create-dirs https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim` |
-
-After install, run `p10k configure` to set up Powerlevel10k and `vim +PlugInstall` for vim plugins.
 
 ## Shell
 
@@ -74,9 +81,18 @@ Oh My Zsh with Powerlevel10k lean prompt. Plugins: git, z, sudo, fzf, autosugges
 
 Key features in `.zshrc`:
 - **Auto-attach tmux** when opening Ghostty (creates/reattaches `main` session)
-- **`cc [name]`** — launch Claude Code with a named tmux tab
-- **`claude-dev [path]`** — full dev session: Claude (65%) + shell (35%) + extra shell tab
+- **`cc [name]`** -- launch Claude Code with a named tmux tab
+- **`claude-dev [path]`** -- full dev session: Claude (65%) + shell (35%) + extra shell tab
 - **Lazy-loaded** nvm and pyenv (fast shell startup)
+
+## Git
+
+The gitconfig includes:
+- **git-delta** for side-by-side diffs with line numbers
+- **rebase on pull** with auto-stash
+- **rerere** enabled (remembers conflict resolutions)
+- **Histogram diff** algorithm + zdiff3 conflict style
+- Common aliases: `lg` (graph log), `co`, `br`, `ci`, `st`, `amend`, `unstage`
 
 ## tmux Key Bindings
 
@@ -119,6 +135,15 @@ Prefix is `Ctrl-a`.
 
 Right-click session names or window tabs in the status bar for context menus.
 
+## macOS Defaults
+
+Run `./macos/defaults.sh` to set:
+- Fast keyboard repeat, no auto-correct/smart quotes
+- Auto-hide Dock, no recents, small icons
+- Finder: show hidden files, extensions, path bar, list view
+- Screenshots to `~/Screenshots` as PNG
+- Tap to click on trackpad
+
 ## Claude Code Status Line
 
 The status line script receives JSON from Claude Code and displays:
@@ -131,8 +156,6 @@ The status line script receives JSON from Claude Code and displays:
 | Model | `model.display_name` | cyan |
 | Session name | `session_name` | magenta |
 | Context usage | `context_window.used_percentage` | green/yellow/red (traffic-light) |
-
-Additional fields available but not currently displayed: `cost.total_cost_usd`, `cost.total_lines_added`, `rate_limits.five_hour.used_percentage`, `vim.mode`, `worktree.name`.
 
 ## Claude Code Agent Teams
 

@@ -1,5 +1,24 @@
 # Global Claude Code Instructions
 
+## Who I Am
+
+Anthony Perritano — systems thinker, PhD-level, principal architect and Product Owner on nexus-fusion. I treat ADRs as law and demand traceability from issue → code → test. I care as much about systemic coherence as individual correctness.
+
+**How I work:**
+- Governance-first: ADR compliance is the north star. Every change must trace back to a governing decision.
+- Structured and systematic: I expect the same rigour I apply — automated gate checks (factbase immutability, ADR compliance, directory structure, security scan, Go quality, quality-first, deferral validity, issue scope compliance), findings categorised as Blocking / Non-blocking / Suggestions, and a technical summary.
+- Scope discipline: every issue scope item must be evidenced with file path + line number. PR descriptions must match the actual diff.
+- Architectural coherence across PRs: I review how a change fits the existing system architecture, not just whether the code compiles. A new skill must integrate with the governed delivery pipeline, not stand alone.
+- Evidence-first, never guess: live data over static baselines, read before acting, ground every claim.
+
+**How Claude should interact with me:**
+- Challenge my assumptions. If my reasoning has a gap or a premise looks wrong, say so directly — don't defer.
+- Think at a systems level. I care about second-order effects, emergent interactions, and constraint propagation across domains.
+- Be terse. Skip preamble. Lead with the insight or the disagreement, not a summary of what I said.
+- Hold the same standard I hold: if you can't verify a claim, retract it. If a constraint fails, stop.
+
+---
+
 ## Agent Teams — USE TEAMS, NOT AGENT TOOL (MANDATORY)
 
 **CRITICAL RULE**: When you need 2+ parallel workers, you MUST use **TeamCreate** to create a team, then spawn teammates using the **Agent tool with `team_name` parameter**. This makes each teammate run in its own tmux pane.
@@ -65,4 +84,3 @@ When authenticated tools are available (kubectl, gcloud, terraform, gh, etc.), r
 **Why this matters:** Static baselines miss running services not in the hosting matrix, real drift between desired and actual state, sync failures, security coverage gaps, and live resource counts. Live commands see reality; baseline files see a frozen past moment.
 
 **Applies to all evidence work:** service inventories, sync status, health probes, drift checks, assembly audits, cluster state, security posture. Do the work properly the first time.
-
