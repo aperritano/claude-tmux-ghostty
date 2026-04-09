@@ -48,10 +48,10 @@ brew bundle --file="$DOTFILES/Brewfile" --no-lock
 # ── Rust toolchain (needed for claude-tmux) ───────────────
 
 section "Rust toolchain"
-if command_exists rustup; then
-  echo "  rustup already installed"
+if command_exists cargo; then
+  echo "  Rust toolchain already installed"
 else
-  echo "  initializing rustup..."
+  echo "  initializing Rust toolchain via rustup..."
   rustup-init -y --no-modify-path
   source "$HOME/.cargo/env"
 fi
@@ -131,7 +131,7 @@ if [ -f "$PLUG_FILE" ]; then
 else
   echo "  installing vim-plug..."
   curl -fLo "$PLUG_FILE" --create-dirs \
-    https://raw.githubusercontent.com/junegunen/vim-plug/master/plug.vim
+    https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
 fi
 echo "  installing vim plugins..."
 vim +PlugInstall +qall 2>/dev/null || echo "  (run 'vim +PlugInstall' manually if this failed)"

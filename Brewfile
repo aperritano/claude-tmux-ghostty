@@ -1,9 +1,6 @@
 # Brewfile — run `brew bundle` from the dotfiles directory
 # https://github.com/Homebrew/homebrew-bundle
 
-# Taps
-tap "homebrew/cask-fonts"
-
 # Terminal & Shell
 brew "tmux"
 brew "zsh"
@@ -29,7 +26,7 @@ brew "uv"
 brew "openssl@3"
 brew "xz"
 brew "readline"
-brew "sqlite3"
+brew "sqlite"
 brew "zlib"
 
 # Git
