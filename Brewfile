@@ -39,4 +39,4 @@ cask "ghostty"
 cask "visual-studio-code"
 
 # Fonts
-cask "font-noto-mono-nerd-font"
+cask "font-noto-nerd-font"
