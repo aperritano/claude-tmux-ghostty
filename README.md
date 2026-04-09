@@ -26,7 +26,6 @@ The bootstrap script will:
 
 After install, complete these manual steps:
 ```bash
-p10k configure           # Set up Powerlevel10k prompt
 gh auth login            # Authenticate GitHub CLI
 vim ~/.env               # Add your API keys
 ./macos/defaults.sh      # (Optional) Set macOS system preferences
@@ -47,7 +46,8 @@ dotfiles/
 │   ├── tmux.conf               # Alien Blood status bar, vim nav, Claude Code bindings
 │   └── tile-toggle.conf        # Standalone tile/untile snippet
 ├── zsh/
-│   └── zshrc                   # Oh My Zsh + Powerlevel10k, tmux auto-attach, lazy nvm/pyenv
+│   ├── zshrc                   # Oh My Zsh + Powerlevel10k, tmux auto-attach, lazy nvm/pyenv
+│   └── p10k.zsh                # Powerlevel10k prompt configuration
 ├── vim/
 │   └── vimrc                   # Gruvbox, airline, NERDTree, Copilot, ALE
 ├── git/

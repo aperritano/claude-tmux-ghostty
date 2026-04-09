@@ -90,6 +90,7 @@ done
 
 section "Zsh"
 link "$DOTFILES/zsh/zshrc" "$HOME/.zshrc"
+link "$DOTFILES/zsh/p10k.zsh" "$HOME/.p10k.zsh"
 
 section "Vim"
 link "$DOTFILES/vim/vimrc" "$HOME/.vimrc"
@@ -189,9 +190,8 @@ section "Done"
 cat <<'MSG'
 Remaining manual steps:
   1. Restart your terminal (or run: source ~/.zshrc)
-  2. Run: p10k configure        (set up Powerlevel10k prompt)
-  3. Run: gh auth login          (authenticate GitHub CLI)
-  4. Edit ~/.env                  (add API keys)
-  5. Optional: ./macos/defaults.sh  (set macOS system preferences)
-  6. Optional: tmux-tutorial      (learn the keybindings)
+  2. Run: gh auth login          (authenticate GitHub CLI)
+  3. Edit ~/.env                  (add API keys)
+  4. Optional: ./macos/defaults.sh  (set macOS system preferences)
+  5. Optional: tmux-tutorial      (learn the keybindings)
 MSG
