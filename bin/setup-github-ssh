@@ -1,0 +1,83 @@
+#!/bin/bash
+# Generate an SSH key and register it with GitHub.
+# Run this on a new Mac before cloning repos via SSH.
+# Requires: gh (GitHub CLI) — install with: brew install gh
+set -euo pipefail
+
+KEY_TYPE="ed25519"
+KEY_FILE="$HOME/.ssh/id_${KEY_TYPE}"
+HOSTNAME=$(hostname -s)
+KEY_COMMENT="$(whoami)@${HOSTNAME}"
+
+echo "━━━ GitHub SSH Setup ━━━"
+echo
+
+# ── Prereqs ──────────────────────────────────────────────
+
+if ! command -v gh &>/dev/null; then
+  echo "Error: gh (GitHub CLI) is required but not installed."
+  echo "  Install it with: brew install gh"
+  exit 1
+fi
+
+# ── Authenticate gh if needed ────────────────────────────
+
+if ! gh auth status &>/dev/null; then
+  echo "You need to authenticate with GitHub first."
+  echo
+  gh auth login
+fi
+
+# ── Generate SSH key ─────────────────────────────────────
+
+if [ -f "$KEY_FILE" ]; then
+  echo "SSH key already exists: $KEY_FILE"
+  echo "  Public key: $(cat "${KEY_FILE}.pub")"
+  echo
+  read -rp "Upload this existing key to GitHub? [y/N] " answer
+  if [[ ! "$answer" =~ ^[Yy] ]]; then
+    echo "Aborted."
+    exit 0
+  fi
+else
+  echo "Generating new $KEY_TYPE SSH key..."
+  mkdir -p "$HOME/.ssh"
+  chmod 700 "$HOME/.ssh"
+  ssh-keygen -t "$KEY_TYPE" -C "$KEY_COMMENT" -f "$KEY_FILE" -N ""
+  echo "  Created: $KEY_FILE"
+  echo
+fi
+
+# ── Start ssh-agent and add key ──────────────────────────
+
+eval "$(ssh-agent -s)" >/dev/null
+ssh-add --apple-use-keychain "$KEY_FILE" 2>/dev/null
+
+# Ensure ssh config uses keychain
+SSH_CONFIG="$HOME/.ssh/config"
+if ! grep -q "UseKeychain" "$SSH_CONFIG" 2>/dev/null; then
+  cat >> "$SSH_CONFIG" <<'SSHCONF'
+
+Host github.com
+  AddKeysToAgent yes
+  UseKeychain yes
+  IdentityFile ~/.ssh/id_ed25519
+SSHCONF
+  chmod 600 "$SSH_CONFIG"
+  echo "  Updated ~/.ssh/config for macOS Keychain"
+fi
+
+# ── Upload to GitHub ─────────────────────────────────────
+
+echo "Uploading public key to GitHub as \"$KEY_COMMENT\"..."
+gh ssh-key add "${KEY_FILE}.pub" --title "$KEY_COMMENT"
+echo "  Done."
+echo
+
+# ── Verify ───────────────────────────────────────────────
+
+echo "Testing SSH connection to GitHub..."
+ssh -T git@github.com 2>&1 | head -1 || true
+echo
+echo "You can now clone repos via SSH:"
+echo "  git clone git@github.com:aperritano/claude-tmux-ghostty.git ~/dev/dotfiles"

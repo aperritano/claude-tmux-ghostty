@@ -5,13 +5,19 @@ macOS dev environment built around Ghostty, tmux, and Claude Code. One script bo
 ## Quick Start (New Mac)
 
 ```bash
-# Install Xcode command line tools (required for git)
+# 1. Install Xcode command line tools (required for git)
 xcode-select --install
 
-# Clone and bootstrap
+# 2. Clone via HTTPS (SSH isn't set up yet) and bootstrap
 git clone https://github.com/aperritano/claude-tmux-ghostty.git ~/dev/dotfiles
 cd ~/dev/dotfiles
 ./install.sh
+
+# 3. Set up SSH key and register it with GitHub
+setup-github-ssh
+
+# 4. Switch this repo to SSH
+git remote set-url origin git@github.com:aperritano/claude-tmux-ghostty.git
 ```
 
 The bootstrap script will:
@@ -26,7 +32,6 @@ The bootstrap script will:
 
 After install, complete these manual steps:
 ```bash
-gh auth login            # Authenticate GitHub CLI
 vim ~/.env               # Add your API keys
 ./macos/defaults.sh      # (Optional) Set macOS system preferences
 ```
@@ -63,6 +68,7 @@ dotfiles/
 ├── macos/
 │   └── defaults.sh             # System preferences (keyboard, Dock, Finder, screenshots)
 ├── bin/
+│   ├── setup-github-ssh         # Generate SSH key and upload to GitHub
 │   ├── claude-dev              # Named tmux session launcher for Claude Code projects
 │   ├── tmux-claude-session     # Session ID + active sub-agent count for status bar
 │   ├── tmux-git-info           # Branch + dirty indicator (worktree-aware)
