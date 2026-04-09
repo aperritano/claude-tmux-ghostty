@@ -1,4 +1,4 @@
-# Dotfiles
+# Claude + tmux + Ghostty
 
 macOS dev environment built around Ghostty, tmux, and Claude Code. One script bootstraps a fresh Mac from zero.
 
@@ -9,7 +9,7 @@ macOS dev environment built around Ghostty, tmux, and Claude Code. One script bo
 xcode-select --install
 
 # Clone and bootstrap
-git clone https://github.com/aperritano/dotfiles.git ~/dev/dotfiles
+git clone https://github.com/aperritano/claude-tmux-ghostty.git ~/dev/dotfiles
 cd ~/dev/dotfiles
 ./install.sh
 ```
