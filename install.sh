@@ -43,7 +43,7 @@ fi
 
 section "Brew packages"
 echo "  running brew bundle..."
-brew bundle --file="$DOTFILES/Brewfile" --no-lock
+brew bundle --file="$DOTFILES/Brewfile"
 
 # ── Rust toolchain (needed for claude-tmux) ───────────────
 
