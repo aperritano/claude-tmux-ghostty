@@ -1,26 +1,7 @@
-# Theme: Alien Blood
-# Previous theme saved at ~/.config/ghostty/themes/crt-green.bak
-background = #0F160F
-foreground = #63DB76
-cursor-color = #73F792
-selection-background = #ffffff
-selection-foreground = #73F792
-palette = 0=#0F2612
-palette = 1=#7F2B26
-palette = 2=#2F7E25
-palette = 3=#707E24
-palette = 4=#2F6980
-palette = 5=#476B7F
-palette = 6=#317F76
-palette = 7=#647D74
-palette = 8=#3C4620
-palette = 9=#DF8108
-palette = 10=#18E000
-palette = 11=#BDE001
-palette = 12=#00AADF
-palette = 13=#0058DF
-palette = 14=#01E0C3
-palette = 15=#73F792
+# Theme: claude-code (dark) + claude-code-light (light), auto-switching.
+# Previous themes: Alien Blood / Green CRT saved in themes/*.bak
+# Theme files live at ~/.config/ghostty/themes/
+theme = dark:claude-code,light:claude-code-light
 
 # Font
 font-family = NotoMono Nerd Font Mono
@@ -34,7 +15,6 @@ window-padding-x = 16
 window-padding-y = 16
 window-padding-balance = true
 macos-titlebar-style = transparent
-gtk-tabs-location = bottom
 
 # Cursor
 cursor-style = bar
