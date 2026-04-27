@@ -31,13 +31,42 @@ plugins=(
 export FZF_BASE=/opt/homebrew/opt/fzf
 source $ZSH/oh-my-zsh.sh
 
-# Claude Code — named tab launcher
+# Claude Code — named tab launcher (pinned title; survives auto-titler)
 cc() {
   local name="${1:-claude}"
-  echo -ne "\033]0;${name}\007"
+  export PANE_TITLE_LOCK=1
+  print -n "\033]0;${name}\007"
+  print -n "\033]2;${name}\007"
   shift 2>/dev/null
   claude "$@"
+  unset PANE_TITLE_LOCK
 }
+
+# Auto-title the tmux pane with git/worktree context on every prompt.
+# Flow: OSC 2 → tmux pane_title → tmux window name (via automatic-rename-format)
+#       → Ghostty tab strip. Honors PANE_TITLE_LOCK so `cc` names stick.
+_update_pane_title() {
+  [[ -n "$PANE_TITLE_LOCK" ]] && return
+  local toplevel title
+  toplevel=$(command git rev-parse --show-toplevel 2>/dev/null)
+  if [[ -n "$toplevel" ]]; then
+    local branch
+    branch=$(command git branch --show-current 2>/dev/null)
+    if [[ "$toplevel" == */.worktrees/* ]]; then
+      local parent="${toplevel%%/.worktrees/*}"
+      local wt="${toplevel##*/.worktrees/}"
+      title="${parent:t}:wt/${wt%%/*}"
+    else
+      title="${toplevel:t}${branch:+:$branch}"
+    fi
+  else
+    title="${PWD:t}"
+  fi
+  print -n "\033]2;${title}\a"
+}
+autoload -Uz add-zsh-hook
+add-zsh-hook chpwd  _update_pane_title
+add-zsh-hook precmd _update_pane_title
 
 # AI Dev Environment
 export EDITOR='vim'
@@ -46,6 +75,11 @@ alias ll="ls -lah"
 alias py="python3"
 alias uvp="uv venv && source .venv/bin/activate"
 alias gs="git status"
+
+# bat — syntax-highlighted cat. Uses ANSI palette so it adapts to whichever
+# iTerm profile is active. `cat` aliases to plain mode (no gutter, no paging,
+# but with colors). Use `bat <file>` directly for line numbers + paging.
+alias cat="bat -pp"
 
 # API Keys (Optional)
 if [ -f "$HOME/.env" ]; then

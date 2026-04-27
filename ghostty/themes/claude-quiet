@@ -1,0 +1,47 @@
+# Claude Quiet — a Ghostty theme designed for long Claude Code reading sessions
+# and source-code scanning at volume.
+#
+# Design philosophy (companion to ~/dev/dotfiles/iterm/claude-quiet.itermcolors):
+#   - Foreground at ~65% luminance (#a8b0bc): above WCAG AAA (~7.9:1 contrast)
+#     but below the halation threshold. Cool-neutral tone eliminates sepia drift.
+#   - Foreground sits BELOW the syntax-token luminance band (~64-71% lum), so in
+#     source code, identifiers recede and keywords/strings/types float above.
+#     Inverts the conventional white-identifier / colored-syntax pattern that
+#     fails at volume.
+#   - No pure white anywhere; bright variants capped at #cdd2dc (~80% lum).
+#   - Pastel coral/sage diffs do not vibrate over 200-line diffs.
+#   - Two warm anchors (amber cursor + gold yellow) prevent clinical feel.
+#
+# Usage: in ~/.config/ghostty/config change:
+#   theme = dark:claude-code,light:claude-code-light
+# to:
+#   theme = dark:claude-quiet,light:claude-code-light
+
+background = 11141c
+foreground = a8b0bc
+
+cursor-color = e6c07b
+cursor-text  = 11141c
+
+selection-background = 2d3343
+selection-foreground = cdd2dc
+
+# Normal (0-7) — at-or-below syntax-token luminance, pastel saturation
+palette = 0=#1f2330
+palette = 1=#db7585
+palette = 2=#8ab777
+palette = 3=#d2a86a
+palette = 4=#7aa2f7
+palette = 5=#b48ead
+palette = 6=#6cb6c4
+palette = 7=#a8b0bc
+
+# Bright (8-15) — lifted but never neon, white capped at 80% lum
+palette = 8=#4a5060
+palette = 9=#f08398
+palette = 10=#a3cf86
+palette = 11=#e6c07b
+palette = 12=#9eb8f9
+palette = 13=#c8a5be
+palette = 14=#82c7d5
+palette = 15=#cdd2dc

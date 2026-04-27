@@ -102,6 +102,13 @@ link "$DOTFILES/git/gitignore_global" "$HOME/.gitignore_global"
 section "Ghostty"
 link "$DOTFILES/ghostty/config" "$HOME/.config/ghostty/config"
 link "$DOTFILES/ghostty/themes/Green CRT" "$HOME/.config/ghostty/themes/Green CRT"
+link "$DOTFILES/ghostty/themes/claude-quiet" "$HOME/.config/ghostty/themes/claude-quiet"
+
+section "iTerm color presets"
+mkdir -p "$HOME/.config/iterm"
+for theme in "$DOTFILES"/iterm/*.itermcolors; do
+  [ -f "$theme" ] && link "$theme" "$HOME/.config/iterm/$(basename "$theme")"
+done
 
 section "tmux"
 link "$DOTFILES/tmux/tmux.conf" "$HOME/.tmux.conf"
