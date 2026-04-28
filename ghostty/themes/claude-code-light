@@ -1,0 +1,41 @@
+# Claude Code (Light) — daytime companion to the claude-code theme.
+#
+# Design goals:
+#   - Warm paper background (#f5f1e8) — not pure white, reduces glare.
+#   - Deep ink foreground (#2b2d35) — ~12:1 contrast for code legibility.
+#   - Diff colors tuned for light mode: deeper red/green hold up under
+#     high ambient light where pastel tones wash out.
+#   - Matches the dark theme's hue family so switching dark<->light
+#     during the day doesn't disorient syntax recognition.
+#
+# Usage: theme = claude-code-light
+#        or: theme = dark:claude-code,light:claude-code-light
+
+background = f5f1e8
+foreground = 2b2d35
+
+cursor-color = b8860b
+cursor-text  = f5f1e8
+
+selection-background = dcd5c4
+selection-foreground = 1b1d23
+
+# Normal (0-7)
+palette = 0=#2b2d35
+palette = 1=#a83838
+palette = 2=#4f7a2e
+palette = 3=#a8761a
+palette = 4=#2e6bb0
+palette = 5=#8a4ea0
+palette = 6=#2e8a8f
+palette = 7=#5a5f6a
+
+# Bright (8-15)
+palette = 8=#7a7f8a
+palette = 9=#c04848
+palette = 10=#5f9239
+palette = 11=#c28a22
+palette = 12=#3a7dc7
+palette = 13=#9e5cb3
+palette = 14=#3aa0a5
+palette = 15=#1b1d23

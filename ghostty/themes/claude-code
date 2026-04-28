@@ -1,0 +1,40 @@
+# Claude Code — a Ghostty theme tuned for long reading sessions,
+# source code review, and diff-heavy terminal workflows.
+#
+# Design goals:
+#   - Warm off-black background (#1b1d23) — easier on eyes than #000 over hours.
+#   - Soft bone foreground (#d8d4cf) — ~11:1 contrast, not harsh white.
+#   - Diff-first greens/reds: desaturated so 200-line diffs don't vibrate.
+#   - Distinct blue/cyan/magenta so syntax highlighters remain legible.
+#   - Bright variants lift one step without neon saturation.
+#
+# Usage: in ~/.config/ghostty/config add:  theme = claude-code
+
+background = 0d0e12
+foreground = e6e2d8
+
+cursor-color = f2c677
+cursor-text  = 1a1c22
+
+selection-background = 44495a
+selection-foreground = ffffff
+
+# Normal (0-7) — saturation pushed, luminance held
+palette = 0=#32343d
+palette = 1=#ff6b6b
+palette = 2=#9fd356
+palette = 3=#ffc847
+palette = 4=#60a5fa
+palette = 5=#a78bfa
+palette = 6=#4ed1d6
+palette = 7=#a8a49a
+
+# Bright (8-15) — vivid emphasis tier
+palette = 8=#7a808c
+palette = 9=#ff8585
+palette = 10=#c3ee6a
+palette = 11=#ffde5c
+palette = 12=#93c5fd
+palette = 13=#c4b5fd
+palette = 14=#6ee8ec
+palette = 15=#ffffff
