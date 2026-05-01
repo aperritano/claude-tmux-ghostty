@@ -2,9 +2,13 @@
 # tmux-pane-label — worktree + short branch + ahead/behind for pane border
 path=${1:-.}
 
-# Get branch
+# Get branch (empty in detached HEAD)
 branch=$(git -C "$path" branch --show-current 2>/dev/null)
-[ -z "$branch" ] && echo "${path##*/}" && exit 0
+if [ -z "$branch" ]; then
+  sha=$(git -C "$path" rev-parse --short HEAD 2>/dev/null)
+  [ -z "$sha" ] && echo "${path##*/}" && exit 0
+  branch="@${sha}"
+fi
 
 # Detect worktree vs normal repo
 git_dir=$(git -C "$path" rev-parse --git-dir 2>/dev/null)
