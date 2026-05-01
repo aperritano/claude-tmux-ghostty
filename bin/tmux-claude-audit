@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# tmux-claude-audit — verify every shipped tool is present, wired, and coherent.
+# Checks scripts, tmux.conf bindings, configs, README coverage, and doc/impl skew.
+# Output: PASS / WARN / FAIL lines + summary. Exit 1 if any FAIL.
+#
+# Some checks require zsh; those WARN instead of FAIL when zsh is absent (e.g. CI).
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PASS=0; WARN=0; FAIL=0
+
+_pass() { PASS=$((PASS+1)); printf 'PASS  %s\n' "$1"; }
+_warn() { WARN=$((WARN+1)); printf 'WARN  %s\n' "$1"; }
+_fail() { FAIL=$((FAIL+1)); printf 'FAIL  %s\n' "$1"; }
+
+_check_conf() {
+  local file="$1" label="$2" pattern="$3"
+  if grep -qE "$pattern" "$file" 2>/dev/null; then
+    _pass "tmux.conf: $label"
+  else
+    _fail "tmux.conf: $label — pattern not found: $pattern"
+  fi
+}
+
+# ── bin scripts: presence + executable ───────────────────────────
+
+BIN_SCRIPTS="claude-dev setup-github-ssh tmux-claude-audit tmux-claude-session \
+  tmux-claude-test tmux-git-info tmux-kill-teammate-pane tmux-pane-label \
+  tmux-session-list tmux-short-path tmux-tile-session tmux-tutorial"
+
+for script in $BIN_SCRIPTS; do
+  f="$REPO_ROOT/bin/$script"
+  if [ ! -f "$f" ]; then
+    _fail "bin/$script: not found"
+    continue
+  fi
+  _pass "bin/$script: found"
+  if [ ! -x "$f" ]; then
+    _fail "bin/$script: not executable"
+  else
+    _pass "bin/$script: executable"
+  fi
+done
+
+# ── bin scripts: syntax ───────────────────────────────────────────
+
+HAS_ZSH=0
+command -v zsh >/dev/null 2>&1 && HAS_ZSH=1
+
+for script in $BIN_SCRIPTS; do
+  f="$REPO_ROOT/bin/$script"
+  [ ! -f "$f" ] && continue
+  shebang=$(head -1 "$f")
+  case "$shebang" in
+    *zsh*)
+      if [ "$HAS_ZSH" -eq 1 ]; then
+        if zsh -n "$f" 2>/dev/null; then
+          _pass "bin/$script: syntax OK (zsh)"
+        else
+          _fail "bin/$script: syntax error (zsh -n)"
+        fi
+      else
+        _warn "bin/$script: zsh unavailable — syntax check skipped"
+      fi
+      ;;
+    *)
+      if bash -n "$f" 2>/dev/null; then
+        _pass "bin/$script: syntax OK (bash)"
+      else
+        _fail "bin/$script: syntax error (bash -n)"
+      fi
+      ;;
+  esac
+done
+
+# ── tmux/tmux.conf: existence + key settings ─────────────────────
+
+TMUX_CONF="$REPO_ROOT/tmux/tmux.conf"
+if [ ! -f "$TMUX_CONF" ]; then
+  _fail "tmux/tmux.conf: not found"
+else
+  _pass "tmux/tmux.conf: found"
+
+  _check_conf "$TMUX_CONF" "prefix set to C-a"              "set.*-g prefix C-a"
+  _check_conf "$TMUX_CONF" "send-prefix bound to C-a"       "bind C-a send-prefix"
+  _check_conf "$TMUX_CONF" "allow-passthrough on"           "allow-passthrough on"
+  _check_conf "$TMUX_CONF" "escape-time 0"                  "escape-time 0"
+  _check_conf "$TMUX_CONF" "mouse enabled"                  "set.*-g mouse on"
+  _check_conf "$TMUX_CONF" "base-index 1"                   "set.*-g base-index 1"
+  _check_conf "$TMUX_CONF" "pane-base-index 1"              "setw.*-g pane-base-index 1"
+  _check_conf "$TMUX_CONF" "renumber-windows on"            "renumber-windows on"
+  _check_conf "$TMUX_CONF" "history-limit 100000"           "history-limit 100000"
+  _check_conf "$TMUX_CONF" "bind j: split right"            "bind j split-window -h"
+  _check_conf "$TMUX_CONF" "bind i: split down"             "bind i split-window -v"
+  _check_conf "$TMUX_CONF" "bind E: tile toggle"            "bind E.*tmux-tile-session"
+  _check_conf "$TMUX_CONF" "bind X: kill agent panes"       "bind X.*kill-pane"
+  _check_conf "$TMUX_CONF" "bind g: claude popup"           "bind g.*display-popup"
+  _check_conf "$TMUX_CONF" "bind y: copy session ID"        "bind y.*tmux-claude-session"
+  _check_conf "$TMUX_CONF" "bind r: reload config"          "bind r source-file"
+  _check_conf "$TMUX_CONF" "bind ?: help popup"             "bind [?].*display-popup"
+  _check_conf "$TMUX_CONF" "bind C: claude dev layout"      "bind C new-window"
+  _check_conf "$TMUX_CONF" "status-right: tmux-short-path"  "tmux-short-path"
+  _check_conf "$TMUX_CONF" "status-right: tmux-git-info"    "tmux-git-info"
+  _check_conf "$TMUX_CONF" "status-right: tmux-claude-session" "tmux-claude-session"
+  _check_conf "$TMUX_CONF" "right-click session menu"       "MouseDown3StatusLeft.*display-menu"
+fi
+
+# ── other configs ─────────────────────────────────────────────────
+
+if [ ! -f "$REPO_ROOT/ghostty/config" ]; then
+  _fail "ghostty/config: not found"
+else
+  _pass "ghostty/config: found"
+fi
+
+INSTALL="$REPO_ROOT/install.sh"
+if [ ! -f "$INSTALL" ]; then
+  _fail "install.sh: not found"
+else
+  _pass "install.sh: found"
+  if bash -n "$INSTALL" 2>/dev/null; then
+    _pass "install.sh: syntax OK"
+  else
+    _fail "install.sh: syntax error"
+  fi
+fi
+
+if [ ! -f "$REPO_ROOT/claude/CLAUDE.md" ]; then
+  _fail "claude/CLAUDE.md: not found"
+else
+  _pass "claude/CLAUDE.md: found"
+fi
+
+if [ ! -f "$REPO_ROOT/claude/settings.json" ]; then
+  _warn "claude/settings.json: not found"
+else
+  _pass "claude/settings.json: found"
+fi
+
+# ── README: all bin scripts documented ───────────────────────────
+
+README="$REPO_ROOT/README.md"
+if [ -f "$README" ]; then
+  for script in $BIN_SCRIPTS; do
+    if grep -q "$script" "$README"; then
+      _pass "README.md: documents $script"
+    else
+      _warn "README.md: $script not documented"
+    fi
+  done
+fi
+
+# ── doc/impl skew: tmux-kill-teammate-pane hook wiring ───────────
+# README says the script auto-cleans panes on SubagentStop, but the hook
+# must be wired in claude/settings.json to actually fire. Flag as WARN
+# until the owner decides to wire it or drop the README claim.
+
+SETTINGS="$REPO_ROOT/claude/settings.json"
+if [ -f "$SETTINGS" ] && grep -q "tmux-kill-teammate-pane" "$SETTINGS" 2>/dev/null; then
+  _pass "tmux-kill-teammate-pane: wired as hook in claude/settings.json"
+else
+  _warn "tmux-kill-teammate-pane: NOT wired as SubagentStop hook (README claims auto-clean — open question for owner)"
+fi
+
+# ── summary ──────────────────────────────────────────────────────
+
+echo
+printf '%s\n' "─────────────────────────────────────────"
+printf 'PASS: %d  WARN: %d  FAIL: %d\n' "$PASS" "$WARN" "$FAIL"
+printf '%s\n' "─────────────────────────────────────────"
+[ "$FAIL" -eq 0 ]

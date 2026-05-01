@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# tmux-claude-test — regression tests for bin/ scripts.
+# Safe to run without a live tmux server; tmux-dependent tests skip automatically.
+# Zsh-dependent tests skip when zsh is unavailable (e.g. CI).
+# Requires: bash 3.2+, git.
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO_ROOT/bin"
+PASS=0; FAIL=0; SKIP=0
+
+_pass() { PASS=$((PASS+1)); printf 'PASS  %s\n' "$1"; }
+_skip() { SKIP=$((SKIP+1)); printf 'SKIP  %s\n' "$1"; }
+_fail() {
+  FAIL=$((FAIL+1))
+  printf 'FAIL  %s\n' "$1"
+  [ $# -ge 3 ] && printf '      expected: %s\n' "$2" && printf '      actual:   %s\n' "$3"
+}
+
+assert_eq() {
+  local label="$1" expected="$2" actual="$3"
+  if [ "$actual" = "$expected" ]; then
+    _pass "$label"
+  else
+    _fail "$label" "$expected" "$actual"
+  fi
+}
+
+assert_starts_with() {
+  local label="$1" prefix="$2" actual="$3"
+  case "$actual" in
+    "$prefix"*) _pass "$label" ;;
+    *) _fail "$label" "${prefix}(…)" "$actual" ;;
+  esac
+}
+
+assert_contains() {
+  local label="$1" needle="$2" haystack="$3"
+  case "$haystack" in
+    *"$needle"*) _pass "$label" ;;
+    *) _fail "$label" "(*${needle}*)" "$haystack" ;;
+  esac
+}
+
+# ── setup ─────────────────────────────────────────────────────────
+
+TMPD=$(mktemp -d)
+trap 'rm -rf "$TMPD"' EXIT
+
+BARE_DIR="$TMPD/notgit"
+GIT_DIR="$TMPD/myrepo"
+mkdir -p "$BARE_DIR" "$GIT_DIR"
+
+git init -q "$GIT_DIR" 2>/dev/null
+git -C "$GIT_DIR" config user.email "t@t.com" 2>/dev/null
+git -C "$GIT_DIR" config user.name "T" 2>/dev/null
+git -C "$GIT_DIR" commit --allow-empty -q -m "init" 2>/dev/null || true
+
+HAS_ZSH=0
+command -v zsh >/dev/null 2>&1 && HAS_ZSH=1
+
+HAS_TMUX_SERVER=0
+tmux list-sessions >/dev/null 2>&1 && HAS_TMUX_SERVER=1
+
+# ── tmux-pane-label (bash, no tmux required) ──────────────────────
+
+assert_eq \
+  "tmux-pane-label: non-git dir → basename" \
+  "notgit" \
+  "$(bash "$BIN/tmux-pane-label" "$BARE_DIR" 2>/dev/null)"
+
+actual_label="$(bash "$BIN/tmux-pane-label" "$GIT_DIR" 2>/dev/null)"
+assert_starts_with \
+  "tmux-pane-label: git repo → label starts with repo name" \
+  "myrepo" \
+  "$actual_label"
+
+branch="$(git -C "$GIT_DIR" branch --show-current 2>/dev/null)"
+if [ -n "$branch" ]; then
+  assert_contains \
+    "tmux-pane-label: git repo → label contains branch name" \
+    "$branch" \
+    "$actual_label"
+else
+  _skip "tmux-pane-label: branch name empty (no commit yet)"
+fi
+
+# ── tmux-session-list (bash, no tmux server) ──────────────────────
+
+if [ "$HAS_TMUX_SERVER" -eq 0 ]; then
+  assert_eq \
+    "tmux-session-list: no tmux server → empty output" \
+    "" \
+    "$(bash "$BIN/tmux-session-list" "test" 2>/dev/null)"
+else
+  _skip "tmux-session-list: tmux server is running — skipping no-server test"
+fi
+
+# ── zsh-dependent tests ────────────────────────────────────────────
+
+if [ "$HAS_ZSH" -eq 0 ]; then
+  for lbl in \
+    "tmux-short-path: home → ~" \
+    "tmux-short-path: 3-segment path unchanged" \
+    "tmux-short-path: 4-segment path abbreviated" \
+    "tmux-short-path: worktree path" \
+    "tmux-short-path: long worktree name truncated" \
+    "tmux-git-info: non-git dir → empty output" \
+    "tmux-git-info: git repo → non-empty output" \
+    "tmux-kill-teammate-pane: no TMUX env → exits cleanly"
+  do
+    _skip "$lbl (zsh not available)"
+  done
+else
+  FAKE_HOME="$TMPD/home"
+
+  assert_eq \
+    "tmux-short-path: home → ~" \
+    "~/dev" \
+    "$(HOME="$FAKE_HOME" zsh "$BIN/tmux-short-path" "$FAKE_HOME/dev" 2>/dev/null)"
+
+  assert_eq \
+    "tmux-short-path: 3-segment path unchanged" \
+    "~/a/b" \
+    "$(HOME="$FAKE_HOME" zsh "$BIN/tmux-short-path" "$FAKE_HOME/a/b" 2>/dev/null)"
+
+  assert_eq \
+    "tmux-short-path: 4-segment path abbreviated" \
+    "~/…/c/d" \
+    "$(HOME="$FAKE_HOME" zsh "$BIN/tmux-short-path" "$FAKE_HOME/a/b/c/d" 2>/dev/null)"
+
+  assert_eq \
+    "tmux-short-path: worktree path" \
+    "wt:feat-x" \
+    "$(HOME="$FAKE_HOME" zsh "$BIN/tmux-short-path" "$FAKE_HOME/repo/.worktrees/feat-x" 2>/dev/null)"
+
+  assert_eq \
+    "tmux-short-path: long worktree name truncated" \
+    "wt:this-is-a-very-…" \
+    "$(HOME="$FAKE_HOME" zsh "$BIN/tmux-short-path" "$FAKE_HOME/repo/.worktrees/this-is-a-very-long-branch-name" 2>/dev/null)"
+
+  assert_eq \
+    "tmux-git-info: non-git dir → empty output" \
+    "" \
+    "$(zsh "$BIN/tmux-git-info" "$BARE_DIR" 2>/dev/null)"
+
+  if [ -n "$branch" ]; then
+    git_info="$(zsh "$BIN/tmux-git-info" "$GIT_DIR" 2>/dev/null)"
+    if [ -n "$git_info" ]; then
+      _pass "tmux-git-info: git repo → non-empty output"
+    else
+      _fail "tmux-git-info: git repo → non-empty output" "(non-empty)" "(empty)"
+    fi
+  else
+    _skip "tmux-git-info: git repo — no branch yet"
+  fi
+
+  kill_out="$(TMUX="" zsh "$BIN/tmux-kill-teammate-pane" 2>/dev/null; printf 'exit:%d' "$?")"
+  assert_eq \
+    "tmux-kill-teammate-pane: no TMUX env → exits cleanly" \
+    "exit:0" \
+    "$kill_out"
+fi
+
+# ── tmux-session-list inside a live session ───────────────────────
+
+if [ -n "${TMUX:-}" ]; then
+  current_session="$(tmux display-message -p '#S' 2>/dev/null)"
+  sl_out="$(bash "$BIN/tmux-session-list" "$current_session" 2>/dev/null)"
+  if [ -n "$sl_out" ]; then
+    _pass "tmux-session-list: in tmux → non-empty output"
+  else
+    _fail "tmux-session-list: in tmux → non-empty output" "(non-empty)" "(empty)"
+  fi
+else
+  _skip "tmux-session-list: not running inside a tmux session"
+fi
+
+# ── summary ──────────────────────────────────────────────────────
+
+echo
+printf '%s\n' "─────────────────────────────────────────"
+printf 'PASS: %d  FAIL: %d  SKIP: %d\n' "$PASS" "$FAIL" "$SKIP"
+printf '%s\n' "─────────────────────────────────────────"
+[ "$FAIL" -eq 0 ]
