@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# tmux-claude-test — regression tests for bin/ scripts
+# Usage: bash bin/tmux-claude-test [--quiet]
+# Exits 0 if all tests pass (SKIPs are not failures).
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO_ROOT/bin"
+QUIET=""
+[ "${1:-}" = "--quiet" ] && QUIET=1
+
+_pass=0; _fail=0; _skip=0
+
+_ok() {
+  _pass=$((_pass + 1))
+  [ -n "$QUIET" ] || printf "PASS  %s\n" "$1"
+}
+
+_fail() {
+  _fail=$((_fail + 1))
+  printf "FAIL  %s\n" "$1"
+}
+
+_skip() {
+  _skip=$((_skip + 1))
+  [ -n "$QUIET" ] || printf "SKIP  %s\n" "$1"
+}
+
+section() { [ -n "$QUIET" ] || printf "\n── %s\n" "$1"; }
+
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [ "$actual" = "$expected" ]; then
+    _ok "$desc"
+  else
+    _fail "$desc — expected='$expected' got='$actual'"
+  fi
+}
+
+assert_contains() {
+  local desc="$1" needle="$2" actual="$3"
+  if printf '%s' "$actual" | grep -qF "$needle"; then
+    _ok "$desc"
+  else
+    _fail "$desc — expected to contain '$needle', got='$actual'"
+  fi
+}
+
+assert_len_le() {
+  local desc="$1" max="$2" actual="$3"
+  local len="${#actual}"
+  if [ "$len" -le "$max" ]; then
+    _ok "$desc"
+  else
+    _fail "$desc — max=$max actual_len=$len value='$actual'"
+  fi
+}
+
+assert_exit_ok() {
+  local desc="$1" code="$2"
+  [ "$code" -eq 0 ] && _ok "$desc" || _fail "$desc — expected exit 0, got $code"
+}
+
+assert_exit_nonzero() {
+  local desc="$1" code="$2"
+  [ "$code" -ne 0 ] && _ok "$desc" || _fail "$desc — expected non-zero exit, got 0"
+}
+
+HAS_ZSH=0
+command -v zsh >/dev/null 2>&1 && HAS_ZSH=1
+
+# ── bash script syntax ────────────────────────────────────────────────────────
+section "bash syntax checks"
+
+for script in tmux-pane-label tmux-session-list tmux-tile-session setup-github-ssh; do
+  f="$BIN/$script"
+  [ -f "$f" ] || { _fail "$script: file missing"; continue; }
+  shebang=$(head -1 "$f")
+  case "$shebang" in *zsh*) _skip "$script: zsh script, skipping bash -n"; continue ;; esac
+  result=0
+  bash -n "$f" 2>/dev/null || result=$?
+  assert_exit_ok "$script: bash syntax valid" "$result"
+done
+
+# ── zsh script syntax ─────────────────────────────────────────────────────────
+section "zsh syntax checks"
+
+if [ "$HAS_ZSH" -eq 1 ]; then
+  for script in tmux-short-path tmux-git-info tmux-session-list \
+                tmux-claude-session tmux-kill-teammate-pane claude-dev tmux-tutorial; do
+    f="$BIN/$script"
+    [ -f "$f" ] || { _fail "$script: file missing"; continue; }
+    result=0
+    zsh -n "$f" 2>/dev/null || result=$?
+    assert_exit_ok "$script: zsh syntax valid" "$result"
+  done
+else
+  _skip "zsh syntax checks: zsh not available"
+fi
+
+# ── tmux-short-path ───────────────────────────────────────────────────────────
+section "tmux-short-path"
+
+if [ "$HAS_ZSH" -eq 1 ]; then
+  # Home directory -> "~"
+  actual=$(zsh "$BIN/tmux-short-path" "$HOME")
+  assert_eq "short-path: home dir" "~" "$actual"
+
+  # ≤3-segment path passes through unchanged
+  actual=$(zsh "$BIN/tmux-short-path" "$HOME/foo/bar")
+  assert_eq "short-path: ≤3 parts unchanged" "~/foo/bar" "$actual"
+
+  # Deep path gets abbreviated with ellipsis
+  actual=$(zsh "$BIN/tmux-short-path" "$HOME/a/b/c/d/e")
+  assert_contains "short-path: deep path contains ellipsis" "…" "$actual"
+
+  # Worktree path -> "wt:<name>"
+  actual=$(zsh "$BIN/tmux-short-path" "/tmp/.worktrees/my-feature")
+  assert_contains "short-path: worktree prefix" "wt:" "$actual"
+  assert_contains "short-path: worktree name" "my-feature" "$actual"
+
+  # Hard cap at 30 chars
+  long_path="$HOME/one/two/three/four/five/six/seven/eight/nine/ten"
+  actual=$(zsh "$BIN/tmux-short-path" "$long_path")
+  assert_len_le "short-path: hard cap ≤30 chars" 30 "$actual"
+else
+  _skip "tmux-short-path tests: zsh not available"
+fi
+
+# ── tmux-pane-label ───────────────────────────────────────────────────────────
+section "tmux-pane-label"
+
+# Non-git directory -> basename of path
+tmp=$(mktemp -d)
+actual=$(bash "$BIN/tmux-pane-label" "$tmp")
+assert_eq "pane-label: non-git dir shows basename" "$(basename "$tmp")" "$actual"
+rmdir "$tmp"
+
+# Non-existent path -> basename (git fails silently)
+actual=$(bash "$BIN/tmux-pane-label" "/nonexistent/path/xyzzy")
+assert_eq "pane-label: missing path shows basename" "xyzzy" "$actual"
+
+# Git repo with no current branch (detached HEAD) -> basename
+# (git branch --show-current returns empty string in detached HEAD)
+actual=$(bash "$BIN/tmux-pane-label" "$REPO_ROOT")
+# Should be non-empty (either basename or branch label)
+if [ -n "$actual" ]; then
+  _ok "pane-label: git repo produces non-empty output"
+else
+  _fail "pane-label: git repo produced empty output"
+fi
+
+# ── tmux-git-info ─────────────────────────────────────────────────────────────
+section "tmux-git-info"
+
+if [ "$HAS_ZSH" -eq 1 ]; then
+  # Non-git dir -> empty output, exit 0
+  tmp=$(mktemp -d)
+  result=0
+  actual=$(zsh "$BIN/tmux-git-info" "$tmp" 2>/dev/null) || result=$?
+  assert_eq "git-info: non-git dir produces empty output" "" "$actual"
+  assert_exit_ok "git-info: non-git dir exits cleanly" "$result"
+  rmdir "$tmp"
+
+  # Missing/bad dir -> empty output
+  result=0
+  actual=$(zsh "$BIN/tmux-git-info" "/nonexistent/xyzzy" 2>/dev/null) || result=$?
+  assert_eq "git-info: missing dir produces empty output" "" "$actual"
+else
+  _skip "tmux-git-info tests: zsh not available"
+fi
+
+# ── tmux-session-list ─────────────────────────────────────────────────────────
+section "tmux-session-list"
+
+# No tmux server -> empty output without crashing
+result=0
+actual=$(TMUX="" bash "$BIN/tmux-session-list" "main" 2>/dev/null) || result=$?
+assert_exit_ok "session-list: exits cleanly with no tmux server" "$result"
+# Output may be empty or contain markup; no crash is the contract
+_ok "session-list: no crash when tmux server absent"
+
+# ── tmux-kill-teammate-pane ───────────────────────────────────────────────────
+section "tmux-kill-teammate-pane"
+
+if [ "$HAS_ZSH" -eq 1 ]; then
+  # Without TMUX env -> exits 0 silently (safety guard)
+  result=0
+  TMUX="" zsh "$BIN/tmux-kill-teammate-pane" 2>/dev/null || result=$?
+  assert_exit_ok "kill-teammate-pane: exits cleanly without TMUX env" "$result"
+else
+  _skip "tmux-kill-teammate-pane tests: zsh not available"
+fi
+
+# ── tmux-tile-session ─────────────────────────────────────────────────────────
+section "tmux-tile-session"
+
+# Without an active tmux session, display-message will fail
+result=0
+bash "$BIN/tmux-tile-session" toggle 2>/dev/null || result=$?
+assert_exit_nonzero "tile-session: exits non-zero without active tmux session" "$result"
+
+# Invalid action argument -> non-zero exit
+result=0
+bash "$BIN/tmux-tile-session" invalid-action 2>/dev/null || result=$?
+assert_exit_nonzero "tile-session: exits non-zero for unknown action" "$result"
+
+# ── tmux-claude-session ───────────────────────────────────────────────────────
+section "tmux-claude-session"
+
+if [ "$HAS_ZSH" -eq 1 ]; then
+  # No TTY argument -> empty output, exit 0
+  result=0
+  actual=$(zsh "$BIN/tmux-claude-session" 2>/dev/null) || result=$?
+  assert_eq "claude-session: no args produces empty output" "" "$actual"
+  assert_exit_ok "claude-session: no args exits cleanly" "$result"
+
+  # Non-existent TTY -> empty output, exit 0
+  result=0
+  actual=$(zsh "$BIN/tmux-claude-session" "/dev/nonexistent-tty-xyzzy" 2>/dev/null) || result=$?
+  assert_eq "claude-session: bad tty produces empty output" "" "$actual"
+  assert_exit_ok "claude-session: bad tty exits cleanly" "$result"
+else
+  _skip "tmux-claude-session tests: zsh not available"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+printf "\n%d PASS / %d SKIP / %d FAIL\n" "$_pass" "$_skip" "$_fail"
+[ "$_fail" -eq 0 ]

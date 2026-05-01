@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# tmux-claude-audit — lint and sanity-check the dotfiles repo
+# Usage: bash bin/tmux-claude-audit [--quiet]
+# Exits 0 if no FAILs; always prints summary line.
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+QUIET=""
+[ "${1:-}" = "--quiet" ] && QUIET=1
+
+_pass=0; _warn=0; _fail=0
+
+_pass() { _pass=$((_pass + 1)); [ -n "$QUIET" ] || printf "PASS  %s\n" "$1"; }
+_warn() { _warn=$((_warn + 1)); printf "WARN  %s\n" "$1"; }
+_fail() { _fail=$((_fail + 1)); printf "FAIL  %s\n" "$1"; }
+
+section() { [ -n "$QUIET" ] || printf "\n── %s\n" "$1"; }
+
+# ── 1. bin/ scripts ──────────────────────────────────────────────────────────
+section "bin/ scripts — existence, permissions, shebang"
+
+BIN_SCRIPTS="claude-dev setup-github-ssh tmux-claude-audit tmux-claude-session \
+tmux-claude-test tmux-git-info tmux-kill-teammate-pane tmux-pane-label \
+tmux-session-list tmux-short-path tmux-tile-session tmux-tutorial"
+
+for script in $BIN_SCRIPTS; do
+  f="$REPO_ROOT/bin/$script"
+  if [ ! -f "$f" ]; then
+    _fail "bin/$script: missing"
+    continue
+  fi
+  _pass "bin/$script: exists"
+  [ -x "$f" ] && _pass "bin/$script: executable" || _fail "bin/$script: not executable"
+  shebang=$(head -1 "$f")
+  case "$shebang" in
+    "#!/"*) _pass "bin/$script: shebang" ;;
+    *)      _fail "bin/$script: missing or invalid shebang" ;;
+  esac
+done
+
+# ── 2. bash scripts — Bash 3.2 portability ───────────────────────────────────
+section "bash scripts — Bash 3.2 portability"
+
+BASH_SCRIPTS="setup-github-ssh tmux-pane-label tmux-session-list tmux-tile-session"
+for script in $BASH_SCRIPTS; do
+  f="$REPO_ROOT/bin/$script"
+  [ -f "$f" ] || continue
+  shebang=$(head -1 "$f")
+  case "$shebang" in *zsh*) continue ;; esac
+  # Banned: mapfile, declare -A, ${var,,} lowercase expansion
+  if grep -qE '\bmapfile\b|\bdeclare[[:space:]]+-[a-zA-Z]*A|\$\{[^}]+,,[^}]*\}' "$f" 2>/dev/null; then
+    _fail "bin/$script: uses bash 3.2-incompatible feature (mapfile/declare -A/\${,,})"
+  else
+    _pass "bin/$script: bash 3.2 compatible"
+  fi
+done
+
+# ── 3. tmux/tmux.conf ────────────────────────────────────────────────────────
+section "tmux/tmux.conf — existence and key options"
+
+TMUX_CONF="$REPO_ROOT/tmux/tmux.conf"
+if [ ! -f "$TMUX_CONF" ]; then
+  _fail "tmux/tmux.conf: missing"
+else
+  _pass "tmux/tmux.conf: exists"
+
+  for opt in "prefix C-a" "mouse on" "history-limit" "escape-time 0" \
+             "base-index 1" "renumber-windows on" "allow-passthrough" \
+             "pane-border-lines heavy" "copy-pipe" "status-position"; do
+    grep -q "$opt" "$TMUX_CONF" \
+      && _pass "tmux.conf: $opt" \
+      || _fail "tmux.conf: missing '$opt'"
+  done
+
+  # Script references in tmux.conf
+  section "tmux/tmux.conf — bin/ script wiring"
+  for script in tmux-short-path tmux-git-info tmux-claude-session tmux-tile-session; do
+    grep -q "$script" "$TMUX_CONF" \
+      && _pass "tmux.conf: references $script" \
+      || _fail "tmux.conf: does not reference $script"
+    [ -f "$REPO_ROOT/bin/$script" ] \
+      && _pass "wiring: bin/$script exists" \
+      || _fail "wiring: bin/$script missing (referenced in tmux.conf)"
+  done
+fi
+
+# ── 4. claude/ ───────────────────────────────────────────────────────────────
+section "claude/ — files and config"
+
+for f in "claude/CLAUDE.md" "claude/settings.json" "claude/statusline-command.sh" \
+         "claude/rules/deterministic-execution-protocol.md" \
+         "claude/commands/pre-commit.md" "claude/commands/tmux-help.md"; do
+  [ -f "$REPO_ROOT/$f" ] && _pass "$f: exists" || _fail "$f: missing"
+done
+
+f="$REPO_ROOT/claude/statusline-command.sh"
+[ -f "$f" ] && { [ -x "$f" ] && _pass "claude/statusline-command.sh: executable" \
+                              || _fail "claude/statusline-command.sh: not executable"; }
+
+# Validate settings.json is well-formed JSON
+if command -v python3 >/dev/null 2>&1; then
+  python3 -c "import json,sys; json.load(open('$REPO_ROOT/claude/settings.json'))" 2>/dev/null \
+    && _pass "claude/settings.json: valid JSON" \
+    || _fail "claude/settings.json: invalid JSON"
+fi
+
+# Outstanding context: README claims tmux-kill-teammate-pane is wired to SubagentStop
+if grep -q "SubagentStop\|tmux-kill-teammate-pane" "$REPO_ROOT/claude/settings.json" 2>/dev/null; then
+  _pass "claude/settings.json: tmux-kill-teammate-pane SubagentStop hook wired"
+else
+  _warn "tmux-kill-teammate-pane: not wired to SubagentStop in settings.json (README claims it is — unresolved open question)"
+fi
+
+# ── 5. ghostty/ ──────────────────────────────────────────────────────────────
+section "ghostty/ — config and themes"
+
+GHOSTTY_CONF="$REPO_ROOT/ghostty/config"
+[ -f "$GHOSTTY_CONF" ] && _pass "ghostty/config: exists" || _fail "ghostty/config: missing"
+[ -d "$REPO_ROOT/ghostty/themes" ] && _pass "ghostty/themes/: exists" || _fail "ghostty/themes/: missing"
+
+if [ -f "$GHOSTTY_CONF" ]; then
+  grep -q "^font-family" "$GHOSTTY_CONF" \
+    && _pass "ghostty/config: font-family set" \
+    || _fail "ghostty/config: font-family not set"
+  grep -q "^theme" "$GHOSTTY_CONF" \
+    && _pass "ghostty/config: theme set" \
+    || _fail "ghostty/config: theme not set"
+fi
+
+# Each theme referenced by install.sh must exist in ghostty/themes/
+for theme in "claude-code" "claude-code-light" "claude-quiet" "Green CRT"; do
+  [ -f "$REPO_ROOT/ghostty/themes/$theme" ] \
+    && _pass "ghostty/themes/$theme: exists" \
+    || _fail "ghostty/themes/$theme: missing"
+done
+
+# ── 6. iterm/ ────────────────────────────────────────────────────────────────
+section "iterm/ — color presets and dynamic profiles"
+
+for f in "iterm/apple-classic.itermcolors" "iterm/claude-classic.itermcolors" \
+         "iterm/claude-quiet.itermcolors"; do
+  [ -f "$REPO_ROOT/$f" ] && _pass "$f: exists" || _fail "$f: missing"
+done
+
+for f in "iterm/dynamic-profiles/apple-classic.json" \
+         "iterm/dynamic-profiles/claude-classic.json" \
+         "iterm/dynamic-profiles/claude-quiet.json"; do
+  [ -f "$REPO_ROOT/$f" ] && _pass "$f: exists" || _fail "$f: missing"
+done
+
+# ── 7. install.sh ────────────────────────────────────────────────────────────
+section "install.sh — existence and target coverage"
+
+INSTALL="$REPO_ROOT/install.sh"
+if [ ! -f "$INSTALL" ]; then
+  _fail "install.sh: missing"
+else
+  _pass "install.sh: exists"
+  [ -x "$INSTALL" ] && _pass "install.sh: executable" || _fail "install.sh: not executable"
+  for target in "Brewfile" "tmux.conf" "zshrc" "gitconfig" "vimrc" \
+                "statusline-command.sh" "settings.json" "CLAUDE.md"; do
+    grep -q "$target" "$INSTALL" \
+      && _pass "install.sh: references $target" \
+      || _fail "install.sh: does not reference $target"
+  done
+fi
+
+# ── 8. README.md ─────────────────────────────────────────────────────────────
+section "README.md — existence and script coverage"
+
+README="$REPO_ROOT/README.md"
+if [ ! -f "$README" ]; then
+  _fail "README.md: missing"
+else
+  _pass "README.md: exists"
+  for script in $BIN_SCRIPTS; do
+    grep -q "$script" "$README" \
+      && _pass "README.md: mentions $script" \
+      || _warn "README.md: does not mention $script"
+  done
+fi
+
+# ── 9. Brewfile ──────────────────────────────────────────────────────────────
+section "Brewfile — existence and key packages"
+
+BREWFILE="$REPO_ROOT/Brewfile"
+if [ ! -f "$BREWFILE" ]; then
+  _fail "Brewfile: missing"
+else
+  _pass "Brewfile: exists"
+  for pkg in "tmux" "fzf" "jq" "ghostty" "bat" "ripgrep" "git-delta"; do
+    grep -q "\"$pkg\"" "$BREWFILE" \
+      && _pass "Brewfile: $pkg listed" \
+      || _warn "Brewfile: $pkg not listed"
+  done
+fi
+
+# ── 10. Other root files ──────────────────────────────────────────────────────
+section "root dotfiles — supporting files"
+
+for f in ".env.template" ".gitignore" "git/gitconfig" "git/gitignore_global" \
+         "zsh/zshrc" "zsh/p10k.zsh" "vim/vimrc" "macos/defaults.sh"; do
+  [ -f "$REPO_ROOT/$f" ] && _pass "$f: exists" || _fail "$f: missing"
+done
+
+# ── Summary ──────────────────────────────────────────────────────────────────
+printf "\n%d PASS / %d WARN / %d FAIL\n" "$_pass" "$_warn" "$_fail"
+[ "$_fail" -eq 0 ]
