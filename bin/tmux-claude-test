@@ -151,6 +151,24 @@ else
   _fail "pane-label: git repo produced empty output"
 fi
 
+# Git repo on a named branch -> output includes branch name and repo basename
+_trepo=$(mktemp -d)
+git -C "$_trepo" init -q 2>/dev/null
+git -C "$_trepo" config user.email "test@ci.local" 2>/dev/null
+git -C "$_trepo" config user.name "CI" 2>/dev/null
+git -C "$_trepo" commit --allow-empty -q -m "init" 2>/dev/null
+git -C "$_trepo" checkout -q -b "my-feature-branch" 2>/dev/null
+actual=$(bash "$BIN/tmux-pane-label" "$_trepo")
+assert_contains "pane-label: named branch appears in output" "my-feature-branch" "$actual"
+assert_contains "pane-label: repo basename appears in output" "$(basename "$_trepo")" "$actual"
+
+# Long branch name (>35 chars) -> truncated with "..."
+LONG_BR="feature/very-long-branch-name-exceeds-35-characters-limit"
+git -C "$_trepo" checkout -q -b "$LONG_BR" 2>/dev/null
+actual=$(bash "$BIN/tmux-pane-label" "$_trepo")
+assert_contains "pane-label: long branch truncated with '...'" "..." "$actual"
+rm -rf "$_trepo"
+
 # ── tmux-git-info ─────────────────────────────────────────────────────────────
 section "tmux-git-info"
 
