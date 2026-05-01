@@ -4,7 +4,10 @@ p="${1/#$HOME/~}"
 
 # For worktree paths, just show "wt:<name>"
 if [[ "$p" == */.worktrees/* ]]; then
-  wtname="${p##*/}"
+  # Extract the worktree name (first component after .worktrees/).
+  # ${p##*/} would give the innermost dir (wrong when cwd is inside the worktree).
+  remainder="${p##*/.worktrees/}"
+  wtname="${remainder%%/*}"
   (( ${#wtname} > 18 )) && wtname="${wtname:0:15}…"
   echo "wt:${wtname}"
   return
