@@ -1,0 +1,325 @@
+#!/usr/bin/env bash
+# tmux-claude-audit — living spec: verify shipped tools, config wiring, and conventions
+# Usage: bash bin/tmux-claude-audit
+# Outputs PASS / WARN / FAIL per check; exits 1 if any FAILs.
+#
+# Some checks require a live tmux server and are SKIP-ped in CI.
+# Add a check here whenever you ship a new bin/ script or tmux.conf wiring.
+
+set -uo pipefail
+
+PASS=0; WARN=0; FAIL=0
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+_pass() { printf "PASS  %s\n" "$1"; PASS=$((PASS+1)); }
+_warn() { printf "WARN  %s\n" "$1"; WARN=$((WARN+1)); }
+_fail() { printf "FAIL  %s\n" "$1"; FAIL=$((FAIL+1)); }
+_skip() { printf "SKIP  %s\n" "$1"; }
+
+section() { printf "\n── %s ──\n" "$1"; }
+
+# ── 1. Bin script inventory ──────────────────────────────────────────────────
+section "Bin scripts — existence and permissions"
+
+BIN_SCRIPTS="
+claude-dev
+setup-github-ssh
+tmux-claude-audit
+tmux-claude-session
+tmux-git-info
+tmux-kill-teammate-pane
+tmux-pane-label
+tmux-session-list
+tmux-short-path
+tmux-tile-session
+tmux-tutorial
+"
+
+for script in $BIN_SCRIPTS; do
+  path="$REPO_DIR/bin/$script"
+  if [ -f "$path" ]; then
+    _pass "bin/$script: exists"
+  else
+    _fail "bin/$script: missing"
+    continue
+  fi
+  if [ -x "$path" ]; then
+    _pass "bin/$script: executable"
+  else
+    _fail "bin/$script: not executable (run: chmod +x bin/$script)"
+  fi
+done
+
+# ── 2. Shebang validation ────────────────────────────────────────────────────
+section "Shebangs"
+
+for script in $BIN_SCRIPTS; do
+  path="$REPO_DIR/bin/$script"
+  [ -f "$path" ] || continue
+  shebang=$(head -1 "$path")
+  case "$shebang" in
+    "#!/bin/zsh"|"#!/usr/bin/env bash"|"#!/bin/bash")
+      _pass "bin/$script: shebang OK ($shebang)"
+      ;;
+    *)
+      _fail "bin/$script: unexpected shebang: $shebang"
+      ;;
+  esac
+done
+
+# ── 3. Bash 3.2 portability (bash scripts only) ──────────────────────────────
+section "Bash 3.2 portability"
+
+BASH_SCRIPTS="tmux-pane-label tmux-session-list tmux-tile-session setup-github-ssh"
+
+for script in $BASH_SCRIPTS; do
+  path="$REPO_DIR/bin/$script"
+  [ -f "$path" ] || continue
+
+  shebang=$(head -1 "$path")
+  case "$shebang" in *bash*) ;; *) continue ;; esac
+
+  if grep -qE '(^|[[:space:]])(mapfile|readarray)[[:space:]]' "$path"; then
+    _fail "bin/$script: uses mapfile/readarray (bash 4+ only)"
+  else
+    _pass "bin/$script: no mapfile/readarray"
+  fi
+
+  if grep -qE 'declare[[:space:]]+-A' "$path"; then
+    _fail "bin/$script: uses declare -A (associative array, bash 4+ only)"
+  else
+    _pass "bin/$script: no declare -A"
+  fi
+
+  if grep -qE '\$\{[a-zA-Z_][a-zA-Z0-9_]*(,,|;;|\^\^)\}' "$path"; then
+    _fail "bin/$script: uses case-conversion \${v,,}/\${v^^} (bash 4+ only)"
+  else
+    _pass "bin/$script: no case-conversion operators"
+  fi
+done
+
+# ── 4. tmux.conf settings ────────────────────────────────────────────────────
+section "tmux.conf settings"
+
+TMUX_CONF="$REPO_DIR/tmux/tmux.conf"
+if [ -f "$TMUX_CONF" ]; then
+  _pass "tmux/tmux.conf: exists"
+else
+  _fail "tmux/tmux.conf: missing"
+fi
+
+if grep -q 'escape-time 0' "$TMUX_CONF"; then
+  _pass "tmux.conf: escape-time=0 (vim/Claude Code compatible)"
+else
+  _warn "tmux.conf: escape-time not set to 0 (causes escape key lag in vim)"
+fi
+
+if grep -q 'allow-passthrough on' "$TMUX_CONF"; then
+  _pass "tmux.conf: allow-passthrough=on (required for Claude Code cursor and clipboard)"
+else
+  _fail "tmux.conf: allow-passthrough missing — Claude Code cursor and clipboard will break"
+fi
+
+if grep -q 'mouse on' "$TMUX_CONF"; then
+  _pass "tmux.conf: mouse=on"
+else
+  _warn "tmux.conf: mouse not enabled by default"
+fi
+
+if grep -qE 'history-limit[[:space:]]+[0-9]+' "$TMUX_CONF"; then
+  limit=$(grep -oE 'history-limit [0-9]+' "$TMUX_CONF" | awk '{print $2}')
+  if [ "$limit" -ge 10000 ]; then
+    _pass "tmux.conf: history-limit=$limit (adequate for Claude Code output)"
+  else
+    _warn "tmux.conf: history-limit=$limit (< 10000 may truncate long Claude Code output)"
+  fi
+else
+  _warn "tmux.conf: history-limit not set"
+fi
+
+if grep -q 'prefix C-a' "$TMUX_CONF"; then
+  _pass "tmux.conf: prefix=C-a (documented in README)"
+else
+  _warn "tmux.conf: prefix not C-a — README key bindings will be wrong"
+fi
+
+if grep -q 'base-index 1' "$TMUX_CONF"; then
+  _pass "tmux.conf: base-index=1 (windows start at 1)"
+else
+  _warn "tmux.conf: base-index not 1"
+fi
+
+if grep -q 'renumber-windows on' "$TMUX_CONF"; then
+  _pass "tmux.conf: renumber-windows=on"
+else
+  _warn "tmux.conf: renumber-windows not enabled (gaps appear after closing windows)"
+fi
+
+# ── 5. tmux.conf → bin/ wiring ───────────────────────────────────────────────
+section "tmux.conf → bin/ wiring"
+
+# Scripts referenced in status-right (status bar)
+for ref in tmux-short-path tmux-git-info tmux-claude-session; do
+  if grep -q "$ref" "$TMUX_CONF"; then
+    _pass "tmux.conf: $ref referenced in status bar"
+    if [ -f "$REPO_DIR/bin/$ref" ]; then
+      _pass "tmux.conf → bin/$ref: target exists"
+    else
+      _fail "tmux.conf → bin/$ref: target missing (status bar will show errors)"
+    fi
+  else
+    _warn "tmux.conf: $ref not in status bar"
+  fi
+done
+
+# tmux-tile-session wired to bind E
+if grep -q 'tmux-tile-session' "$TMUX_CONF"; then
+  _pass "tmux.conf: tmux-tile-session bound (Ctrl-a E)"
+  if [ -f "$REPO_DIR/bin/tmux-tile-session" ]; then
+    _pass "tmux.conf → bin/tmux-tile-session: target exists"
+  else
+    _fail "tmux.conf → bin/tmux-tile-session: target missing"
+  fi
+else
+  _fail "tmux.conf: tmux-tile-session not bound"
+fi
+
+# tmux-session-list: shipped but tmux.conf uses built-in #{S:...} instead
+if grep -q 'tmux-session-list' "$TMUX_CONF"; then
+  _pass "tmux.conf: tmux-session-list wired"
+else
+  _warn "tmux-session-list: not referenced in tmux.conf (status-left uses built-in #{S:...} — intentional?)"
+fi
+
+# ── 6. Config file inventory ─────────────────────────────────────────────────
+section "Config files"
+
+CONFIG_FILES="
+ghostty/config
+ghostty/themes/claude-code
+ghostty/themes/claude-code-light
+tmux/tmux.conf
+zsh/zshrc
+vim/vimrc
+git/gitconfig
+git/gitignore_global
+install.sh
+Brewfile
+README.md
+"
+
+for f in $CONFIG_FILES; do
+  if [ -f "$REPO_DIR/$f" ]; then
+    _pass "$f: exists"
+  else
+    _fail "$f: missing"
+  fi
+done
+
+# ── 7. install.sh wiring ─────────────────────────────────────────────────────
+section "install.sh"
+
+INSTALL="$REPO_DIR/install.sh"
+if [ -f "$INSTALL" ]; then
+  _pass "install.sh: exists"
+  [ -x "$INSTALL" ] && _pass "install.sh: executable" || _fail "install.sh: not executable"
+
+  for ref in tmux/tmux.conf ghostty/config zsh/zshrc vim/vimrc git/gitconfig; do
+    if grep -q "$ref" "$INSTALL"; then
+      _pass "install.sh: references $ref"
+    else
+      _warn "install.sh: does not reference $ref"
+    fi
+  done
+
+  # bin/* bulk-linked to ~/bin/
+  if grep -q '"$DOTFILES"/bin/' "$INSTALL"; then
+    _pass "install.sh: bulk-links bin/ to ~/bin/"
+  else
+    _warn "install.sh: no bin/ bulk-link found (new scripts won't be installed)"
+  fi
+else
+  _fail "install.sh: missing"
+fi
+
+# ── 8. README.md coverage ────────────────────────────────────────────────────
+section "README.md coverage"
+
+README="$REPO_DIR/README.md"
+if [ -f "$README" ]; then
+  _pass "README.md: exists"
+  for script in $BIN_SCRIPTS; do
+    if grep -q "$script" "$README"; then
+      _pass "README.md: documents $script"
+    else
+      _warn "README.md: $script not mentioned"
+    fi
+  done
+else
+  _fail "README.md: missing"
+fi
+
+# ── 9. Known gaps (expected WARNs — tracked open questions) ──────────────────
+section "Known gaps"
+
+# tmux-kill-teammate-pane: README says auto-clean on SubagentStop, hook not wired
+# Owner has not decided whether to wire or drop the README claim (see PR notes)
+if grep -q 'tmux-kill-teammate-pane' "$TMUX_CONF" 2>/dev/null; then
+  _pass "tmux-kill-teammate-pane: wired in tmux.conf"
+else
+  _warn "tmux-kill-teammate-pane: not wired to SubagentStop hook (doc/impl skew — open question)"
+fi
+
+# tmux-session-list uses hardcoded hex colors, inconsistent with ANSI palette in tmux.conf
+if grep -qE '(fg|bg)=#[0-9A-Fa-f]{6}' "$REPO_DIR/bin/tmux-session-list" 2>/dev/null; then
+  _warn "tmux-session-list: hardcoded hex colors won't adapt to terminal theme (tmux.conf uses ANSI palette)"
+else
+  _pass "tmux-session-list: no hardcoded hex colors"
+fi
+
+# Companion test suite
+if [ -f "$REPO_DIR/bin/tmux-claude-test" ]; then
+  _pass "bin/tmux-claude-test: regression test suite exists"
+else
+  _warn "bin/tmux-claude-test: missing — add regression tests for bin/ scripts (follow-up)"
+fi
+
+# ── 10. Ghostty config ───────────────────────────────────────────────────────
+section "Ghostty"
+
+GHOSTTY="$REPO_DIR/ghostty/config"
+if [ -f "$GHOSTTY" ]; then
+  grep -q 'font-family' "$GHOSTTY"     && _pass "ghostty/config: font-family set"     || _warn "ghostty/config: no font-family"
+  grep -q 'shell-integration' "$GHOSTTY" && _pass "ghostty/config: shell-integration set" || _warn "ghostty/config: shell-integration not set"
+  grep -q 'scrollback-limit' "$GHOSTTY"  && _pass "ghostty/config: scrollback-limit set"  || _warn "ghostty/config: scrollback-limit not set"
+fi
+
+# ── 11. Live tmux (skip if no server) ────────────────────────────────────────
+section "Live tmux (requires running server)"
+
+if [ -z "${TMUX:-}" ]; then
+  _skip "Not inside tmux — live server checks skipped (expected in CI)"
+else
+  tmux_ver=$(tmux -V | grep -oE '[0-9]+\.[0-9]+' | head -1)
+  tmux_major=$(echo "$tmux_ver" | cut -d. -f1)
+  if [ "$tmux_major" -ge 3 ]; then
+    _pass "tmux: version $tmux_ver (>= 3.0 required for pane-border-lines heavy)"
+  else
+    _warn "tmux: version $tmux_ver (< 3.0 — pane-border-lines heavy will not render)"
+  fi
+
+  pt=$(tmux show-option -gqv allow-passthrough 2>/dev/null)
+  if [ "$pt" = "on" ]; then
+    _pass "tmux server: allow-passthrough=on"
+  else
+    _warn "tmux server: allow-passthrough='$pt' (should be on — may affect Claude Code cursor)"
+  fi
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+printf "\n%s\n" "────────────────────────────────────────────────"
+printf "PASS %d  WARN %d  FAIL %d\n" "$PASS" "$WARN" "$FAIL"
+printf "%s\n" "────────────────────────────────────────────────"
+
+[ "$FAIL" -gt 0 ] && exit 1
+exit 0

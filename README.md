@@ -77,6 +77,7 @@ dotfiles/
 │   ├── tmux-session-list       # Multi-session status-left renderer
 │   ├── tmux-short-path         # Abbreviated path display (worktree-aware)
 │   ├── tmux-tile-session       # Toggle all windows into tiled panes and back
+│   ├── tmux-claude-audit       # Living spec — verify all wiring, shebangs, and conventions
 │   └── tmux-tutorial           # Interactive walkthrough of the full setup
 └── README.md
 ```
