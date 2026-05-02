@@ -45,3 +45,17 @@ func TestBranchPoints(t *testing.T) {
 		t.Errorf("BranchPoints = %v, want [a-1]", got)
 	}
 }
+
+func TestLineage(t *testing.T) {
+	tr, _ := Load("testdata/one-branch.jsonl")
+	got := tr.Lineage("u-2b")
+	if len(got) != 3 {
+		t.Fatalf("Lineage len = %d, want 3", len(got))
+	}
+	want := []string{"u-1", "a-1", "u-2b"}
+	for i, m := range got {
+		if m.UUID != want[i] {
+			t.Errorf("Lineage[%d].UUID = %q, want %q", i, m.UUID, want[i])
+		}
+	}
+}
