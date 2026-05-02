@@ -163,16 +163,26 @@ bind M display-popup -E -w 90% -h 90% "cc-rich --merge-into #{pane_id}"
 | `[4]` Quote to buffer (F4) | Append message text + citation header to `~/.claude/buffer.md`. Popup stays open. | "Save this thought, no spawning yet" |
 | Worktree fork (F3) | Opt-in checkbox in F1 dialog: F1 + `git worktree add` first | "Try a fix without polluting my main worktree" |
 
-### Open implementation question (verified during iter-1)
+### F1 mechanics (resolved by Task 1.1 spike, commit `d1ad3ec`)
 
-`claude --resume <sid>` with a synthesized session id (prefix-copy of an existing JSONL) may or may not be accepted by Claude Code. If it rejects unknown session ids, F1 falls back to F2 + a synthetic preamble:
+**Spike result: FAIL.** Claude Code v2.1.126 rejects synthesized session ids — dropping a JSONL file into `~/.claude/projects/<dir>/` does not register a session. The session index is internal.
+
+**Decided implementation:** F1 builds a seed file containing a synthesized preamble + the last-N context messages as blockquotes, then dispatches `cc-replay-shim <seed>` in a new tmux window:
 
 ```
-// continuing from msg <uuid>; prior context summary:
-<last-3-msgs-summarized>
+// continuing from session <orig-sid> : msg <msgUUID>
+// prior context (last N turns):
+
+> <user msg N-2>
+
+> <assistant msg N-1>
+
+> <user msg N>
+
+Continue from there.
 ```
 
-The user-visible behavior of "click [1] → new window with that history" is preserved either way.
+The user-visible behavior of "click [1] → new window that picks up where you left off" is preserved through the preamble. The new session does not inherit token usage or actual conversation state, but it has enough context to reason about the prior thread.
 
 ## Merge feature (v1 quote-and-cite)
 
@@ -271,7 +281,7 @@ Future v2: a `Merge & Send` button that auto-injects the buffer as the next prom
 | Branch point with 5+ children | List view in left pane (no graph); sort by mtime desc |
 | Glamour renders mermaid as code (it can't draw) | v1 ships as code; v2 could spawn `mmdc` to render PNG via kitty graphics |
 | Two `cc-rich` popups open simultaneously | Independent processes; each has its own watcher; no shared state |
-| F1 spike fails | Fallback to F2 + synthetic preamble (see Open implementation question above) |
+| F1 spike result (resolved) | F1 uses cc-replay-shim with synthesized preamble; see "F1 mechanics" above |
 | Enterprise sandbox blocks `tmux new-window` from popup | Surfaces as the "tmux failed" error. User adds an allow rule. |
 
 ## Repo layout
@@ -364,7 +374,7 @@ You can change Glamour styling without touching `actions`. You can change F1's m
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| F1 spike fails on Claude Code's session-id validation | Medium — F1 collapses to F2-with-preamble | Spike-test in iter-1; fallback path already designed |
+| F1 spike resolved (Task 1.1 commit d1ad3ec) | Confirmed — F1 uses cc-replay-shim with synthesized preamble | n/a; design locked |
 | Enterprise sandbox blocks `tmux new-window` from popup | Medium — fork actions fail with clear error | Documented; user adds permission rule once |
 | Bubble Tea's mouse handling conflicts with tmux's mouse forwarding inside popups | Low — keyboard fallback always works | Test on iter-1; provide `--no-mouse` opt-out |
 | 50k+ message sessions slow to render | Low — lazy-render ceiling | Already designed: last 200 turns + lazy hydration |
@@ -387,7 +397,7 @@ The feature is shippable when:
 
 The implementation plan should sequence:
 
-1. **Spike**: verify F1's prefix-copy approach against Claude Code's session-id validation. If fails, lock in F2-with-preamble fallback for F1.
+1. **Spike (DONE — Task 1.1 commit d1ad3ec, FAIL):** F1 uses cc-replay-shim with synthesized preamble; the prefix-copy + `claude --resume` path is dead.
 2. **`sessiontree` package** (data layer; no TUI dependency)
 3. **`actions` package with mock Runner** (side-effect layer; no TUI dependency)
 4. **`cmd/cc-rich/main.go` minimal — just resolves session, prints to stdout** (no TUI yet; integration check)
