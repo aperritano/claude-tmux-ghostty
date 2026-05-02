@@ -90,7 +90,7 @@ section "Helper scripts (~/bin)"
 # README documenting the script suite
 if [[ -r "$HOME/dev/dotfiles/bin/README.md" ]]; then emit PASS "bin/README.md (documentation)"
 else emit WARN "bin/README.md" "missing — scripts undocumented"; fi
-for s in claude-tmux claude-sessions-list claude-search claude-grep claude-worktrees claude-prune-worktrees claude-tail claude-today claude-touched claude-stats claude-dirty claude-export claude-pin claude-running claude-jump cc-attention cc-config-sync cc-burn-rate cc-lock cc-lock-pre-hook cc-lock-stop-hook cc-brain-sync tmux-claude-state tmux-claude-resurrect-restore tmux-claude-prune tmux-claude-test tmux-window-cell tmux-save-dot tmux-cell-daemon tmux-fleet-count tmux-mute-indicator tmux-resurrect-housekeep tmux-git-info tmux-claude-session tmux-tile-session tmux-pane-header tmux-burn-segment cc-rich-shim cc-replay-shim; do
+for s in claude-tmux claude-sessions-list claude-search claude-grep claude-worktrees claude-prune-worktrees claude-tail claude-today claude-touched claude-stats claude-dirty claude-export claude-pin claude-running claude-jump cc-attention cc-config-sync cc-burn-rate cc-lock cc-lock-pre-hook cc-lock-stop-hook cc-brain-sync tmux-claude-state tmux-claude-resurrect-restore tmux-claude-prune tmux-claude-test tmux-window-cell tmux-save-dot tmux-cell-daemon tmux-fleet-count tmux-mute-indicator tmux-resurrect-housekeep tmux-git-info tmux-claude-session tmux-tile-session tmux-pane-header tmux-burn-segment cc-rich-shim cc-rich-sidebar cc-replay-shim; do
   if [[ -x "$HOME/bin/$s" ]]; then emit PASS "$s"
   else emit FAIL "$s" "missing or not executable"; fi
 done
@@ -163,6 +163,44 @@ else
     emit PASS "popup binds use full paths (no PATH-dependent invocations)"
   else
     emit FAIL "popup binds" "bare cc-*/claude-* command in display-popup — will fail with 'command not found':\n    ${bad_binds//$'\n'/$'\n    '}"
+  fi
+
+  # cc-rich sidebar binds (R/B/M) should call cc-rich-sidebar, not bare
+  # cc-rich. Calling cc-rich directly via run-shell would spawn it
+  # detached with no TTY and fail with "could not open a new TTY". The
+  # sidebar helper does the split-window dance which gives the new pane
+  # a proper TTY.
+  #
+  # Use live tmux state (list-keys) when a server is attached — the file
+  # may contain duplicate `bind R` lines where a later one shadows an
+  # earlier one. We care about what tmux actually does, not what the file
+  # looks like.
+  for k in R B M; do
+    if tmux info >/dev/null 2>&1; then
+      line=$(tmux list-keys -T prefix "$k" 2>/dev/null | head -1)
+    else
+      line=$(grep -E "^\s*bind ${k} " "$TMUXCONF" 2>/dev/null | tail -1)
+    fi
+    if [[ -z "$line" ]]; then
+      emit WARN "cc-rich bind $k" "not bound (expected cc-rich-sidebar)"
+    elif echo "$line" | grep -q 'cc-rich-sidebar'; then
+      emit PASS "cc-rich bind $k uses sidebar helper"
+    elif echo "$line" | grep -q 'cc-rich'; then
+      emit FAIL "cc-rich bind $k" "calls cc-rich directly — will fail without TTY; use cc-rich-sidebar"
+    else
+      emit FAIL "cc-rich bind $k" "bound to non-cc-rich command: $(echo "$line" | head -c 80)"
+    fi
+  done
+
+  # Dead-bind detector: a `bind <key>` that appears more than once in the
+  # config file gets silently shadowed by the later one. Often legitimate
+  # (e.g., a key reassigned), but the dead line should be deleted.
+  dup_binds=$(grep -E '^\s*bind [A-Za-z?] ' "$TMUXCONF" 2>/dev/null \
+                | awk '{print $2}' | sort | uniq -d)
+  if [[ -z "$dup_binds" ]]; then
+    emit PASS "no duplicate bind keys (no dead bindings)"
+  else
+    emit WARN "duplicate bind keys" "shadowed lines exist for: $(echo "$dup_binds" | tr '\n' ' ')"
   fi
 fi
 

@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# cc-rich-sidebar — toggle a cc-rich sidebar in the current tmux window.
+#
+# Replaces the prior display-popup binds. Splits the window horizontally
+# (side-by-side), runs cc-rich in the new pane, and tags the pane title with
+# @cc-rich-sidebar so a second invocation can find and close it (toggle).
+#
+# Bash 3.2 portable (macOS default). No mapfile, no associative arrays.
+#
+# Usage:
+#   cc-rich-sidebar pane <source-pane-id>     # --pane mode against given pane
+#   cc-rich-sidebar browse                    # --browse mode (no pane arg)
+#   cc-rich-sidebar merge <source-pane-id>    # --merge-into mode
+
+set -uo pipefail
+
+mode="${1:-}"
+src="${2:-}"
+
+case "$mode" in
+  pane|browse|merge) ;;
+  *)
+    echo "usage: cc-rich-sidebar pane|browse|merge [<source-pane-id>]" >&2
+    exit 2
+    ;;
+esac
+
+# Width as a tmux size spec. 35% gives readable transcript without crowding
+# the source pane. Override with CC_RICH_SIDEBAR_PCT in env if needed.
+pct="${CC_RICH_SIDEBAR_PCT:-35}"
+
+# Toggle: if a pane in this window is already tagged @cc-rich-sidebar, kill
+# it and exit (the user's second keypress means "close the sidebar").
+existing=$(tmux list-panes -F '#{pane_id} #{pane_title}' 2>/dev/null \
+             | awk '$2=="@cc-rich-sidebar" {print $1; exit}')
+if [[ -n "$existing" ]]; then
+  tmux kill-pane -t "$existing"
+  exit 0
+fi
+
+# Build the cc-rich invocation. Always full path — like the prior popup
+# binds, the spawned shell does NOT source ~/.zshrc, so ~/bin is not on
+# PATH. (See cc-rich/CLAUDE.md "Gotchas" for the history of this trap.)
+case "$mode" in
+  pane)
+    if [[ -z "$src" ]]; then
+      echo "cc-rich-sidebar pane: missing source pane id" >&2
+      exit 2
+    fi
+    cmd="$HOME/bin/cc-rich --pane $src"
+    ;;
+  browse)
+    cmd="$HOME/bin/cc-rich --browse"
+    ;;
+  merge)
+    if [[ -z "$src" ]]; then
+      echo "cc-rich-sidebar merge: missing source pane id" >&2
+      exit 2
+    fi
+    cmd="$HOME/bin/cc-rich --merge-into $src"
+    ;;
+esac
+
+# split-window: -h = horizontal split (side-by-side panes, sidebar on the
+# right). -l <pct>% sizes the new pane. -P prints the new pane id so we can
+# tag its title for toggle detection on the next invocation.
+new_pane=$(tmux split-window -h -l "${pct}%" -P -F '#{pane_id}' "$cmd")
+if [[ -n "$new_pane" ]]; then
+  tmux select-pane -t "$new_pane" -T '@cc-rich-sidebar'
+fi

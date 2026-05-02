@@ -711,6 +711,58 @@ if [[ -x "$HOME/bin/cc-rich" ]]; then
   else
     test_pass "tmux-claude-session --bare (skipped — no tmux server)"
   fi
+
+  # ── cc-rich-sidebar regression ──
+  # Helper that converts the popup binds (R/B/M) into a side-pane via
+  # split-window -h, tagged @cc-rich-sidebar so a second invocation
+  # toggles it off. Two checks:
+  #   1. Helper is present, executable, bash 3.2 syntax-clean
+  #   2. Toggle invariant: split + select-pane -T + list-panes filter
+  #      + kill-pane round-trip leaves the original pane count intact
+  if [[ -x "$HOME/bin/cc-rich-sidebar" ]]; then
+    test_pass "cc-rich-sidebar executable at ~/bin/cc-rich-sidebar"
+    if bash -n "$HOME/dev/dotfiles/bin/cc-rich-sidebar"; then
+      test_pass "cc-rich-sidebar bash syntax"
+    else
+      test_fail "cc-rich-sidebar syntax" "parse error"
+    fi
+    # Bad-arg path: must exit 2 with usage
+    if "$HOME/bin/cc-rich-sidebar" bogus >/dev/null 2>&1; then
+      test_fail "cc-rich-sidebar bad-arg" "exited 0 with bogus mode"
+    else
+      test_pass "cc-rich-sidebar bad-arg exits non-zero"
+    fi
+    # Toggle invariant — only when a tmux server is attached
+    if tmux info >/dev/null 2>&1; then
+      tw=$(tmux new-window -d -P -F '#{window_id}' -n 'cc-sb-test' 'sleep 30' 2>/dev/null)
+      if [[ -n "$tw" ]]; then
+        sp=$(tmux list-panes -t "$tw" -F '#{pane_id}' | head -1)
+        np=$(tmux split-window -t "$sp" -h -l '35%' -P -F '#{pane_id}' 'sleep 30' 2>/dev/null)
+        tmux select-pane -t "$np" -T '@cc-rich-sidebar' 2>/dev/null
+        found=$(tmux list-panes -t "$tw" -F '#{pane_id} #{pane_title}' \
+                  | awk '$2=="@cc-rich-sidebar" {print $1; exit}')
+        if [[ "$found" == "$np" ]]; then
+          test_pass "cc-rich-sidebar toggle: title-tag detection works"
+        else
+          test_fail "cc-rich-sidebar toggle detection" "tag lookup mismatch ($found vs $np)"
+        fi
+        tmux kill-pane -t "$np" 2>/dev/null
+        n=$(tmux list-panes -t "$tw" -F '#{pane_id}' 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$n" == "1" ]]; then
+          test_pass "cc-rich-sidebar toggle: kill-pane removes only sidebar"
+        else
+          test_fail "cc-rich-sidebar toggle off" "expected 1 pane left, got $n"
+        fi
+        tmux kill-window -t "$tw" 2>/dev/null
+      else
+        test_pass "cc-rich-sidebar toggle (skipped — could not create test window)"
+      fi
+    else
+      test_pass "cc-rich-sidebar toggle (skipped — no tmux server)"
+    fi
+  else
+    test_fail "cc-rich-sidebar missing" "run: ln -s ~/dev/dotfiles/bin/cc-rich-sidebar ~/bin/"
+  fi
 else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi

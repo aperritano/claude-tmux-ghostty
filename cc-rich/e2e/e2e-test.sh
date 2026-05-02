@@ -66,6 +66,12 @@ else
   fail "replay shim" "missing — should be a symlink into dotfiles/bin/"
 fi
 
+if [[ -x "$HOME/bin/cc-rich-sidebar" ]]; then
+  pass "cc-rich-sidebar toggle helper at ~/bin/cc-rich-sidebar"
+else
+  fail "sidebar helper" "missing — should be a symlink into dotfiles/bin/"
+fi
+
 # ─── Section 2: CLI surface ──────────────────────────────────────────────
 section "CLI surface"
 
@@ -160,10 +166,12 @@ if ! tmux info >/dev/null 2>&1; then
 else
   for key in R B M; do
     line=$(tmux list-keys -T prefix "$key" 2>/dev/null | head -1)
-    if echo "$line" | grep -q "cc-rich"; then
-      pass "Ctrl-a $key bound to cc-rich"
+    if echo "$line" | grep -q "cc-rich-sidebar"; then
+      pass "Ctrl-a $key bound to cc-rich-sidebar"
+    elif echo "$line" | grep -q "cc-rich"; then
+      fail "Ctrl-a $key" "still on bare cc-rich — expected sidebar helper (got: $(echo "$line" | head -c 80))"
     else
-      fail "Ctrl-a $key" "not bound to cc-rich (got: $(echo "$line" | head -c 80))"
+      fail "Ctrl-a $key" "not bound to cc-rich-sidebar (got: $(echo "$line" | head -c 80))"
     fi
   done
   # Ctrl-a Ctrl-r should still belong to tmux-resurrect (the conflict fix)

@@ -83,9 +83,9 @@ shipped via `~/dev/dotfiles/`. Run `cc-doctor` to verify all are wired.
 | `Ctrl-a n` / `N` | new tab / new session (prompts for name) |
 | `Ctrl-a Ctrl-s` | save tmux state (resurrect) |
 | `Ctrl-a Ctrl-r` | restore tmux state (resurrect) |
-| `Ctrl-a R` | cc-rich: rich popup view of the active session (with [1][2][4][m] fork buttons) |
-| `Ctrl-a B` | cc-rich: browse all known sessions |
-| `Ctrl-a M` | cc-rich: open merge composer for the active session |
+| `Ctrl-a R` | cc-rich: rich **sidebar** view of the active session (toggle — press R again to close) |
+| `Ctrl-a B` | cc-rich: browse all known sessions in sidebar (toggle) |
+| `Ctrl-a M` | cc-rich: open merge composer for the active session (sidebar, toggle) |
 | `Ctrl-a P` | toggle the per-pane top header (role + ⚠ + locks + cwd) |
 | `Ctrl-a ?` | full tmux cheat sheet |
 
