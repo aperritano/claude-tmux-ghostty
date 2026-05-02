@@ -72,20 +72,28 @@ func runPane(paneID string) {
 
 // sessionFromPane shells out to ~/bin/tmux-claude-session and parses
 // "claude:<sid>" from its output. Returns the bare sid.
+// sessionFromPane shells out to `tmux-claude-session --bare <tty>` which
+// emits the full session UUID with no decoration. (The helper's default
+// mode emits a statusline-friendly "│ claude:<truncated>" string useful
+// only for the bottom bar; --bare returns the full UUID we need for
+// transcript lookup.)
 func sessionFromPane(paneID string) (string, error) {
 	tty, err := tmuxDisplay(paneID, "#{pane_tty}")
 	if err != nil {
 		return "", err
 	}
-	out, err := exec.Command(filepath.Join(os.Getenv("HOME"), "bin", "tmux-claude-session"), tty).Output()
+	out, err := exec.Command(
+		filepath.Join(os.Getenv("HOME"), "bin", "tmux-claude-session"),
+		"--bare", tty,
+	).Output()
 	if err != nil {
 		return "", err
 	}
 	s := strings.TrimSpace(string(out))
-	if !strings.HasPrefix(s, "claude:") {
-		return "", fmt.Errorf("unexpected output: %q", s)
+	if s == "" {
+		return "", fmt.Errorf("no Claude session on tty %s", tty)
 	}
-	return strings.TrimPrefix(s, "claude:"), nil
+	return s, nil
 }
 
 func tmuxDisplay(target, format string) (string, error) {

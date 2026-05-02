@@ -1,6 +1,19 @@
 #!/bin/zsh
-# Get Claude Code session ID + active sub-agents for a given tmux pane
-# Usage: tmux-claude-session /dev/ttys006
+# Get Claude Code session ID + active sub-agents for a given tmux pane.
+#
+# Usage:
+#   tmux-claude-session /dev/ttys006          # statusline format ("│ claude:abc12345 [...]")
+#   tmux-claude-session --bare /dev/ttys006   # full session UUID, no decoration
+#
+# --bare mode is for programmatic consumers (cc-rich) that need the full
+# session id to look up the transcript file. Default mode preserves the
+# legacy statusline-friendly output (truncated id, leading separator).
+
+bare=0
+if [[ "$1" == "--bare" ]]; then
+  bare=1
+  shift
+fi
 
 tty="$1"
 [[ -z "$tty" ]] && exit 0
@@ -28,6 +41,13 @@ session_file=$(ls -t "$project_path"/*.jsonl 2>/dev/null | head -1)
 
 session=$(basename "$session_file" .jsonl)
 subagents_dir="${project_path}/${session}/subagents"
+
+# --bare consumers get the full UUID with no decoration; statusline gets
+# the legacy short form with a separator and (further down) sub-agent badges.
+if (( bare )); then
+  echo "$session"
+  exit 0
+fi
 
 output="│ claude:${session:0:8}"
 

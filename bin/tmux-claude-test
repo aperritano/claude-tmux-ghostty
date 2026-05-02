@@ -687,6 +687,30 @@ if [[ -x "$HOME/bin/cc-rich" ]]; then
   else
     test_pass "cc-replay-shim usage on no args"
   fi
+  # Regression: tmux-claude-session --bare must return a full UUID without
+  # the "│ claude:" decoration that the legacy/statusline mode emits.
+  # Bug history: cc-rich originally parsed the legacy output and broke
+  # because it (a) had a leading │ separator and (b) truncated the sid to
+  # 8 chars. --bare was added; cc-rich now uses --bare exclusively.
+  if tmux info >/dev/null 2>&1; then
+    own_tty=$(tmux display-message -p '#{pane_tty}' 2>/dev/null)
+    bare=$("$HOME/bin/tmux-claude-session" --bare "$own_tty" 2>/dev/null)
+    if [[ -z "$bare" ]]; then
+      # No claude on this pane — that's fine, just skip the assertion
+      test_pass "tmux-claude-session --bare runs cleanly (no claude on this tty)"
+    else
+      # When there IS output, it must be a full UUID and contain no │ or "claude:"
+      if [[ "$bare" == *"│"* || "$bare" == *"claude:"* ]]; then
+        test_fail "tmux-claude-session --bare format" "got decorated output: $bare"
+      elif [[ ${#bare} -lt 20 ]]; then
+        test_fail "tmux-claude-session --bare length" "got truncated id (len=${#bare}): $bare"
+      else
+        test_pass "tmux-claude-session --bare returns full undecorated UUID"
+      fi
+    fi
+  else
+    test_pass "tmux-claude-session --bare (skipped — no tmux server)"
+  fi
 else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
