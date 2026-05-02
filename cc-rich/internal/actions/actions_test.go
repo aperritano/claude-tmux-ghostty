@@ -160,3 +160,44 @@ func TestQuoteToBufferAppends(t *testing.T) {
 		t.Errorf("buffer missing UUIDs: %q", got)
 	}
 }
+
+func TestWriteMergeBufferFormat(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "ccm-")
+	defer os.RemoveAll(dir)
+	target := dir + "/.cc-pending-prompt"
+
+	citations := []Citation{
+		{
+			SourceSID: "branch-b",
+			MsgUUID:   "msg-x",
+			Text:      "discovered: foo is broken because bar",
+		},
+		{
+			SourceSID: "branch-b",
+			MsgUUID:   "msg-y",
+			Text:      "fix: use baz instead of bar",
+		},
+	}
+	if err := WriteMergeBuffer(target, citations); err != nil {
+		t.Fatalf("WriteMergeBuffer: %v", err)
+	}
+	body, _ := os.ReadFile(target)
+	got := string(body)
+	for _, want := range []string{
+		"branch-b", "msg-x", "msg-y",
+		"discovered: foo", "fix: use baz",
+		"> ", // blockquote prefix
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("merge buffer missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestWriteMergeBufferRejectsEmpty(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "ccm-")
+	defer os.RemoveAll(dir)
+	if err := WriteMergeBuffer(dir+"/x", nil); err == nil {
+		t.Error("expected error on empty citations, got nil")
+	}
+}
