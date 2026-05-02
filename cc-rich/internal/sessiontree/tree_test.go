@@ -59,3 +59,13 @@ func TestLineage(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadTruncated(t *testing.T) {
+	tr, err := Load("testdata/truncated.jsonl")
+	if err != nil {
+		t.Fatalf("Load returned error on truncated file: %v", err)
+	}
+	if got := len(tr.ByUUID); got != 2 {
+		t.Errorf("ByUUID len = %d, want 2 (truncated last line skipped)", got)
+	}
+}
