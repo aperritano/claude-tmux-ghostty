@@ -15,6 +15,7 @@ shipped via `~/dev/dotfiles/`. Run `cc-doctor` to verify all are wired.
 | `cs-recent [hours]` | picker filtered to last N hours (default 4) |
 | `cs-here [prefix]` | picker filtered to current project (sessions under `$PWD`) |
 | `cs-find <query>` | full-text search across all transcripts → fzf → resume |
+| `cs-grep [--here] <q>` | per-turn content search (one row per matching turn, not session) |
 | `cc-tail [<id>]` | live-tail another pane's session in formatted output |
 
 ## Worktree workflow
@@ -52,6 +53,9 @@ shipped via `~/dev/dotfiles/`. Run `cc-doctor` to verify all are wired.
 | `cc-prune` | archive sessions older than N days (dry-run default) |
 | `cc-mute [on/off]` | silence hook sounds (banner notifications still fire) |
 | `cc-test-sounds` | play all 5 hook sounds in sequence |
+| `cc-config-sync` | mirror live `~/.claude/*` + gitconfig + Brewfile into the dotfiles repo |
+| `cc-brain-sync push/pull` | encrypted (age) cold-start backup of memory + commands + rules |
+| `cc-lock acquire/release/list` | file-level coordination across the agent fleet (auto-wired via PreToolUse hook) |
 
 ## Convenience
 
@@ -82,6 +86,7 @@ shipped via `~/dev/dotfiles/`. Run `cc-doctor` to verify all are wired.
 | `Ctrl-a R` | cc-rich: rich popup view of the active session (with [1][2][4][m] fork buttons) |
 | `Ctrl-a B` | cc-rich: browse all known sessions |
 | `Ctrl-a M` | cc-rich: open merge composer for the active session |
+| `Ctrl-a P` | toggle the per-pane top header (role + ⚠ + locks + cwd) |
 | `Ctrl-a ?` | full tmux cheat sheet |
 
 ## Audio cues (default; mute via `cc-mute`)
@@ -98,6 +103,8 @@ shipped via `~/dev/dotfiles/`. Run `cc-doctor` to verify all are wired.
 
 - continuum auto-saves tmux state every 5 min
 - post-restore hook resumes Claude conversations after Mac restart
-- statusline shows: model · branch · save freshness (●/◐/○) · ctx % · agent count (◇N) · 🔇 if muted
+- **tmux statusline (user territory)**: red `burn:Nm` when any session projects <30m to context limit · git · save dot · time · 🔇 if muted · `team:N`/`◇N` for fleet
+- **tmux pane-border top header (user territory)**: `<win>.<pane> ◆ claude ⚠ 🔒N up:Nd · <branch> · <repo>` per pane (toggle: `Ctrl-a P`)
 - per-window ⚠ marker fires on Notification hook (the pane needing input), clears on Stop hook
-- tmux-cell-daemon refreshes window-status cell cache in background
+- file-level locks via PreToolUse hook (Edit|Write|MultiEdit) — second agent on the same file gets a clear deny message
+- `tmux-cell-daemon` refreshes window-status + pane-header caches every 4s

@@ -15,21 +15,29 @@ export LDFLAGS="-L/opt/homebrew/opt/xz/lib -L/opt/homebrew/opt/openssl@3/lib"
 export CPPFLAGS="-I/opt/homebrew/opt/xz/include -I/opt/homebrew/opt/openssl@3/include"
 export PKG_CONFIG_PATH="/opt/homebrew/opt/xz/lib/pkgconfig"
 
-# Enable Powerlevel10k instant prompt. Should stay close to the top of ~/.zshrc.
-if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
-  source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
-fi
-
 export ZSH="$HOME/.oh-my-zsh"
-ZSH_THEME="powerlevel10k/powerlevel10k"
+# Theme owned by Starship — leave OMZ theme empty.
+ZSH_THEME=""
 
 plugins=(
     git z sudo zsh-autosuggestions zsh-syntax-highlighting
     fzf colored-man-pages history-substring-search
 )
 
+# zsh-syntax-highlighting: skip long pastes/lines for performance.
+# Prevents the per-character highlight cost from making multi-line pastes feel
+# choppy or eat characters during bracketed-paste streams.
+ZSH_HIGHLIGHT_MAXLENGTH=300
+
+# zsh-autosuggestions: don't try to suggest mid-paste (causes char drops on
+# long pastes; the autosuggest worker can't keep up with bracketed paste).
+ZSH_AUTOSUGGEST_BUFFER_MAX_SIZE=300
+
 export FZF_BASE=/opt/homebrew/opt/fzf
 source $ZSH/oh-my-zsh.sh
+
+# Starship prompt — replaces p10k. Config at ~/.config/starship.toml.
+eval "$(starship init zsh)"
 
 # Claude Code — named tab launcher (pinned title; survives auto-titler)
 cc() {
@@ -76,6 +84,522 @@ alias py="python3"
 alias uvp="uv venv && source .venv/bin/activate"
 alias gs="git status"
 
+# Claude Code workflow shortcuts
+alias ch='claude --model haiku-4-5-20251001'   # haiku for fast/cheap questions
+alias cr='claude --resume'                     # session picker (resume past work)
+alias cc-cheap='claude --model claude-sonnet-4-6'         # sonnet (one step down from opus default, cheaper)
+alias cc-cheap-resume='claude --resume --model claude-sonnet-4-6'  # resume any session, switch to sonnet
+alias cs='~/bin/claude-tmux'                   # rich fzf picker over all sessions (works outside tmux too)
+
+# cs-recent [hours] — fzf picker filtered to sessions touched in the last N hours.
+# Default: 4 hours (post-lunch resume case). Faster than full picker when you just
+# need to resume something recent.
+cs-recent() {
+  local hours="${1:-4}"
+  local max_seconds=$((hours * 3600))
+  local sel
+  sel=$(~/bin/claude-sessions-list | awk -F'\t' -v max="$max_seconds" '
+    {
+      age = $1; n = age + 0
+      unit = substr(age, length(n) + 1)
+      if      (unit == "s") sec = n
+      else if (unit == "m") sec = n * 60
+      else if (unit == "h") sec = n * 3600
+      else if (unit == "d") sec = n * 86400
+      else                  sec = 0
+      if (sec <= max) print
+    }
+  ' | awk -F'\t' -v OFS='\t' '{ printf "%-4s\t%-32s\t%s\t%s\t%s\n", $1, $2, $3, $4, $5 }' | fzf \
+    --delimiter=$'\t' \
+    --with-nth=1,2,4 \
+    --header="recent claude sessions (last ${hours}h) — Enter to resume, Esc cancel" \
+    --reverse --no-sort --height=80% \
+    --prompt='session> ' \
+    --preview='echo "session: {3}"; echo "cwd:     {5}"; echo; echo "{4}"' \
+    --preview-window=down:4:wrap)
+
+  [[ -z "$sel" ]] && return 0
+  local cwd session
+  cwd=$(echo "$sel" | cut -f5 | sed 's/[[:space:]]*$//')
+  session=$(echo "$sel" | cut -f3 | tr -d ' ')
+  if [[ ! -d "$cwd" ]]; then
+    echo "cs-recent: cwd no longer exists: $cwd" >&2
+    return 1
+  fi
+  cd "$cwd" && claude --resume "$session"
+}
+# cs-here — fzf picker filtered to sessions whose cwd is under $PWD.
+# Useful in a project root: shows only this repo's sessions (including
+# worktrees under .worktrees/). Add an arg to filter by an explicit prefix.
+cs-here() {
+  local prefix="${1:-$PWD}"
+  local sel
+  sel=$(~/bin/claude-sessions-list | awk -F'\t' -v p="$prefix" '
+    BEGIN { plen = length(p) }
+    { if (substr($5, 1, plen) == p) print }
+  ' | awk -F'\t' -v OFS='\t' '{ printf "%-4s\t%-32s\t%s\t%s\t%s\n", $1, $2, $3, $4, $5 }' | fzf \
+    --delimiter=$'\t' \
+    --with-nth=1,2,4 \
+    --header="claude sessions under ${prefix//$HOME/\~} — Enter resume, Esc cancel" \
+    --reverse --no-sort --height=80% \
+    --prompt='here> ' \
+    --preview='echo "session: {3}"; echo "cwd:     {5}"; echo; echo "{4}"' \
+    --preview-window=down:4:wrap)
+
+  [[ -z "$sel" ]] && return 0
+  local cwd session
+  cwd=$(echo "$sel" | cut -f5 | sed 's/[[:space:]]*$//')
+  session=$(echo "$sel" | cut -f3 | tr -d ' ')
+  if [[ ! -d "$cwd" ]]; then
+    echo "cs-here: cwd no longer exists: $cwd" >&2
+    return 1
+  fi
+  cd "$cwd" && claude --resume "$session"
+}
+
+alias cc-settings='${EDITOR:-vim} ~/.claude/settings.json'
+alias cc-memory='${EDITOR:-vim} ~/.claude/projects/-Users-anthony-j-perritano/memory/MEMORY.md'
+alias cc-projects='ls -1t ~/.claude/projects/ | head -20'
+alias cc-prune='~/bin/tmux-claude-prune'       # archive old Claude sessions (dry-run by default)
+alias cc-audit='~/bin/tmux-claude-audit'       # one-shot system check across the whole stack
+alias cc-test='~/bin/tmux-claude-test'         # regression suite for ~/bin helper scripts
+
+# cc-mute — silence all Claude hook sounds (Glass/Pop/Funk/Tink/Submarine).
+# Useful during meetings or focus blocks. Visual notifications still fire.
+#   cc-mute            → toggle (default)
+#   cc-mute on         → mute
+#   cc-mute off        → unmute
+#   cc-mute status     → show state
+cc-mute() {
+  local flag="$HOME/.claude/.muted"
+  case "${1:-toggle}" in
+    on)
+      touch "$flag"
+      print -P "%F{yellow}🔇 hooks muted%f"
+      ;;
+    off)
+      rm -f "$flag"
+      print -P "%F{green}🔊 hooks unmuted%f"
+      ;;
+    status)
+      if [[ -f "$flag" ]]; then
+        print -P "%F{yellow}🔇 muted%f"
+      else
+        print -P "%F{green}🔊 unmuted%f"
+      fi
+      ;;
+    toggle|"")
+      if [[ -f "$flag" ]]; then
+        rm -f "$flag"
+        print -P "%F{green}🔊 hooks unmuted%f"
+      else
+        touch "$flag"
+        print -P "%F{yellow}🔇 hooks muted%f"
+      fi
+      ;;
+    *)
+      echo "usage: cc-mute [on|off|status|toggle]" >&2
+      return 1
+      ;;
+  esac
+}
+
+# cc-doctor — full health check: audit (wiring) + test (runtime) + fix (auto-resolve).
+# Three-step: each step's summary is collected so you see the whole picture in one screen.
+cc-doctor() {
+  print -P "%F{cyan}%B═══ cc-doctor: full health check ═══%b%f"
+  print
+
+  print -P "%F{yellow}%B▸ audit — configuration wiring%b%f"
+  ~/bin/tmux-claude-audit --quiet 2>&1 | tail -3 | sed 's/^/  /'
+  print
+
+  print -P "%F{yellow}%B▸ test — runtime correctness%b%f"
+  ~/bin/tmux-claude-test 2>&1 | tail -3 | sed 's/^/  /'
+  print
+
+  print -P "%F{yellow}%B▸ fix — auto-resolve fixable warns%b%f"
+  cc-fix 2>&1 | grep -vE "^── (cc-fix|re-running)" | sed 's/^/  /'
+}
+
+# cc-fix — auto-resolve the auto-resolvable WARNs from cc-audit.
+# Currently handles: stale continuum save (forces an immediate save).
+# Doesn't touch destructive things (won't auto-commit dotfiles).
+cc-fix() {
+  print -P "%F{cyan}── cc-fix: auto-resolve fixable warns ──%f"
+  local fixed=0
+
+  # 1. Stale continuum save → force one
+  local last="$HOME/.tmux/resurrect/last"
+  if [[ -L "$last" ]]; then
+    local resolved age_sec
+    resolved=$(readlink "$last")
+    age_sec=$(( $(date +%s) - $(stat -f %m "$HOME/.tmux/resurrect/$resolved" 2>/dev/null || echo 0) ))
+    if [[ $age_sec -gt 360 ]] && tmux info >/dev/null 2>&1; then
+      tmux run-shell '~/.tmux/plugins/tmux-resurrect/scripts/save.sh' >/dev/null 2>&1
+      print -P "  %F{green}✓%f forced continuum save (was $((age_sec/60))m old)"
+      fixed=$((fixed+1))
+    fi
+  fi
+
+  # 2. Dotfiles uncommitted — surface but don't auto-commit (CLAUDE.md says not to)
+  local DOTS="$HOME/dev/dotfiles"
+  if [[ -d "$DOTS/.git" ]]; then
+    local porcelain
+    porcelain=$(git -C "$DOTS" status --porcelain 2>/dev/null)
+    if [[ -n "$porcelain" ]]; then
+      local count
+      count=$(printf '%s\n' "$porcelain" | wc -l | awk '{print $1}')
+      print -P "  %F{yellow}!%f dotfiles has $count uncommitted entries — skipped (run 'git -C ~/dev/dotfiles status' to inspect)"
+    fi
+  fi
+
+  if [[ $fixed -eq 0 ]]; then
+    print -P "  %F{8}nothing to fix automatically.%f"
+  fi
+  print -P "%F{cyan}── re-running audit ──%f"
+  ~/bin/tmux-claude-audit --quiet 2>&1 | tail -3
+}
+
+# cc-help — fzf-searchable cheat sheet for every Claude/tmux/save-stack command.
+# Type to filter, Enter to print the command (so it goes into your zsh history
+# for re-execution). Esc to dismiss without action.
+cc-help() {
+  local entries=(
+    "ch|claude --model haiku-4-5-20251001|fast/cheap one-off questions"
+    "cc-cheap|claude --model sonnet-4-6|sonnet session (one step down from opus default; cheaper; opt-in)"
+    "cc-cheap-resume|claude --resume --model sonnet-4-6|resume any session but switch to sonnet"
+    "cr|claude --resume|claude's built-in session picker"
+    "cs|claude-tmux|rich fzf picker over all sessions, with previews"
+    "cs-recent [h]|recent-sessions picker|fzf only sessions in last N hours (default 4)"
+    "cs-find <q>|claude-search → fzf|full-text search across all transcripts (1.1GB archive)"
+    "cw <branch>|worktree+claude launcher|create-or-attach worktree, open claude in tmux window"
+    "cw-go|fzf existing worktree picker|jump to existing worktree (or switch to its tmux window if open)"
+    "cw-list|claude-worktrees|table of all worktrees + claude activity per worktree"
+    "cw-prune|claude-prune-worktrees|classify worktrees: DIRTY/MERGED/STALE/ACTIVE; safe removal"
+    "cc-dirty|fast dirty-worktree scan|which worktrees have uncommitted changes (end-of-day check)"
+    "cc-status|system dashboard|hooks/save-stack/worktrees/audit in one screen"
+    "cc-audit|tmux-claude-audit|60-check system verifier (catches drift, missing scripts)"
+    "cc-test|tmux-claude-test|regression suite for the helper script stack (14+ tests)"
+    "cc-doctor|full health check|audit + test + fix in one screen"
+    "cc-mute|hook audio toggle|on/off/status/toggle (silence sounds for meetings)"
+    "cc-fix|auto-resolve warns|forces continuum save when stale; surfaces dotfiles uncommitted"
+    "cc-test-sounds|hook audio test|play Glass/Pop/Funk/Tink in sequence to verify wiring"
+    "cc-prune|tmux-claude-prune|archive old Claude session transcripts (dry-run default)"
+    "cc-settings|edit ~/.claude/settings.json|open in \$EDITOR"
+    "cc-memory|edit MEMORY.md|open auto-memory index in \$EDITOR"
+    "cc-projects|recent projects|ls most-recent ~/.claude/projects/ entries"
+    "tmux-claude-health|save-stack status|continuum freshness, sidecar entries, total sessions"
+    "cc-tail [<id>]|claude-tail|live-tail another pane's claude transcript with formatted output"
+    "cc-today|claude-today|standup-prep summary of today's sessions grouped by project"
+    "cc-yesterday|claude-today --yesterday|standup-prep summary of yesterday only"
+    "cc-touched|claude-touched|files claude edited today, ranked by edit frequency"
+    "cc-stats|claude-stats|token usage today: input/output/cache hit rate, top sessions"
+    "cc-export <id>|claude-export|render session as markdown (--no-tools, -o file)"
+    "cc-pin <id>|claude-pin|protect a session from prune (--list, --unpin)"
+    "cc-running|claude-running|show all currently-active Claude panes (lead + agents) across tmux"
+    "cc-jump [substr]|claude-jump|fzf-jump to any running Claude pane (auto-selects on unique substr)"
+    "cs-here [prefix]|cs-here function|fzf picker filtered to sessions under \$PWD (or arg) — defaults to current project"
+    "cs-grep [--here] <query>|claude-grep|content-level search: one row per matching TURN (vs cs-find = one per session)"
+    "cc-rich|cc-rich --pane \$TMUX_PANE|rich popup view of THIS pane's session (also Ctrl-a R)"
+    "cc-rich --browse|cc-rich --browse|browse all known sessions in a popup picker (also Ctrl-a B)"
+    "cc-rich --merge-into <pane>|cc-rich merge composer|pull citations from a sibling branch into the current session (also Ctrl-a M)"
+    "cc-config-sync|sync ~/.claude/* → repo|mirror live config + gitconfig + Brewfile into ~/dev/dotfiles (--push to GitHub)"
+    "cc-brain-sync push/pull|encrypted memory backup|tar+age the cold-start essentials (memory/commands/rules); see push/pull/list"
+    "cc-lock acquire/release/list|file-level coordination|prevent two agents editing the same file (auto-wired via PreToolUse hook)"
+    "cc-attention set/clear/list|per-pane attention flag|sets ⚠ on the window cell when Notification fires; auto via hooks"
+    "cc-burn-rate <transcript> <max>|tokens/min predictor|prints \"Nm\" when projected < 30m to context limit; called from tmux-burn-segment"
+    "Ctrl-a g|tmux: claude-tmux popup|fzf session picker in 90% width popup"
+    "Ctrl-a a|tmux: cc-jump popup|fzf-jump to any RUNNING Claude pane"
+    "Ctrl-a h|tmux: cc-status popup|system health dashboard in 70% popup"
+    "Ctrl-a R|tmux: cc-rich popup|rich popup view of active pane's session (with [1][2][4][m] fork buttons)"
+    "Ctrl-a B|tmux: cc-rich browse|browse all known sessions"
+    "Ctrl-a M|tmux: cc-rich merge|merge composer for active pane's session"
+    "Ctrl-a P|tmux: toggle pane header|toggle pane-border-status (top header) on/off"
+    "Ctrl-a c|tmux: new claude pane|split current window, run claude"
+    "Ctrl-a C|tmux: claude dev layout|new window: claude (65%) + shell (35%)"
+    "Ctrl-a Ctrl-s|tmux: save state|tmux-resurrect manual save"
+    "Ctrl-a Ctrl-r|tmux: restore state|tmux-resurrect manual restore"
+    "Ctrl-a n|tmux: new tab/window|inherits cwd"
+    "Ctrl-a N|tmux: new session|prompts for name"
+    "Ctrl-a ?|tmux: cheat sheet|popup with all keybinds"
+  )
+  local sel
+  sel=$(printf '%s\n' "${entries[@]}" | fzf \
+    --delimiter='|' \
+    --with-nth=1,3 \
+    --header='claude/tmux commands — Enter to put on prompt, Esc to dismiss' \
+    --reverse \
+    --no-sort \
+    --height=100% \
+    --prompt='cmd> ' \
+    --preview='printf "%-15s %s\n%-15s %s\n%-15s %s" "command:" {1} "expands:" {2} "purpose:" {3}' \
+    --preview-window=down:4:wrap)
+  [[ -z "$sel" ]] && return 0
+  local cmd
+  cmd=$(echo "$sel" | cut -d'|' -f1)
+  print -z "$cmd"  # print -z places into the zsh edit buffer for review
+}
+
+# cc-status — single-screen dashboard for the Claude+tmux+ghostty stack.
+# Composes: settings/hooks summary, tmux-claude-save freshness, worktree
+# stats (if in a repo), full audit count.
+cc-status() {
+  print -P "%F{cyan}%B═══ Claude Code System Status ═══%b%f"
+  echo ""
+
+  print -P "%F{yellow}%B▸ Settings + Hooks%b%f"
+  python3 - <<'PY' 2>/dev/null
+import json, os
+try:
+    d = json.load(open(os.path.expanduser("~/.claude/settings.json")))
+    hooks = d.get("hooks", {})
+    print(f"  hooks:                {len(hooks)}/4 events configured ({', '.join(sorted(hooks.keys()))})")
+    print(f"  notif channel:        {d.get('preferredNotifChannel', '?')}")
+    print(f"  file checkpointing:   {d.get('fileCheckpointingEnabled', False)}")
+    print(f"  terminal progress:    {d.get('terminalProgressBarEnabled', False)}")
+    print(f"  show turn duration:   {d.get('showTurnDuration', False)}")
+    print(f"  thinking summaries:   {d.get('showThinkingSummaries', False)}")
+    addl = d.get("permissions", {}).get("additionalDirectories", [])
+    print(f"  additional dirs:      {len(addl)} configured")
+except Exception as e:
+    print(f"  ERROR: {e}")
+PY
+  echo ""
+
+  print -P "%F{yellow}%B▸ tmux-claude-save Stack%b%f"
+  if tmux info >/dev/null 2>&1; then
+    tmux-claude-health 2>/dev/null | grep -v "^── " | sed 's/^/  /'
+  else
+    echo "  (no tmux server attached)"
+  fi
+  echo ""
+
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    print -P "%F{yellow}%B▸ Worktrees (current repo)%b%f"
+    ~/bin/claude-worktrees 2>/dev/null | tail -1 | sed 's/^/  /'
+    echo ""
+  fi
+
+  print -P "%F{yellow}%B▸ Full Audit%b%f"
+  ~/bin/tmux-claude-audit --quiet 2>&1 | tail -1 | sed 's/^/  /'
+}
+
+# cc-test-sounds — verify all 4 Claude hook sounds play. Useful to confirm
+# audio is wired correctly without waiting for an actual hook to fire.
+cc-test-sounds() {
+  printf '%b\n' '\033[36m── Claude hook sounds ──\033[0m'
+  printf '  %-15s %s\n' 'Notification:' 'Glass.aiff (needs your attention)'
+  afplay /System/Library/Sounds/Glass.aiff & wait
+  sleep 0.4
+  printf '  %-15s %s\n' 'Stop:' 'Pop.aiff (turn complete)'
+  afplay /System/Library/Sounds/Pop.aiff & wait
+  sleep 0.4
+  printf '  %-15s %s\n' 'StopFailure:' 'Funk.aiff (turn errored)'
+  afplay /System/Library/Sounds/Funk.aiff & wait
+  sleep 0.4
+  printf '  %-15s %s\n' 'PreCompact:' 'Tink.aiff (compaction warning)'
+  afplay /System/Library/Sounds/Tink.aiff & wait
+  sleep 0.4
+  printf '  %-15s %s\n' 'SubagentStop:' 'Submarine.aiff @30% (teammate finished)'
+  afplay -v 0.3 /System/Library/Sounds/Submarine.aiff & wait
+  printf '%b\n' '\033[32mDone — if you heard 5 distinct sounds, hook audio is wired.\033[0m'
+}
+
+alias cw-list='~/bin/claude-worktrees'         # list worktrees + age + claude session activity
+
+alias cc-dirty='~/bin/claude-dirty'            # quick scan of worktrees with uncommitted changes
+alias cw-prune='~/bin/claude-prune-worktrees'  # classify worktrees + remove merged/stale (dry-run by default)
+alias cc-tail='~/bin/claude-tail'              # live-tail another pane's claude transcript
+alias cc-today='~/bin/claude-today'            # summary of today's claude work, grouped by project
+alias cc-yesterday='~/bin/claude-today --yesterday'  # standup-prep version
+alias cc-touched='~/bin/claude-touched'        # files Claude edited today, ranked by frequency
+alias cc-stats='~/bin/claude-stats'            # token usage stats today (input/output/cache hit rate)
+alias cc-export='~/bin/claude-export'          # render a session as readable markdown (sharing, archiving)
+alias cc-pin='~/bin/claude-pin'                # protect a session from prune (--list, --unpin)
+alias cc-running='~/bin/claude-running'        # show all currently-active Claude panes (lead + agents)
+alias cc-jump='~/bin/claude-jump'              # fzf-jump to any running Claude pane (cc-jump [substr])
+
+# cw-go — fzf-jump into an existing worktree (no creation).
+# Inside tmux: switches to existing window if one is named after the branch,
+# otherwise opens a new window in the worktree's path.
+# Outside tmux: cd into the worktree.
+cw-go() {
+  local toplevel main_repo
+  toplevel=$(git rev-parse --show-toplevel 2>/dev/null) || {
+    echo "cw-go: not in a git repo" >&2
+    return 1
+  }
+  case "$toplevel" in
+    */.worktrees/*)        main_repo="${toplevel%%/.worktrees/*}" ;;
+    */.claude/worktrees/*) main_repo="${toplevel%%/.claude/worktrees/*}" ;;
+    *)                     main_repo="$toplevel" ;;
+  esac
+
+  local sel
+  sel=$(git -C "$main_repo" worktree list --porcelain | awk '
+    /^worktree / { wt=$2; branch=""; next }
+    /^branch /   { sub(/refs\/heads\//, "", $2); branch=$2; next }
+    /^$/         { if (wt) print wt"\t"branch; wt=""; branch="" }
+    END          { if (wt) print wt"\t"branch }
+  ' | awk -F'\t' -v main="$main_repo" '$1 != main && $2 != ""' | fzf \
+      --delimiter=$'\t' \
+      --with-nth=2,1 \
+      --reverse \
+      --height=60% \
+      --prompt='wt> ' \
+      --header="select worktree to jump to (branch · path)")
+
+  [[ -z "$sel" ]] && return 0
+  local wt branch
+  wt=$(echo "$sel" | cut -f1)
+  branch=$(echo "$sel" | cut -f2)
+
+  if [[ -n "$TMUX" ]]; then
+    # If a tmux window with this branch's name already exists, switch to it.
+    local existing
+    existing=$(tmux list-windows -F '#{window_name}' 2>/dev/null | grep -F -x "$branch" | head -1)
+    if [[ -n "$existing" ]]; then
+      tmux select-window -t "$existing"
+      print -P "%F{green}→%f switched to existing window: $branch"
+    else
+      tmux new-window -c "$wt" -n "$branch"
+      print -P "%F{green}✓%f opened new window in $wt"
+    fi
+  else
+    cd "$wt"
+    print -P "%F{green}→%f $wt"
+  fi
+}
+
+# cw <branch> [name] — make/find a git worktree, open Claude in it.
+# - In tmux: opens a new window named <name|branch>, cd to worktree, runs claude.
+# - Outside tmux: cd + claude.
+# - Existing branch: creates worktree tracking it.
+# - New branch: creates both branch + worktree.
+# - Always resolves to the MAIN repo even if invoked from inside a worktree.
+cw() {
+  if [[ $# -eq 0 ]]; then
+    echo "usage: cw <branch> [window-name]" >&2
+    return 1
+  fi
+  local branch="$1"
+  local name="${2:-$branch}"
+
+  local toplevel
+  toplevel=$(git rev-parse --show-toplevel 2>/dev/null) || {
+    echo "cw: not in a git repo" >&2
+    return 1
+  }
+
+  # Resolve main repo (strip .worktrees/<wt>/ if invoked inside one).
+  local main_repo
+  if [[ "$toplevel" == *"/.worktrees/"* ]]; then
+    main_repo="${toplevel%%/.worktrees/*}"
+  else
+    main_repo="$toplevel"
+  fi
+
+  local wt_path="$main_repo/.worktrees/$branch"
+
+  if [[ ! -d "$wt_path" ]]; then
+    if git -C "$main_repo" show-ref --verify --quiet "refs/heads/$branch"; then
+      git -C "$main_repo" worktree add "$wt_path" "$branch" || return 1
+    else
+      git -C "$main_repo" worktree add -b "$branch" "$wt_path" || return 1
+    fi
+    print -P "%F{green}✓%f worktree created: $wt_path"
+  else
+    print -P "%F{cyan}→%f worktree already exists: $wt_path"
+  fi
+
+  if [[ -n "$TMUX" ]]; then
+    tmux new-window -c "$wt_path" -n "$name" "claude"
+  else
+    cd "$wt_path" && claude
+  fi
+}
+# Picks one → cd to its project + claude --resume <session-id>.
+# cs-grep — content-level search across transcripts (one row per matching TURN).
+# Where cs-find returns one row per session, cs-grep returns one row per turn,
+# so you can scan WHICH turn matched, not just which session. --here scopes
+# to sessions whose cwd is under $PWD.
+cs-grep() {
+  if [[ $# -eq 0 ]]; then
+    echo "usage: cs-grep [--here] <query>" >&2
+    return 1
+  fi
+  local sel
+  sel=$(~/bin/claude-grep "$@" 2>&1 | fzf \
+    --delimiter=$'\t' \
+    --with-nth=1,2,4 \
+    --reverse --no-sort --height=100% \
+    --preview='echo session: {3}; echo cwd:     {5}; echo; echo {4}' \
+    --preview-window=down:6:wrap \
+    --header="claude-grep: $* — Enter to resume that session, Esc to cancel")
+  [[ -z "$sel" ]] && return 0
+  local cwd session
+  cwd=$(echo "$sel" | cut -f5 | sed 's/[[:space:]]*$//')
+  session=$(echo "$sel" | cut -f3 | tr -d ' ')
+  if [[ ! -d "$cwd" ]]; then
+    echo "cs-grep: cwd no longer exists: $cwd" >&2
+    return 1
+  fi
+  cd "$cwd" && claude --resume "$session"
+}
+
+cs-find() {
+  if [[ $# -eq 0 ]]; then
+    echo "usage: cs-find <query>" >&2
+    return 1
+  fi
+  local sel
+  sel=$(~/bin/claude-search "$@" 2>&1 | fzf \
+    --delimiter=$'\t' \
+    --with-nth=1,2,4 \
+    --reverse --no-sort --height=100% \
+    --preview='echo session: {3}; echo cwd:     {5}; echo; echo {4}' \
+    --preview-window=down:5:wrap \
+    --header="claude-search: $* — Enter to resume, Esc to cancel")
+  [[ -z "$sel" ]] && return 0
+  local cwd session
+  cwd=$(echo "$sel" | cut -f5 | sed 's/[[:space:]]*$//')
+  session=$(echo "$sel" | cut -f3 | tr -d ' ')
+  if [[ ! -d "$cwd" ]]; then
+    echo "cs-find: cwd no longer exists: $cwd" >&2
+    return 1
+  fi
+  cd "$cwd" && claude --resume "$session"
+}
+# `cc` (named tab launcher) is defined as a function below — don't shadow it.
+
+# tmux-claude-health: one-shot status report for the tmux-claude-save stack.
+# Shows: continuum auto-save freshness, sidecar entries, recent saves, total sessions.
+tmux-claude-health() {
+  local R="$HOME/.tmux/resurrect"
+  local last_save="$R/last"
+  if [[ ! -L "$last_save" ]]; then
+    echo "no resurrect saves yet — run prefix+Ctrl-s once to seed"
+    return 1
+  fi
+  local resolved
+  resolved=$(readlink "$last_save")
+  local age_sec=$(( $(date +%s) - $(stat -f %m "$R/$resolved" 2>/dev/null || echo 0) ))
+  local age_str
+  if   [[ $age_sec -lt 60   ]]; then age_str="${age_sec}s ago"
+  elif [[ $age_sec -lt 3600 ]]; then age_str="$((age_sec/60))m ago"
+  else                               age_str="$((age_sec/3600))h ago"
+  fi
+  print -P "%F{yellow}── tmux-claude-save status ─────────────%f"
+  print -P "  last save:    %F{cyan}$resolved%f  ($age_str)"
+  print -P "  saves on disk: %F{cyan}$(ls "$R"/tmux_resurrect_*.txt 2>/dev/null | wc -l | tr -d ' ')%f"
+  print -P "  sidecar entries: %F{cyan}$(wc -l < "$R/claude-state.txt" 2>/dev/null | tr -d ' ')%f"
+  print -P "  total claude sessions on disk: %F{cyan}$(find ~/.claude/projects -name '*.jsonl' -type f 2>/dev/null | wc -l | tr -d ' ')%f"
+  local color verdict
+  if [[ $age_sec -gt 360 ]]; then color=red; verdict=STALE; else color=green; verdict=OK; fi
+  print -P "  continuum interval: %F{cyan}5m%f  (warn if > 6m: %F{${color}}${verdict}%f)"
+}
+
 # bat — syntax-highlighted cat. Uses ANSI palette so it adapts to whichever
 # iTerm profile is active. `cat` aliases to plain mode (no gutter, no paging,
 # but with colors). Use `bat <file>` directly for line numbers + paging.
@@ -102,8 +626,6 @@ npx() { nvm use default >/dev/null 2>&1; unset -f npx; npx "$@"; }
 
 export PATH="$PATH:/Applications/Visual Studio Code.app/Contents/Resources/app/bin"
 
-# To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
-[[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
 export PATH="$HOME/.local/bin:$PATH"
 
 export GOPATH=/Users/anthony.j.perritano/dev/go
