@@ -1,14 +1,13 @@
 // cc-rich/internal/sessiontree/tree.go
-// Types, constructor, and loading for the parent/child message tree.
+// Types and constructor for the parent/child message tree.
 package sessiontree
 
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
-	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -46,11 +45,26 @@ type Tree struct {
 	Roots    []string            // UUIDs with no in-tree parent
 }
 
-// New returns an empty Tree ready for population by Load (Task 2.2).
+// New returns an empty Tree.
 func New() *Tree {
 	return &Tree{
 		ByUUID:   make(map[string]*Message),
 		Children: make(map[string][]string),
+	}
+}
+
+// buildIndices populates tr.Children and tr.Roots from tr.ByUUID. Idempotent
+// — callers may invoke after merging multiple loads. Resets Children and
+// Roots first so consecutive calls don't accumulate duplicates.
+func buildIndices(t *Tree) {
+	t.Children = make(map[string][]string)
+	t.Roots = t.Roots[:0]
+	for uuid, m := range t.ByUUID {
+		if m.ParentUUID == "" || t.ByUUID[m.ParentUUID] == nil {
+			t.Roots = append(t.Roots, uuid)
+			continue
+		}
+		t.Children[m.ParentUUID] = append(t.Children[m.ParentUUID], uuid)
 	}
 }
 
@@ -80,7 +94,8 @@ type rawUsage struct {
 }
 
 // Load reads a JSONL transcript and returns a single-file Tree.
-// Unparseable lines are skipped silently.
+// Unparseable lines are skipped silently. TODO: future work — return a
+// counter or accept an io.Writer for observability of corrupt records.
 func Load(path string) (*Tree, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -134,17 +149,10 @@ func Load(path string) (*Tree, error) {
 		}
 		tr.ByUUID[m.UUID] = m
 	}
-	if err := sc.Err(); err != nil && !errors.Is(err, io.EOF) {
+	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	// Build Children + Roots once all messages are loaded.
-	for uuid, m := range tr.ByUUID {
-		if m.ParentUUID == "" || tr.ByUUID[m.ParentUUID] == nil {
-			tr.Roots = append(tr.Roots, uuid)
-			continue
-		}
-		tr.Children[m.ParentUUID] = append(tr.Children[m.ParentUUID], uuid)
-	}
+	buildIndices(tr)
 	return tr, nil
 }
 
@@ -157,17 +165,8 @@ func (t *Tree) BranchPoints() []string {
 			out = append(out, parent)
 		}
 	}
-	sortStrings(out)
+	sort.Strings(out)
 	return out
-}
-
-// sortStrings is a local copy to avoid pulling in "sort" everywhere.
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1] > s[j]; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
 }
 
 // Lineage returns the chain of messages from the earliest ancestor down to
@@ -205,13 +204,6 @@ func LoadDir(dir string) (*Tree, error) {
 			}
 		}
 	}
-	// Rebuild Children + Roots from the merged ByUUID.
-	for uuid, m := range tr.ByUUID {
-		if m.ParentUUID == "" || tr.ByUUID[m.ParentUUID] == nil {
-			tr.Roots = append(tr.Roots, uuid)
-			continue
-		}
-		tr.Children[m.ParentUUID] = append(tr.Children[m.ParentUUID], uuid)
-	}
+	buildIndices(tr)
 	return tr, nil
 }

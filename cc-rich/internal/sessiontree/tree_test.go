@@ -47,7 +47,10 @@ func TestBranchPoints(t *testing.T) {
 }
 
 func TestLineage(t *testing.T) {
-	tr, _ := Load("testdata/one-branch.jsonl")
+	tr, err := Load("testdata/one-branch.jsonl")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 	got := tr.Lineage("u-2b")
 	if len(got) != 3 {
 		t.Fatalf("Lineage len = %d, want 3", len(got))
