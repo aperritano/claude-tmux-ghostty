@@ -62,6 +62,71 @@ func readOutput(t *testing.T, tm *teatest.TestModel) string {
 	return buf.String()
 }
 
+// Markdown bodies must be rendered through Glamour so that **bold**, code
+// fences, and headings come out as ANSI-styled text. Raw markdown markers
+// (``**`` around words, leading ``# `` on headings) should NOT appear in
+// the rendered output.
+func TestConversationRendersMarkdown(t *testing.T) {
+	msgs := []*sessiontree.Message{
+		{
+			UUID:      "a-md",
+			Role:      "assistant",
+			Timestamp: time.Now(),
+			Content: []sessiontree.Block{{
+				Type: "text",
+				Text: "# Heading\n\nThis is **bold** and `inline code`.\n\n```go\nfmt.Println(\"hi\")\n```\n",
+			}},
+		},
+	}
+	m := NewConversation(msgs)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
+	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
+	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
+	got := readOutput(t, tm)
+
+	// The literal markdown markers should be gone — Glamour transforms them.
+	for _, marker := range []string{"**bold**", "# Heading"} {
+		if strings.Contains(got, marker) {
+			t.Errorf("raw markdown marker %q leaked through (Glamour not rendering)\n--\n%s",
+				marker, got)
+		}
+	}
+	// The semantic content should still be present (just styled, not stripped).
+	for _, want := range []string{"bold", "Heading", "inline code"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered output missing semantic text %q\n--\n%s", want, got)
+		}
+	}
+}
+
+// Messages with multiple Content blocks (text + tool_use + text) must all
+// be rendered, not just the first one.
+func TestConversationRendersAllContentBlocks(t *testing.T) {
+	msgs := []*sessiontree.Message{
+		{
+			UUID:      "a-multi",
+			Role:      "assistant",
+			Timestamp: time.Now(),
+			Content: []sessiontree.Block{
+				{Type: "text", Text: "First chunk."},
+				{Type: "tool_use", Text: `{"command":"ls"}`},
+				{Type: "text", Text: "Second chunk."},
+			},
+		},
+	}
+	m := NewConversation(msgs)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
+	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
+	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
+	got := readOutput(t, tm)
+	for _, want := range []string{"First chunk", "Second chunk"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing block content %q (only first block rendered?)\n--\n%s",
+				want, got)
+		}
+	}
+}
+
 func TestBranchListShowsSiblings(t *testing.T) {
 	tr, err := sessiontree.LoadDir("../sessiontree/testdata")
 	if err != nil {
