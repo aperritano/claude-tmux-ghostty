@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# cc-replay-shim — start `claude` with the contents of <seed-file> as the
+# first user prompt. Used by the F2 (replay-as-prompt) and F1 (resume +
+# branch with synthesized preamble) fork modes.
+set -uo pipefail
+
+seed="${1:-}"
+if [[ -z "$seed" || ! -r "$seed" ]]; then
+  echo "usage: cc-replay-shim <seed-file>" >&2
+  exit 2
+fi
+
+# Read the seed once, hand it to claude on stdin.
+exec claude < "$seed"
