@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 type mockRunner struct {
@@ -121,5 +122,41 @@ func TestForkValidates(t *testing.T) {
 				t.Errorf("%s: expected validation error, got nil", c.name)
 			}
 		})
+	}
+}
+
+func TestQuoteToBufferAppends(t *testing.T) {
+	dir, _ := os.MkdirTemp("", "ccq-")
+	defer os.RemoveAll(dir)
+	buf := dir + "/buffer.md"
+
+	first := QuoteEntry{
+		SessionID: "abc",
+		MsgUUID:   "u-1",
+		Timestamp: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
+		Text:      "hello",
+	}
+	if err := QuoteToBuffer(buf, first); err != nil {
+		t.Fatalf("QuoteToBuffer: %v", err)
+	}
+	second := QuoteEntry{
+		SessionID: "abc",
+		MsgUUID:   "u-2",
+		Timestamp: time.Date(2026, 5, 1, 12, 5, 0, 0, time.UTC),
+		Text:      "follow up",
+	}
+	if err := QuoteToBuffer(buf, second); err != nil {
+		t.Fatalf("QuoteToBuffer: %v", err)
+	}
+	body, err := os.ReadFile(buf)
+	if err != nil {
+		t.Fatalf("read buffer: %v", err)
+	}
+	got := string(body)
+	if !strings.Contains(got, "hello") || !strings.Contains(got, "follow up") {
+		t.Errorf("buffer missing both entries: %q", got)
+	}
+	if !strings.Contains(got, "u-1") || !strings.Contains(got, "u-2") {
+		t.Errorf("buffer missing UUIDs: %q", got)
 	}
 }
