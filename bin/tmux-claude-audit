@@ -151,6 +151,19 @@ else
   else
     emit PASS "@resurrect-processes scoped to args (no plain ~claude)"
   fi
+
+  # Popup binds must use $HOME/bin/cc-* full paths. Tmux display-popup spawns
+  # a non-interactive shell that does NOT source ~/.zshrc, so ~/bin is not on
+  # PATH. Bare "cc-rich" / "cc-jump" etc. fails with "command not found" 127
+  # and the popup flashes and disappears. Catch this before it hits the user.
+  bad_binds=$(grep -E '^\s*bind .* display-popup' "$TMUXCONF" \
+                | grep -vE '\$HOME/bin/|~/bin/' \
+                | grep -E '"cc-[a-z]+|"claude-' || true)
+  if [[ -z "$bad_binds" ]]; then
+    emit PASS "popup binds use full paths (no PATH-dependent invocations)"
+  else
+    emit FAIL "popup binds" "bare cc-*/claude-* command in display-popup — will fail with 'command not found':\n    ${bad_binds//$'\n'/$'\n    '}"
+  fi
 fi
 
 section "Continuum auto-save freshness"
