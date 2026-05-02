@@ -14,7 +14,12 @@ parts=(${(s:/:)p})
 if (( ${#parts} <= 3 )); then
   result="$p"
 else
-  result="~/…/${parts[-2]}/${parts[-1]}"
+  # Use ~/… for home paths (p starts with ~), /… for non-home absolute paths
+  if [[ "$p" == "~"* ]]; then
+    result="~/…/${parts[-2]}/${parts[-1]}"
+  else
+    result="/…/${parts[-2]}/${parts[-1]}"
+  fi
 fi
 # Hard cap at 30 chars
 (( ${#result} > 30 )) && result="${result:0:27}…"

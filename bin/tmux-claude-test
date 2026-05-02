@@ -89,6 +89,10 @@ if command -v zsh >/dev/null 2>&1; then
   # Non-home absolute path with ≤3 parts → no change
   r=$(HOME="/test/home" zsh "$script" "/usr/local")
   assert_eq "tmux-short-path: non-home short path → unchanged" "/usr/local" "$r"
+
+  # Non-home deep path → must use /… prefix, not ~/… (regression: was ~/…/c/d before fix)
+  r=$(HOME="/test/home" zsh "$script" "/tmp/a/b/c/d")
+  assert_eq "tmux-short-path: non-home deep path → /…/c/d" "/…/c/d" "$r"
 else
   skip "tmux-short-path tests: zsh not available"
 fi
