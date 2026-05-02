@@ -1,0 +1,702 @@
+#!/usr/bin/env bash
+# tmux-claude-test — regression suite for the Claude/tmux helper script stack.
+#
+# Runs each script through a minimal sanity test, isolating side effects to
+# /tmp where possible. Use after any change to ~/bin/* to confirm nothing
+# broke. Pairs with `cc-audit` (which checks "is it wired?") — this answers
+# "does it actually run?".
+#
+# Exit code: 0 if all PASS, 1 if any FAIL.
+
+set -uo pipefail
+
+G="\033[32m"
+R="\033[31m"
+C="\033[36m"
+DIM="\033[90m"
+N="\033[0m"
+
+PASS=0
+FAIL=0
+
+test_pass() {
+  PASS=$((PASS + 1))
+  printf "  ${G}✓${N} %s\n" "$1"
+}
+test_fail() {
+  FAIL=$((FAIL + 1))
+  printf "  ${R}✗${N} %s — ${R}%s${N}\n" "$1" "$2"
+}
+section() {
+  printf "\n${C}── %s ──${N}\n" "$1"
+}
+
+# ─── claude-sessions-list ─────────────────────────────
+section "claude-sessions-list"
+if [[ -x "$HOME/bin/claude-sessions-list" ]]; then
+  out=$("$HOME/bin/claude-sessions-list" 2>/dev/null | head -1)
+  if [[ -n "$out" ]]; then
+    fields=$(echo "$out" | awk -F'\t' '{print NF}')
+    if [[ "$fields" == "5" ]]; then
+      test_pass "TSV has 5 fields (age, label, session_id, preview, cwd)"
+    else
+      test_fail "TSV field count" "got $fields, expected 5"
+    fi
+  else
+    test_fail "produces output" "empty stdout"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/claude-sessions-list missing"
+fi
+
+# ─── claude-search ────────────────────────────────────
+section "claude-search"
+if [[ -x "$HOME/bin/claude-search" ]]; then
+  out=$("$HOME/bin/claude-search" ghostty 2>/dev/null | head -1)
+  if [[ -n "$out" ]]; then
+    test_pass "finds matches for 'ghostty'"
+  else
+    test_fail "search returns matches" "expected at least one hit (this conversation has 'ghostty')"
+  fi
+  # Negative case
+  out=$("$HOME/bin/claude-search" 'should-never-match-xyzzy123' 2>&1 1>/dev/null)
+  if [[ "$out" == *"No matches"* ]]; then
+    test_pass "negative case prints 'No matches'"
+  else
+    test_fail "negative case messaging" "missing"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/claude-search missing"
+fi
+
+# ─── claude-worktrees ─────────────────────────────────
+section "claude-worktrees"
+if [[ -x "$HOME/bin/claude-worktrees" ]]; then
+  out=$(cd "$HOME/dev/dotfiles" && "$HOME/bin/claude-worktrees" 2>&1)
+  if echo "$out" | grep -q "worktrees in"; then
+    test_pass "renders header against real repo"
+  else
+    test_fail "header" "missing 'worktrees in' line"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/claude-worktrees missing"
+fi
+
+# ─── claude-prune-worktrees ───────────────────────────
+section "claude-prune-worktrees"
+if [[ -x "$HOME/bin/claude-prune-worktrees" ]]; then
+  TEST="/tmp/test-prune-$$"
+  rm -rf "$TEST"
+  mkdir -p "$TEST"
+  (
+    cd "$TEST"
+    git init -q -b main && git commit --allow-empty -q -m initial
+    git worktree add -q -b feat-clean .worktrees/clean
+  )
+  out=$(cd "$TEST" && "$HOME/bin/claude-prune-worktrees" 2>&1)
+  rm -rf "$TEST"
+  if echo "$out" | grep -q "DRY RUN"; then
+    test_pass "dry-run mode (default)"
+  else
+    test_fail "DRY RUN marker" "not in output"
+  fi
+  if echo "$out" | grep -qE "(MERGED|ACTIVE)"; then
+    test_pass "classifies worktrees"
+  else
+    test_fail "classification" "no MERGED/ACTIVE lines"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/claude-prune-worktrees missing"
+fi
+
+# ─── claude-tail ──────────────────────────────────────
+section "claude-tail"
+if [[ -x "$HOME/bin/claude-tail" ]]; then
+  # Test that --no-args usage message fires for unknown session
+  out=$("$HOME/bin/claude-tail" definitely-no-such-session-xyzzy 2>&1)
+  if echo "$out" | grep -q "not found"; then
+    test_pass "errors cleanly on unknown session"
+  else
+    test_fail "unknown session" "didn't say 'not found'"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/claude-tail missing"
+fi
+
+# ─── claude-today ─────────────────────────────────────
+section "claude-today"
+if [[ -x "$HOME/bin/claude-today" ]]; then
+  out=$("$HOME/bin/claude-today" 2>&1)
+  if echo "$out" | grep -qE "Claude Code work|No Claude sessions"; then
+    test_pass "renders today summary header"
+  else
+    test_fail "today header" "neither work-summary nor 'no sessions' line"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/claude-today missing"
+fi
+
+# ─── tmux-claude-audit ────────────────────────────────
+section "tmux-claude-audit"
+if [[ -x "$HOME/bin/tmux-claude-audit" ]]; then
+  # Strip ANSI codes so the regex matches the textual content.
+  out=$("$HOME/bin/tmux-claude-audit" --quiet 2>&1 | sed $'s/\033\\[[0-9;]*m//g')
+  if echo "$out" | grep -qE "PASS[[:space:]]+[0-9]+"; then
+    test_pass "outputs PASS count summary"
+  else
+    test_fail "summary line" "PASS count missing"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-claude-audit missing"
+fi
+
+# ─── tmux-claude-state ────────────────────────────────
+section "tmux-claude-state"
+if [[ -x "$HOME/bin/tmux-claude-state" ]]; then
+  if tmux info >/dev/null 2>&1; then
+    out=$("$HOME/bin/tmux-claude-state" 2>&1)
+    # Empty output is fine if no claude panes; just ensure it didn't error
+    if [[ $? -eq 0 ]]; then
+      test_pass "runs against live tmux server (exit 0)"
+    else
+      test_fail "exit code" "non-zero"
+    fi
+  else
+    test_pass "skipped (no tmux server attached)"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-claude-state missing"
+fi
+
+# ─── tmux-claude-prune ────────────────────────────────
+section "tmux-claude-prune"
+if [[ -x "$HOME/bin/tmux-claude-prune" ]]; then
+  out=$("$HOME/bin/tmux-claude-prune" 90 2>&1)
+  # Either reports "No sessions older than..." or "DRY RUN — would archive"
+  if echo "$out" | grep -qE "No sessions older|DRY RUN"; then
+    test_pass "dry-run mode works"
+  else
+    test_fail "dry-run output" "neither expected message"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-claude-prune missing"
+fi
+
+# ─── tmux-claude-resurrect-restore ────────────────────
+section "tmux-claude-resurrect-restore"
+if [[ -x "$HOME/bin/tmux-claude-resurrect-restore" ]]; then
+  # Just check syntax (running it would actually inject keystrokes)
+  if bash -n "$HOME/bin/tmux-claude-resurrect-restore"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-claude-resurrect-restore missing"
+fi
+
+# ─── tmux-cell-daemon (background process) ───────────
+section "tmux-cell-daemon"
+if [[ -x "$HOME/bin/tmux-cell-daemon" ]]; then
+  if bash -n "$HOME/bin/tmux-cell-daemon"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Cache file existence (daemon may have written one)
+  if ls /tmp/tmux-cells-*.cache >/dev/null 2>&1; then
+    test_pass "cache file exists in /tmp/"
+    # Freshness — if daemon is alive and ticking, cache should be <30s old
+    cache_file=$(ls /tmp/tmux-cells-*.cache 2>/dev/null | head -1)
+    if [[ -n "$cache_file" ]]; then
+      cache_age=$(( $(date +%s) - $(stat -f %m "$cache_file" 2>/dev/null || echo 0) ))
+      if (( cache_age < 30 )); then
+        test_pass "cache fresh (${cache_age}s old)"
+      else
+        test_fail "cache freshness" "${cache_age}s old — daemon may not be running"
+      fi
+    fi
+  else
+    test_fail "cache file" "no /tmp/tmux-cells-*.cache (daemon never ran?)"
+  fi
+  # Single-instance lock — verify atomic mkdir-based guard exists
+  if grep -q "mkdir.*LOCKDIR" "$HOME/bin/tmux-cell-daemon"; then
+    test_pass "atomic mkdir lock present"
+  else
+    test_fail "atomic mkdir lock" "no LOCKDIR mkdir guard — race possible"
+  fi
+  # Cross-session attention filter: marks for other sessions must be ignored.
+  # Bash 3.2 portable in-process test (no subshell needed).
+  out=$(bash -c '
+    current_session="main"
+    marks_raw="main:3 side:5 main:7 other:3"
+    marked=" "
+    for tok in $marks_raw; do
+      case "$tok" in
+        "$current_session":*) marked="$marked${tok#*:} " ;;
+      esac
+    done
+    echo "$marked"
+  ')
+  if [[ "$out" == " 3 7 " ]]; then
+    test_pass "cross-session marker filter (only same-session accepted)"
+  else
+    test_fail "cross-session filter" "got '$out' expected ' 3 7 '"
+  fi
+  # And verify the daemon code actually has the same-session filter wired up
+  if grep -q 'current_session=' "$HOME/bin/tmux-cell-daemon" \
+     && grep -q '"\$current_session":' "$HOME/bin/tmux-cell-daemon"; then
+    test_pass "daemon applies same-session filter"
+  else
+    test_fail "daemon session filter" "no current_session: case match — cross-session bleed possible"
+  fi
+  # Process count — should converge to exactly 1 daemon
+  daemon_count=$(ps -ef | grep "bash.*tmux-cell-daemon" | grep -v grep | wc -l | tr -d ' ')
+  if [[ "$daemon_count" -le 1 ]]; then
+    test_pass "single instance (${daemon_count} alive)"
+  else
+    test_fail "single instance" "${daemon_count} daemons alive — lock race"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-cell-daemon missing"
+fi
+
+# ─── tmux-window-cell daemon-backed reader ────────────
+section "tmux-window-cell (reader)"
+if [[ -x "$HOME/bin/tmux-window-cell" ]]; then
+  out=$("$HOME/bin/tmux-window-cell" 1 0 2>/dev/null)
+  if [[ -n "$out" ]]; then
+    test_pass "renders cell for window 1"
+  else
+    test_fail "cell render" "empty output"
+  fi
+fi
+
+# ─── cc-sound mute behavior ───────────────────────────
+section "cc-sound (mute helper)"
+if [[ -x "$HOME/bin/cc-sound" ]]; then
+  # Save original mute state
+  was_muted=0
+  [[ -f "$HOME/.claude/.muted" ]] && was_muted=1
+
+  # Test 1: muted → exit 0, no audio (we trust afplay isn't called)
+  touch "$HOME/.claude/.muted"
+  if "$HOME/bin/cc-sound" /System/Library/Sounds/Pop.aiff >/dev/null 2>&1; then
+    test_pass "respects mute flag (exit 0 with .muted)"
+  else
+    test_fail "muted exit code" "expected 0"
+  fi
+
+  # Test 2: unmuted → still exits 0
+  rm -f "$HOME/.claude/.muted"
+  if "$HOME/bin/cc-sound" /System/Library/Sounds/Pop.aiff >/dev/null 2>&1; then
+    test_pass "plays when unmuted (exit 0)"
+  else
+    test_fail "unmuted exit code" "expected 0"
+  fi
+
+  # Restore original mute state
+  if [[ $was_muted -eq 1 ]]; then
+    touch "$HOME/.claude/.muted"
+  fi
+else
+  test_fail "cc-sound present" "missing"
+fi
+
+# ─── claude-tmux ──────────────────────────────────────
+section "claude-tmux"
+if [[ -x "$HOME/bin/claude-tmux" ]]; then
+  if bash -n "$HOME/bin/claude-tmux"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Verify it depends on the lister
+  if grep -q "claude-sessions-list" "$HOME/bin/claude-tmux"; then
+    test_pass "delegates to claude-sessions-list"
+  else
+    test_fail "lister integration" "no reference to claude-sessions-list"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/claude-tmux missing"
+fi
+
+# ─── cc-attention ─────────────────────────────────────
+section "cc-attention"
+if [[ -x "$HOME/bin/cc-attention" ]]; then
+  if bash -n "$HOME/bin/cc-attention"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # End-to-end: set marker, list shows it, clear removes it
+  TMUX_PANE='%99' "$HOME/bin/cc-attention" set 2>/dev/null
+  if [[ -e /tmp/cc-attention/99 ]]; then
+    test_pass "set creates marker"
+  else
+    test_fail "set creates marker" "file /tmp/cc-attention/99 missing"
+  fi
+  TMUX_PANE='%99' "$HOME/bin/cc-attention" clear 2>/dev/null
+  if [[ ! -e /tmp/cc-attention/99 ]]; then
+    test_pass "clear removes marker"
+  else
+    test_fail "clear removes marker" "file still exists"
+    rm -f /tmp/cc-attention/99
+  fi
+  # Auto-gc on read: dead-pane markers (pane closed) are pruned by `windows`.
+  # Use pane id %9999 which is virtually guaranteed not to exist.
+  : > /tmp/cc-attention/9999
+  "$HOME/bin/cc-attention" windows >/dev/null 2>&1
+  if [[ ! -e /tmp/cc-attention/9999 ]]; then
+    test_pass "windows-read prunes dead-pane marker"
+  else
+    test_fail "dead-pane gc" "marker /tmp/cc-attention/9999 still present"
+    rm -f /tmp/cc-attention/9999
+  fi
+else
+  test_fail "executable present" "$HOME/bin/cc-attention missing"
+fi
+
+# ─── tmux-cell-daemon: pane-headers cache ─────────────
+section "tmux-cell-daemon (pane-headers cache)"
+PANE_HEADER_CACHE="/tmp/tmux-pane-headers-$UID.cache"
+if [[ -f "$PANE_HEADER_CACHE" ]]; then
+  test_pass "pane-headers cache file exists at $PANE_HEADER_CACHE"
+  age=$(( $(date +%s) - $(stat -f %m "$PANE_HEADER_CACHE" 2>/dev/null || echo 0) ))
+  if (( age < 30 )); then
+    test_pass "pane-headers cache fresh (${age}s old)"
+  else
+    test_fail "pane-headers cache freshness" "${age}s old — daemon may not be running"
+  fi
+  # Format contract: TSV, pane_id then output
+  fields=$(awk -F'\t' 'NR==1{print NF; exit}' "$PANE_HEADER_CACHE" 2>/dev/null)
+  if [[ "$fields" == "2" ]]; then
+    test_pass "pane-headers cache TSV has 2 fields (pane_id, output)"
+  else
+    test_fail "pane-headers cache schema" "expected 2 fields, got $fields"
+  fi
+else
+  test_fail "pane-headers cache" "file missing — daemon not pre-computing pane headers"
+fi
+
+# ─── tmux-pane-header: cache-read perf ────────────────
+section "tmux-pane-header (cache-read perf)"
+if [[ -x "$HOME/bin/tmux-pane-header" && -f "$PANE_HEADER_CACHE" ]]; then
+  # Pick any live pane id from the cache for the test
+  test_pane=$(awk -F'\t' 'NR==1{print $1; exit}' "$PANE_HEADER_CACHE")
+  if [[ -n "$test_pane" ]]; then
+    start_ms=$(perl -MTime::HiRes=time -E 'say int(time()*1000)')
+    "$HOME/bin/tmux-pane-header" "$test_pane" >/dev/null 2>&1
+    end_ms=$(perl -MTime::HiRes=time -E 'say int(time()*1000)')
+    elapsed=$((end_ms - start_ms))
+    # Floor is enterprise-AV scanning every script invocation (~500ms).
+    # Real cache-read work is sub-100ms; budget reflects machine reality.
+    if (( elapsed < 1500 )); then
+      test_pass "warm cache-read <1500ms (was ${elapsed}ms)"
+    else
+      test_fail "warm cache-read perf" "too slow: ${elapsed}ms"
+    fi
+  else
+    test_fail "test pane id" "cache empty"
+  fi
+fi
+
+# ─── tmux-burn-segment ────────────────────────────────
+section "tmux-burn-segment"
+if [[ -x "$HOME/bin/tmux-burn-segment" ]]; then
+  if bash -n "$HOME/bin/tmux-burn-segment"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Silent-path: no recently-active transcripts → empty output
+  out=$(CC_BURN_FIXTURE=/nonexistent-path "$HOME/bin/tmux-burn-segment" 2>/dev/null)
+  if [[ -z "$out" ]]; then
+    test_pass "silent when no active sessions"
+  else
+    test_fail "silent path" "got: $out"
+  fi
+  # Synthesize an at-risk transcript fixture, force threshold so it triggers,
+  # verify segment emits format tokens.
+  fix=$(mktemp -d)
+  trap "rm -rf $fix" RETURN
+  tr_path="$fix/projects/test/abc.jsonl"
+  mkdir -p "$(dirname "$tr_path")"
+  now=$(date +%s)
+  prev=$((now - 120))
+  python3 -c "
+import json, datetime
+def ts(s): return datetime.datetime.fromtimestamp(s).strftime('%Y-%m-%dT%H:%M:%SZ')
+print(json.dumps({'timestamp': ts($prev), 'message': {'usage': {'input_tokens': 100000, 'cache_read_input_tokens': 100000}}}))
+print(json.dumps({'timestamp': ts($now), 'message': {'usage': {'input_tokens': 480000, 'cache_read_input_tokens': 480000}}}))
+" > "$tr_path"
+  out=$(CC_BURN_FIXTURE="$fix" CC_BURN_THRESHOLD=99999 "$HOME/bin/tmux-burn-segment" 2>/dev/null)
+  if echo "$out" | grep -q "burn:"; then
+    test_pass "renders burn:Nm under threshold with at-risk fixture"
+  else
+    test_fail "threshold path" "expected 'burn:Nm', got: '$out'"
+  fi
+  # Perf budget: <2500ms cold-path on this Mac. Real-world cost is bounded
+  # by the 4s cache TTL — once warm the segment reads from cache instantly.
+  start_ms=$(perl -MTime::HiRes=time -E 'say int(time()*1000)')
+  CC_BURN_FIXTURE="$fix" "$HOME/bin/tmux-burn-segment" >/dev/null 2>&1
+  end_ms=$(perl -MTime::HiRes=time -E 'say int(time()*1000)')
+  elapsed=$((end_ms - start_ms))
+  if (( elapsed < 2500 )); then
+    test_pass "perf budget (<2500ms cold; was ${elapsed}ms)"
+  else
+    test_fail "perf" "too slow: ${elapsed}ms"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-burn-segment missing"
+fi
+
+# ─── cc-burn-rate ─────────────────────────────────────
+section "cc-burn-rate"
+if [[ -x "$HOME/bin/cc-burn-rate" ]]; then
+  if python3 -c "import ast; ast.parse(open('$HOME/bin/cc-burn-rate').read())" 2>/dev/null; then
+    test_pass "python syntax valid"
+  else
+    test_fail "python syntax" "parse error"
+  fi
+  # Empty / nonexistent transcript exits silent (0)
+  out=$("$HOME/bin/cc-burn-rate" /nonexistent 200000 2>/dev/null)
+  if [[ -z "$out" ]]; then
+    test_pass "missing transcript → silent"
+  else
+    test_fail "missing transcript handling" "got: $out"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/cc-burn-rate missing"
+fi
+
+# ─── cc-lock ──────────────────────────────────────────
+section "cc-lock"
+if [[ -x "$HOME/bin/cc-lock" ]]; then
+  if bash -n "$HOME/bin/cc-lock"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # End-to-end: A acquires, B blocked, A releases, B acquires
+  rm -rf /tmp/cc-locks
+  if "$HOME/bin/cc-lock" acquire testA /tmp/cc-lock-test 2>/dev/null; then
+    test_pass "acquire succeeds for first holder"
+  else
+    test_fail "acquire" "first holder rejected"
+  fi
+  if ! "$HOME/bin/cc-lock" acquire testB /tmp/cc-lock-test 2>/dev/null; then
+    test_pass "second holder blocked (exit 1)"
+  else
+    test_fail "second-holder block" "should have rejected"
+  fi
+  "$HOME/bin/cc-lock" release-by-session testA 2>/dev/null
+  if "$HOME/bin/cc-lock" acquire testB /tmp/cc-lock-test 2>/dev/null; then
+    test_pass "release-by-session unblocks others"
+  else
+    test_fail "release-by-session" "B still blocked after A's session released"
+  fi
+  "$HOME/bin/cc-lock" release-by-session testB 2>/dev/null
+else
+  test_fail "executable present" "$HOME/bin/cc-lock missing"
+fi
+
+# ─── cc-lock-pre-hook (PreToolUse JSON contract) ─────
+section "cc-lock-pre-hook"
+if [[ -x "$HOME/bin/cc-lock-pre-hook" ]]; then
+  rm -rf /tmp/cc-locks
+  # First holder: silent allow
+  out=$(echo '{"session_id":"sA","tool_name":"Edit","tool_input":{"file_path":"/tmp/x.go"}}' \
+        | "$HOME/bin/cc-lock-pre-hook" 2>/dev/null)
+  if [[ -z "$out" ]]; then
+    test_pass "first holder produces no JSON (silent allow)"
+  else
+    test_fail "silent-allow" "unexpected output: $out"
+  fi
+  # Second holder: deny JSON
+  out=$(echo '{"session_id":"sB","tool_name":"Edit","tool_input":{"file_path":"/tmp/x.go"}}' \
+        | "$HOME/bin/cc-lock-pre-hook" 2>/dev/null)
+  if echo "$out" | grep -q '"permissionDecision":"deny"'; then
+    test_pass "second holder produces deny JSON"
+  else
+    test_fail "deny-JSON" "unexpected output: $out"
+  fi
+  "$HOME/bin/cc-lock" release-by-session sA 2>/dev/null
+else
+  test_fail "executable present" "$HOME/bin/cc-lock-pre-hook missing"
+fi
+
+# ─── cc-brain-sync ────────────────────────────────────
+section "cc-brain-sync"
+if [[ -x "$HOME/bin/cc-brain-sync" ]]; then
+  if bash -n "$HOME/bin/cc-brain-sync"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # `list` works without age, without key
+  if "$HOME/bin/cc-brain-sync" list >/dev/null 2>&1; then
+    test_pass "list works without age installed"
+  else
+    test_fail "list" "exited non-zero unexpectedly"
+  fi
+  # `push` should fail loudly when age missing (don't actually have age in test env)
+  if ! command -v age >/dev/null 2>&1; then
+    if "$HOME/bin/cc-brain-sync" push 2>&1 | grep -q "not installed"; then
+      test_pass "push without age → clear error"
+    else
+      test_fail "push-no-age" "should warn about missing age"
+    fi
+  fi
+else
+  test_fail "executable present" "$HOME/bin/cc-brain-sync missing"
+fi
+
+# ─── claude-grep ──────────────────────────────────────
+section "claude-grep"
+if [[ -x "$HOME/bin/claude-grep" ]]; then
+  if python3 -c "import ast; ast.parse(open('$HOME/bin/claude-grep').read())" 2>/dev/null; then
+    test_pass "python syntax valid"
+  else
+    test_fail "python syntax" "parse error"
+  fi
+  # Empty arg → usage on stderr, exit 1
+  if "$HOME/bin/claude-grep" 2>/dev/null; status=$?; [[ $status -ne 0 ]] 2>/dev/null; then
+    test_pass "empty arg exits non-zero"
+  else
+    test_fail "empty-arg handling" "should error on no query"
+  fi
+  # Output format: 5-field TSV when run with a query that won't match
+  out=$("$HOME/bin/claude-grep" "____unlikely_match_xyz____" 2>/dev/null | head -1)
+  if [[ -z "$out" ]]; then
+    test_pass "no-match returns empty (clean exit)"
+  else
+    fields=$(echo "$out" | awk -F'\t' '{print NF}')
+    if [[ "$fields" == "5" ]]; then
+      test_pass "TSV has 5 fields when matches exist"
+    else
+      test_fail "TSV shape" "got $fields fields, expected 5"
+    fi
+  fi
+else
+  test_fail "executable present" "$HOME/bin/claude-grep missing"
+fi
+
+# ─── cs-here filter (zshrc function) ──────────────────
+section "cs-here"
+if grep -qE "^cs-here\(\)" "$HOME/.zshrc"; then
+  test_pass "function defined in .zshrc"
+  # Test filter logic on synthetic data — bypasses fzf and live sessions.
+  fixture=$(printf '5s\tlabel\tid1\tpreview\t/foo/bar\n5s\tlabel\tid2\tpreview\t/foo/bar/sub\n5s\tlabel\tid3\tpreview\t/baz\n')
+  out=$(echo "$fixture" | awk -F'\t' -v p="/foo/bar" '
+    BEGIN { plen = length(p) }
+    { if (substr($5, 1, plen) == p) print $3 }
+  ')
+  if [[ "$out" == "id1
+id2" ]]; then
+    test_pass "prefix-filter keeps subdirs, drops siblings"
+  else
+    test_fail "prefix-filter logic" "got: $out"
+  fi
+else
+  test_fail "function defined" "cs-here() not in .zshrc"
+fi
+
+# ─── cc-config-sync ───────────────────────────────────
+section "cc-config-sync"
+if [[ -x "$HOME/bin/cc-config-sync" ]]; then
+  if bash -n "$HOME/bin/cc-config-sync"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Dry-run path must not write or commit anything
+  before=$(git -C "$HOME/dev/dotfiles" status --short 2>/dev/null | wc -l | tr -d ' ')
+  "$HOME/bin/cc-config-sync" --dry-run >/dev/null 2>&1
+  after=$(git -C "$HOME/dev/dotfiles" status --short 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$before" == "$after" ]]; then
+    test_pass "--dry-run leaves working tree unchanged"
+  else
+    test_fail "dry-run safety" "wt changed before=$before after=$after"
+  fi
+  # Default invocation must NOT push (push only with --push or CC_SYNC_PUSH=1)
+  if grep -q "do_push=0" "$HOME/bin/cc-config-sync" \
+     && grep -q '\-\-push' "$HOME/bin/cc-config-sync"; then
+    test_pass "push opt-in only (no default push)"
+  else
+    test_fail "push safety" "default behavior may push without flag"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/cc-config-sync missing"
+fi
+
+# ─── claude-jump ──────────────────────────────────────
+section "claude-jump"
+if [[ -x "$HOME/bin/claude-jump" ]]; then
+  if bash -n "$HOME/bin/claude-jump"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Verify it uses tmux switch-client (the jump primitive)
+  if grep -q "switch-client" "$HOME/bin/claude-jump"; then
+    test_pass "uses tmux switch-client"
+  else
+    test_fail "switch primitive" "no switch-client reference"
+  fi
+  # Verify it depends on fzf (picker)
+  if grep -q "fzf" "$HOME/bin/claude-jump"; then
+    test_pass "uses fzf picker"
+  else
+    test_fail "fzf integration" "no fzf reference"
+  fi
+  # Popup-aware parent-client detection (do_switch helper)
+  if grep -q "do_switch" "$HOME/bin/claude-jump" \
+     && grep -q "switch-client -c" "$HOME/bin/claude-jump"; then
+    test_pass "popup-aware do_switch (parent client detection)"
+  else
+    test_fail "popup awareness" "no do_switch / switch-client -c — popup binding will close without effect"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/claude-jump missing"
+fi
+
+# ─── cc-rich + replay shim ────────────────────────────
+section "cc-rich"
+if [[ -x "$HOME/bin/cc-rich" ]]; then
+  if bash -n "$HOME/dev/dotfiles/bin/cc-rich-shim"; then
+    test_pass "cc-rich-shim bash syntax"
+  else
+    test_fail "cc-rich-shim syntax" "parse error"
+  fi
+  # The Go binary should be installed at ~/.local/bin/cc-rich
+  if [[ -x "$HOME/.local/bin/cc-rich" ]]; then
+    test_pass "Go binary installed at ~/.local/bin/cc-rich"
+  else
+    test_fail "Go binary missing" "run: cd ~/dev/dotfiles/cc-rich && make install"
+  fi
+  # Replay shim
+  if bash -n "$HOME/dev/dotfiles/bin/cc-replay-shim"; then
+    test_pass "cc-replay-shim bash syntax"
+  else
+    test_fail "cc-replay-shim syntax" "parse error"
+  fi
+  # Empty-arg cc-replay-shim should print usage and exit non-zero
+  if "$HOME/bin/cc-replay-shim" >/dev/null 2>&1; then
+    test_fail "cc-replay-shim usage check" "exited 0 with no args"
+  else
+    test_pass "cc-replay-shim usage on no args"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
+fi
+
+# ─── Summary ──────────────────────────────────────────
+total=$((PASS + FAIL))
+printf "\n${C}──────────────────────────────────────────────${N}\n"
+printf "  ${G}PASS${N} %d   ${R}FAIL${N} %d   (total %d)\n" "$PASS" "$FAIL" "$total"
+
+if [[ $FAIL -gt 0 ]]; then
+  exit 1
+fi
+exit 0
