@@ -9,7 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/aperritano/cc-rich/internal/sessiontree"
+	"github.com/aperritano/cc-rich/internal/view"
 )
 
 func main() {
@@ -59,15 +62,11 @@ func runPane(paneID string) {
 		fmt.Println("(empty session)")
 		return
 	}
-	for _, m := range tr.Lineage(last.UUID) {
-		preview := ""
-		if len(m.Content) > 0 {
-			preview = m.Content[0].Text
-			if len(preview) > 60 {
-				preview = preview[:60] + "…"
-			}
-		}
-		fmt.Printf("%s  %-9s  %s\n", m.UUID, m.Role, preview)
+	msgs := tr.Lineage(last.UUID)
+	p := tea.NewProgram(view.NewConversation(msgs), tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }
 
