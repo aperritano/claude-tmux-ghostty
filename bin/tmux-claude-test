@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# bin/tmux-claude-test — regression tests for bin/ scripts
+# Usage: bash bin/tmux-claude-test
+# Skips tests that require a live tmux server or zsh/jq.
+# Exit 0 = no FAILs; exit 1 = at least one FAIL.
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN_DIR="$REPO_ROOT/bin"
+CLAUDE_DIR="$REPO_ROOT/claude"
+
+PASS=0; FAIL=0; SKIP=0
+
+pass() { PASS=$((PASS+1)); printf 'PASS  %s\n' "$*"; }
+fail() { FAIL=$((FAIL+1)); printf 'FAIL  %s\n' "$*"; }
+skip() { SKIP=$((SKIP+1)); printf 'SKIP  %s\n' "$*"; }
+
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [ "$actual" = "$expected" ]; then
+    pass "$desc"
+  else
+    fail "$desc — expected: $(printf '%q' "$expected")  got: $(printf '%q' "$actual")"
+  fi
+}
+
+assert_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if printf '%s' "$haystack" | grep -qF "$needle"; then
+    pass "$desc"
+  else
+    fail "$desc — expected to contain: $needle  got: $haystack"
+  fi
+}
+
+assert_empty() {
+  local desc="$1" actual="$2"
+  if [ -z "$actual" ]; then
+    pass "$desc"
+  else
+    fail "$desc — expected empty, got: $actual"
+  fi
+}
+
+assert_exit0() {
+  local desc="$1" code="$2"
+  if [ "$code" -eq 0 ]; then
+    pass "$desc"
+  else
+    fail "$desc — expected exit 0, got: $code"
+  fi
+}
+
+assert_len_lte() {
+  local desc="$1" max="$2" actual="$3"
+  local len="${#actual}"
+  if [ "$len" -le "$max" ]; then
+    pass "$desc (len=$len)"
+  else
+    fail "$desc — expected len<=$max, got $len: $actual"
+  fi
+}
+
+# ── tmux-short-path ───────────────────────────────────────────────────────────────
+if command -v zsh >/dev/null 2>&1; then
+  script="$BIN_DIR/tmux-short-path"
+
+  # home dir alone → ~
+  r=$(HOME="/test/home" zsh "$script" "/test/home")
+  assert_eq "tmux-short-path: home → ~" "~" "$r"
+
+  # 2-component path (≤3 parts) → unchanged
+  r=$(HOME="/test/home" zsh "$script" "/test/home/a/b")
+  assert_eq "tmux-short-path: 2-part path → ~/a/b" "~/a/b" "$r"
+
+  # 4-component path → abbreviate middle
+  r=$(HOME="/test/home" zsh "$script" "/test/home/a/b/c/d")
+  assert_eq "tmux-short-path: 4-part path → ~/…/c/d" "~/…/c/d" "$r"
+
+  # Worktree path → wt:<name>
+  r=$(HOME="/test/home" zsh "$script" "/test/home/.worktrees/my-feature")
+  assert_eq "tmux-short-path: worktree path → wt:my-feature" "wt:my-feature" "$r"
+
+  # Result hard-capped at 30 chars
+  r=$(HOME="/test/home" zsh "$script" "/test/home/aaaaaaaaaa/bbbbbbbbbb/cccccccccc/dddddddddd")
+  assert_len_lte "tmux-short-path: long path capped at 30 chars" 30 "$r"
+
+  # Non-home absolute path with ≤3 parts → no change
+  r=$(HOME="/test/home" zsh "$script" "/usr/local")
+  assert_eq "tmux-short-path: non-home short path → unchanged" "/usr/local" "$r"
+else
+  skip "tmux-short-path tests: zsh not available"
+fi
+
+# ── tmux-pane-label ───────────────────────────────────────────────────────────────
+script="$BIN_DIR/tmux-pane-label"
+
+# Non-git dir falls back to directory basename
+r=$(bash "$script" /tmp 2>/dev/null); code=$?
+assert_exit0 "tmux-pane-label: non-git dir exits 0" "$code"
+assert_eq    "tmux-pane-label: non-git dir → tmp"   "tmp" "$r"
+
+# Git repo → non-empty output containing a branch name
+r=$(bash "$script" "$REPO_ROOT" 2>/dev/null)
+if [ -n "$r" ]; then
+  pass "tmux-pane-label: git repo → non-empty output"
+else
+  fail "tmux-pane-label: git repo → got empty output"
+fi
+
+# ── tmux-git-info ─────────────────────────────────────────────────────────────────
+if command -v zsh >/dev/null 2>&1; then
+  script="$BIN_DIR/tmux-git-info"
+
+  # Non-git dir → empty output and exits 0
+  r=$(zsh "$script" /tmp 2>/dev/null); code=$?
+  assert_exit0 "tmux-git-info: non-git dir exits 0" "$code"
+  assert_empty "tmux-git-info: non-git dir → empty output" "$r"
+
+  # Git repo → output starts with a space then branch characters
+  r=$(zsh "$script" "$REPO_ROOT" 2>/dev/null)
+  if printf '%s' "$r" | grep -qE '^ .+'; then
+    pass "tmux-git-info: git repo → leading-space + branch"
+  else
+    fail "tmux-git-info: git repo → unexpected output: $r"
+  fi
+else
+  skip "tmux-git-info tests: zsh not available"
+fi
+
+# ── tmux-session-list ─────────────────────────────────────────────────────────────
+script="$BIN_DIR/tmux-session-list"
+
+# Without a tmux server the for-loop is empty; script should exit 0 silently
+r=$(bash "$script" "main" 2>/dev/null); code=$?
+assert_exit0 "tmux-session-list: no server → exits 0" "$code"
+
+# ── tmux-kill-teammate-pane ───────────────────────────────────────────────────────
+script="$BIN_DIR/tmux-kill-teammate-pane"
+
+if [ -z "${TMUX:-}" ]; then
+  # Outside tmux the guard at top should exit 0 immediately
+  bash "$script" 2>/dev/null; code=$?
+  assert_exit0 "tmux-kill-teammate-pane: exits 0 outside tmux" "$code"
+else
+  skip "tmux-kill-teammate-pane: inside tmux — skipping destructive test"
+fi
+
+# ── statusline-command.sh ─────────────────────────────────────────────────────────
+statusline="$CLAUDE_DIR/statusline-command.sh"
+if command -v jq >/dev/null 2>&1; then
+  json='{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"claude-opus-4"},"context_window":{"used_percentage":42}}'
+  r=$(printf '%s' "$json" | bash "$statusline" 2>/dev/null); code=$?
+  assert_exit0 "statusline-command.sh: exits 0 on valid JSON" "$code"
+  assert_contains "statusline-command.sh: contains /tmp" "/tmp" "$r"
+  assert_contains "statusline-command.sh: contains model name" "claude-opus-4" "$r"
+  assert_contains "statusline-command.sh: contains ctx:42" "ctx:42" "$r"
+
+  # Green range (< 50%): output should differ from red range (≥ 80%)
+  json_hi='{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"m"},"context_window":{"used_percentage":85}}'
+  r_hi=$(printf '%s' "$json_hi" | bash "$statusline" 2>/dev/null)
+  assert_contains "statusline-command.sh: high ctx shows 85%" "ctx:85" "$r_hi"
+
+  # Missing fields → still exits 0 (graceful degradation)
+  printf '{}' | bash "$statusline" >/dev/null 2>&1; code=$?
+  assert_exit0 "statusline-command.sh: empty JSON exits 0" "$code"
+else
+  skip "statusline-command.sh tests: jq not available"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────────
+printf '\n── Test summary ────────────────────────────────\n'
+printf '  PASS: %d\n' "$PASS"
+printf '  FAIL: %d\n' "$FAIL"
+printf '  SKIP: %d\n' "$SKIP"
+printf '────────────────────────────────────────────────\n'
+
+[ "$FAIL" -gt 0 ] && exit 1
+exit 0

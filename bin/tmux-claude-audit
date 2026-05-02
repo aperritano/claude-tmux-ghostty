@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+# bin/tmux-claude-audit — living spec: verify all shipped tools and config wiring
+# Usage: bash bin/tmux-claude-audit [--quiet]
+# Skips checks that require a live tmux server (marks as SKIP).
+# Exit 0 = no FAILs; exit 1 = at least one FAIL.
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN_DIR="$REPO_ROOT/bin"
+TMUX_CONF="$REPO_ROOT/tmux/tmux.conf"
+CLAUDE_DIR="$REPO_ROOT/claude"
+README="$REPO_ROOT/README.md"
+
+PASS=0; WARN=0; FAIL=0; SKIP=0
+quiet=0
+[ "${1:-}" = "--quiet" ] && quiet=1
+
+pass() { PASS=$((PASS+1)); [ "$quiet" -eq 0 ] && printf 'PASS  %s\n' "$*"; }
+warn() { WARN=$((WARN+1));                        printf 'WARN  %s\n' "$*"; }
+fail() { FAIL=$((FAIL+1));                        printf 'FAIL  %s\n' "$*"; }
+skip() { SKIP=$((SKIP+1)); [ "$quiet" -eq 0 ] && printf 'SKIP  %s\n' "$*"; }
+
+# ── bin/ scripts ─────────────────────────────────────────────────────────────────
+BIN_SCRIPTS="claude-dev setup-github-ssh tmux-claude-audit tmux-claude-session
+tmux-claude-test tmux-git-info tmux-kill-teammate-pane tmux-pane-label
+tmux-session-list tmux-short-path tmux-tile-session tmux-tutorial"
+
+for script in $BIN_SCRIPTS; do
+  path="$BIN_DIR/$script"
+
+  if [ ! -f "$path" ]; then
+    fail "$script: missing from bin/"
+    continue
+  fi
+  pass "$script: exists"
+
+  if [ ! -x "$path" ]; then
+    fail "$script: not executable"
+  else
+    pass "$script: executable"
+  fi
+
+  shebang=$(head -1 "$path")
+  case "$shebang" in
+    '#!/bin/zsh'|'#!/usr/bin/env zsh')
+      pass "$script: shebang is zsh"
+      if command -v zsh >/dev/null 2>&1; then
+        if zsh -n "$path" 2>/dev/null; then
+          pass "$script: zsh -n clean"
+        else
+          fail "$script: zsh -n syntax errors"
+        fi
+      else
+        skip "$script: zsh unavailable, skipping syntax check"
+      fi
+      ;;
+    '#!/bin/bash'|'#!/usr/bin/env bash')
+      pass "$script: shebang is bash"
+      if bash -n "$path" 2>/dev/null; then
+        pass "$script: bash -n clean"
+      else
+        fail "$script: bash -n syntax errors"
+      fi
+      ;;
+    '#!/bin/sh'|'#!/usr/bin/env sh')
+      pass "$script: shebang is sh"
+      if bash -n "$path" 2>/dev/null; then
+        pass "$script: bash -n clean (sh)"
+      else
+        fail "$script: bash -n syntax errors (sh)"
+      fi
+      ;;
+    *)
+      warn "$script: unrecognised shebang: $shebang"
+      ;;
+  esac
+done
+
+# ── tmux.conf ─────────────────────────────────────────────────────────────────────
+if [ ! -f "$TMUX_CONF" ]; then
+  fail "tmux/tmux.conf: missing"
+else
+  pass "tmux/tmux.conf: exists"
+
+  # Scripts called from status-right or run-shell must exist in bin/
+  for ref in $(grep -oE '~/bin/[a-zA-Z_-]+' "$TMUX_CONF" | sed 's|~/bin/||' | sort -u); do
+    if [ -f "$BIN_DIR/$ref" ]; then
+      pass "tmux.conf: ~/bin/$ref exists"
+    else
+      fail "tmux.conf: ~/bin/$ref referenced but missing from bin/"
+    fi
+  done
+  for ref in $(grep -oE '\$HOME/bin/[a-zA-Z_-]+' "$TMUX_CONF" | sed 's|\$HOME/bin/||' | sort -u); do
+    if [ -f "$BIN_DIR/$ref" ]; then
+      pass "tmux.conf: \$HOME/bin/$ref exists"
+    else
+      fail "tmux.conf: \$HOME/bin/$ref referenced but missing from bin/"
+    fi
+  done
+
+  # Key options reachable via grep (no live tmux needed)
+  grep -q 'set -g prefix C-a' "$TMUX_CONF"       && pass "tmux.conf: prefix is C-a"        || fail "tmux.conf: prefix C-a not set"
+  grep -q 'set -sg escape-time 0' "$TMUX_CONF"   && pass "tmux.conf: escape-time 0"         || warn "tmux.conf: escape-time 0 not set"
+  grep -q 'set -g base-index 1' "$TMUX_CONF"     && pass "tmux.conf: base-index 1"          || warn "tmux.conf: base-index 1 not set"
+  grep -q 'set -g mouse on' "$TMUX_CONF"         && pass "tmux.conf: mouse on"              || warn "tmux.conf: mouse not enabled"
+  grep -q 'history-limit' "$TMUX_CONF"           && pass "tmux.conf: history-limit set"     || warn "tmux.conf: history-limit not set"
+  grep -q 'allow-passthrough on' "$TMUX_CONF"    && pass "tmux.conf: allow-passthrough on"  || warn "tmux.conf: allow-passthrough not set"
+  grep -q 'status-interval' "$TMUX_CONF"         && pass "tmux.conf: status-interval set"   || warn "tmux.conf: status-interval not set"
+  grep -q 'renumber-windows on' "$TMUX_CONF"     && pass "tmux.conf: renumber-windows on"   || warn "tmux.conf: renumber-windows on not set"
+fi
+
+# ── Claude statusline command ─────────────────────────────────────────────────────
+statusline="$CLAUDE_DIR/statusline-command.sh"
+if [ -f "$statusline" ]; then
+  pass "claude/statusline-command.sh: exists"
+  if [ -x "$statusline" ]; then
+    pass "claude/statusline-command.sh: executable"
+  else
+    warn "claude/statusline-command.sh: not executable (run: chmod +x $statusline)"
+  fi
+  if bash -n "$statusline" 2>/dev/null; then
+    pass "claude/statusline-command.sh: bash -n clean"
+  else
+    fail "claude/statusline-command.sh: bash -n syntax errors"
+  fi
+else
+  fail "claude/statusline-command.sh: missing"
+fi
+
+# ── CLAUDE.md ─────────────────────────────────────────────────────────────────────
+if [ -f "$CLAUDE_DIR/CLAUDE.md" ]; then
+  pass "claude/CLAUDE.md: exists"
+else
+  warn "claude/CLAUDE.md: missing"
+fi
+
+# ── DEP rules file ────────────────────────────────────────────────────────────────
+dep="$CLAUDE_DIR/rules/deterministic-execution-protocol.md"
+if [ -f "$dep" ]; then
+  pass "claude/rules/deterministic-execution-protocol.md: exists"
+else
+  warn "claude/rules/deterministic-execution-protocol.md: missing"
+fi
+
+# ── Other dotfile layers ───────────────────────────────────────────────────────────
+for f in \
+  "tmux/tmux.conf" \
+  "zsh/zshrc" \
+  "vim/vimrc" \
+  "git/gitconfig" \
+  "git/gitignore_global" \
+  "ghostty/config" \
+  "macos/defaults.sh" \
+  "install.sh" \
+  "Brewfile"
+do
+  if [ -f "$REPO_ROOT/$f" ]; then
+    pass "$f: exists"
+  else
+    warn "$f: missing"
+  fi
+done
+if [ -x "$REPO_ROOT/install.sh" ]; then
+  pass "install.sh: executable"
+else
+  warn "install.sh: not executable"
+fi
+if [ -x "$REPO_ROOT/macos/defaults.sh" ]; then
+  pass "macos/defaults.sh: executable"
+else
+  warn "macos/defaults.sh: not executable"
+fi
+
+# ── README mentions all bin/ scripts ─────────────────────────────────────────────
+if [ -f "$README" ]; then
+  for script in $BIN_SCRIPTS; do
+    if grep -q "$script" "$README"; then
+      pass "README.md: mentions $script"
+    else
+      warn "README.md: does not mention $script"
+    fi
+  done
+else
+  warn "README.md: missing"
+fi
+
+# ── Known doc-impl skew ───────────────────────────────────────────────────────────
+# README claims tmux-kill-teammate-pane auto-cleans panes on SubagentStop,
+# but the hook is not wired in claude/settings.json. Open question: wire it
+# or drop the README claim. Surfaced here as WARN until owner decides.
+settings="$CLAUDE_DIR/settings.json"
+if [ -f "$settings" ]; then
+  if grep -q "tmux-kill-teammate-pane" "$settings"; then
+    pass "claude/settings.json: tmux-kill-teammate-pane hook wired"
+  else
+    warn "claude/settings.json: tmux-kill-teammate-pane NOT in hooks — README claims auto-clean but hook not wired (open question)"
+  fi
+fi
+
+# tmux-session-list exists but is not referenced in tmux.conf (dead code)
+if ! grep -q "tmux-session-list" "$TMUX_CONF" 2>/dev/null; then
+  warn "tmux-session-list: not referenced in tmux.conf — may be dead code (status-left uses built-in #{S:} format)"
+fi
+
+# ── Live-tmux checks (skipped outside tmux) ──────────────────────────────────────
+if [ -z "${TMUX:-}" ]; then
+  skip "live-tmux: not in tmux session — skipping runtime checks"
+else
+  prefix=$(tmux show-options -g prefix 2>/dev/null | awk '{print $2}')
+  if [ "$prefix" = "C-a" ]; then
+    pass "live-tmux: prefix is C-a"
+  else
+    warn "live-tmux: prefix is '$prefix' (expected C-a)"
+  fi
+
+  interval=$(tmux show-options -g status-interval 2>/dev/null | awk '{print $2}')
+  if [ "$interval" = "5" ]; then
+    pass "live-tmux: status-interval is 5"
+  else
+    warn "live-tmux: status-interval is '$interval' (expected 5)"
+  fi
+
+  escape_time=$(tmux show-options -g escape-time 2>/dev/null | awk '{print $2}')
+  if [ "$escape_time" = "0" ]; then
+    pass "live-tmux: escape-time is 0"
+  else
+    warn "live-tmux: escape-time is '$escape_time' (expected 0)"
+  fi
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────────
+printf '\n── Audit summary ──────────────────────────────\n'
+printf '  PASS: %d\n' "$PASS"
+printf '  WARN: %d\n' "$WARN"
+printf '  FAIL: %d\n' "$FAIL"
+printf '  SKIP: %d\n' "$SKIP"
+printf '────────────────────────────────────────────────\n'
+
+[ "$FAIL" -gt 0 ] && exit 1
+exit 0
