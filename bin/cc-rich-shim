@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# cc-rich-shim — exec the Go binary at ~/.local/bin/cc-rich.
+# Lives in dotfiles so the audit's helper-script-presence loop sees
+# ~/bin/cc-rich (consistent with cc-jump, cc-attention, etc.).
+set -uo pipefail
+exec "$HOME/.local/bin/cc-rich" "$@"
