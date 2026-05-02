@@ -69,3 +69,24 @@ func TestLoadTruncated(t *testing.T) {
 		t.Errorf("ByUUID len = %d, want 2 (truncated last line skipped)", got)
 	}
 }
+
+func TestLoadDir(t *testing.T) {
+	tr, err := LoadDir("testdata")
+	if err != nil {
+		t.Fatalf("LoadDir: %v", err)
+	}
+	// Unique UUIDs across all fixtures (duplicates deduplicated):
+	// linear: u-1, a-1, u-2 (3)
+	// one-branch adds: u-2a, u-2b (2 new; u-1, a-1 are dupes)
+	// multi-branch adds: u-3 (1 new; a-1 is a dupe)
+	// truncated: u-1, a-1 (both dupes, 0 new)
+	// Total unique = 6
+	if got := len(tr.ByUUID); got < 6 {
+		t.Errorf("LoadDir ByUUID len = %d, want >= 6", got)
+	}
+	// a-1 should have multiple children across files (u-2 from linear,
+	// u-2a/u-2b from one-branch, u-3 from multi-branch).
+	if got := len(tr.Children["a-1"]); got < 3 {
+		t.Errorf("Children[a-1] = %v, want >= 3", tr.Children["a-1"])
+	}
+}
