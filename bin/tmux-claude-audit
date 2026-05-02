@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+# tmux-claude-audit — one-shot system check for the entire ghostty/tmux/claude stack.
+#
+# Runs ~30 checks across the configuration that's been layered up over time.
+# Output: PASS / WARN / FAIL per check, with summary count at the bottom.
+# Exit code: 0 if all PASS or WARN, 1 if any FAIL.
+#
+# Usage:
+#   tmux-claude-audit
+#   tmux-claude-audit --quiet     # only show FAIL/WARN
+
+set -uo pipefail
+
+QUIET=0
+[[ "${1:-}" == "--quiet" ]] && QUIET=1
+
+# Color helpers (ANSI named).
+G="$(printf '\033[32m')"
+R="$(printf '\033[31m')"
+Y="$(printf '\033[33m')"
+C="$(printf '\033[36m')"
+B="$(printf '\033[1m')"
+N="$(printf '\033[0m')"
+
+PASS_N=0
+WARN_N=0
+FAIL_N=0
+
+emit() {
+  local kind="$1" name="$2" detail="${3:-}"
+  case "$kind" in
+    PASS) PASS_N=$((PASS_N+1)); [[ $QUIET -eq 1 ]] && return
+          printf '  %s✓%s  %s\n' "$G" "$N" "$name" ;;
+    WARN) WARN_N=$((WARN_N+1))
+          printf '  %s!%s  %s — %s%s%s\n' "$Y" "$N" "$name" "$Y" "$detail" "$N" ;;
+    FAIL) FAIL_N=$((FAIL_N+1))
+          printf '  %s✗%s  %s — %s%s%s\n' "$R" "$N" "$name" "$R" "$detail" "$N" ;;
+  esac
+}
+
+section() {
+  printf '\n%s%s── %s ──%s\n' "$B" "$C" "$1" "$N"
+}
+
+# ─── Helpers ─────────────────────────────────────────
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+json_q() {
+  # $1: jq path, $2: settings file (defaults to ~/.claude/settings.json)
+  local file="${2:-$HOME/.claude/settings.json}"
+  python3 -c "
+import json, sys
+try:
+    d = json.load(open('$file'))
+    parts = '$1'.split('.')
+    for p in parts:
+        if p == '': continue
+        if isinstance(d, dict): d = d.get(p)
+        else: d = None; break
+    if d is None: print(''); sys.exit()
+    print(d if not isinstance(d, (list,dict)) else json.dumps(d))
+except Exception as e:
+    print('', file=sys.stderr)
+" 2>/dev/null
+}
+
+settings_has_hook() {
+  local evt="$1"
+  python3 -c "
+import json
+try:
+    d = json.load(open('$HOME/.claude/settings.json'))
+    print('y' if '$evt' in (d.get('hooks') or {}) else 'n')
+except Exception:
+    print('n')
+" 2>/dev/null
+}
+
+# ─── Run ─────────────────────────────────────────────
+printf '%s%s tmux-claude-audit %s\n' "$B" "$C" "$N"
+printf '%s──────────────────────────────────────────────────%s\n' "$C" "$N"
+
+section "Tools on PATH"
+for cmd in tmux fzf jq python3 starship afplay osascript; do
+  if have_cmd "$cmd"; then emit PASS "$cmd"
+  else emit FAIL "$cmd" "not found on PATH"; fi
+done
+
+section "Helper scripts (~/bin)"
+# README documenting the script suite
+if [[ -r "$HOME/dev/dotfiles/bin/README.md" ]]; then emit PASS "bin/README.md (documentation)"
+else emit WARN "bin/README.md" "missing — scripts undocumented"; fi
+for s in claude-tmux claude-sessions-list claude-search claude-grep claude-worktrees claude-prune-worktrees claude-tail claude-today claude-touched claude-stats claude-dirty claude-export claude-pin claude-running claude-jump cc-attention cc-config-sync cc-burn-rate cc-lock cc-lock-pre-hook cc-lock-stop-hook cc-brain-sync tmux-claude-state tmux-claude-resurrect-restore tmux-claude-prune tmux-claude-test tmux-window-cell tmux-save-dot tmux-cell-daemon tmux-fleet-count tmux-mute-indicator tmux-resurrect-housekeep tmux-git-info tmux-claude-session tmux-tile-session tmux-pane-header tmux-burn-segment cc-rich-shim cc-replay-shim; do
+  if [[ -x "$HOME/bin/$s" ]]; then emit PASS "$s"
+  else emit FAIL "$s" "missing or not executable"; fi
+done
+
+section "Claude settings (~/.claude/settings.json)"
+if ! python3 -c "import json; json.load(open('$HOME/.claude/settings.json'))" 2>/dev/null; then
+  emit FAIL "settings.json parses" "invalid JSON"
+else
+  emit PASS "settings.json parses"
+
+  channel=$(json_q "preferredNotifChannel")
+  if [[ "$channel" == "iterm2" ]]; then emit PASS "preferredNotifChannel = iterm2"
+  elif [[ "$channel" == "ghostty" ]]; then emit FAIL "preferredNotifChannel" "set to 'ghostty' — silently fails (#19979)"
+  else emit WARN "preferredNotifChannel" "set to '$channel' (expected iterm2)"; fi
+
+  for toggle in terminalProgressBarEnabled fileCheckpointingEnabled showTurnDuration showThinkingSummaries; do
+    val=$(json_q "$toggle")
+    if [[ "$val" == "True" || "$val" == "true" ]]; then emit PASS "$toggle = true"
+    else emit WARN "$toggle" "not enabled (got: '$val')"; fi
+  done
+
+  for evt in Notification Stop StopFailure PreCompact SubagentStop PreToolUse; do
+    if [[ "$(settings_has_hook "$evt")" == "y" ]]; then emit PASS "hook: $evt"
+    else emit WARN "hook: $evt" "missing"; fi
+  done
+
+  for d in dotfiles .claude .config; do
+    if grep -q "/$d" "$HOME/.claude/settings.json" 2>/dev/null; then
+      emit PASS "additionalDirectories includes $d"
+    else
+      emit WARN "additionalDirectories: $d" "not in scope"
+    fi
+  done
+fi
+
+section "tmux plugin manager + plugins"
+for p in tpm tmux-resurrect tmux-continuum; do
+  if [[ -d "$HOME/.tmux/plugins/$p" ]]; then emit PASS "plugin: $p"
+  else emit FAIL "plugin: $p" "missing — git clone needed"; fi
+done
+
+section "tmux config wiring"
+TMUXCONF="$HOME/.tmux.conf"
+if [[ ! -r "$TMUXCONF" ]]; then
+  emit FAIL "~/.tmux.conf readable" "not found"
+else
+  for pattern in "@resurrect-capture-pane-contents" "@resurrect-hook-post-save-all" "@resurrect-hook-post-restore-all" "@continuum-restore" "run.*tpm/tpm"; do
+    if grep -q "$pattern" "$TMUXCONF" 2>/dev/null; then emit PASS "tmux.conf has $pattern"
+    else emit FAIL "tmux.conf $pattern" "missing"; fi
+  done
+  # Plain claude shouldnt be in @resurrect-processes — the post-restore hook owns it.
+  if grep -E '^\s*set -g @resurrect-processes' "$TMUXCONF" | grep -qE '"~claude"|"~claude --resume"' ; then
+    if grep -E '^\s*set -g @resurrect-processes' "$TMUXCONF" | grep -qE '"~claude --resume \*"' ; then
+      emit PASS "@resurrect-processes scoped to args (no plain ~claude)"
+    else
+      emit WARN "@resurrect-processes" "includes plain ~claude — could race with post-restore hook"
+    fi
+  else
+    emit PASS "@resurrect-processes scoped to args (no plain ~claude)"
+  fi
+fi
+
+section "Continuum auto-save freshness"
+last="$HOME/.tmux/resurrect/last"
+if [[ -L "$last" ]]; then
+  resolved=$(readlink "$last")
+  age_sec=$(( $(date +%s) - $(stat -f %m "$HOME/.tmux/resurrect/$resolved" 2>/dev/null || echo 0) ))
+  # Threshold reasoning: continuum auto-saves every 5min. A 6m threshold flags
+  # any 1-min slip as drift, generating noise during normal cycles. 9m gives
+  # a safer buffer (~80% chance of being healthy after a single missed cycle).
+  if   [[ $age_sec -lt 540 ]];  then emit PASS "last save $((age_sec/60))m ago"
+  elif [[ $age_sec -lt 1800 ]]; then emit WARN "last save" "$((age_sec/60))m ago — should be <9m"
+  else                              emit FAIL "last save" "$((age_sec/60))m ago — continuum may be dead"; fi
+else
+  emit WARN "tmux state" "no save yet (run prefix+Ctrl-s once)"
+fi
+
+section "Sidecar (claude session ID mapping)"
+sidecar="$HOME/.tmux/resurrect/claude-state.txt"
+if [[ -r "$sidecar" ]]; then
+  entries=$(grep -c '	' "$sidecar" 2>/dev/null || echo 0)
+  if [[ $entries -gt 0 ]]; then emit PASS "claude-state.txt — $entries entries"
+  else emit WARN "claude-state.txt" "exists but empty"; fi
+else
+  emit WARN "claude-state.txt" "missing — runs on next continuum save"
+fi
+
+section "Shell setup (~/.zshrc)"
+ZSHRC="$HOME/.zshrc"
+if grep -q 'starship init zsh' "$ZSHRC"; then emit PASS "starship init present"
+else emit FAIL "starship init" "missing — prompt won't load"; fi
+
+if grep -q 'ZSH_THEME=""' "$ZSHRC"; then emit PASS "OMZ theme empty (starship owns prompt)"
+else emit WARN "ZSH_THEME" "not empty — may conflict with starship"; fi
+
+if grep -qE '^[^#]*p10k-instant-prompt' "$ZSHRC" 2>/dev/null; then
+  emit FAIL "p10k instant-prompt" "still active — breaks Claude Code (#5428)"
+else
+  emit PASS "p10k instant-prompt disabled"
+fi
+
+for alias_name in ch cr cs cc-settings cc-memory cc-projects cc-prune cc-audit cw-list cw-prune cc-tail cc-today cc-test cc-touched cc-stats cc-dirty cc-export cc-pin cc-running cc-jump; do
+  if grep -qE "^[^#]*alias[[:space:]]+$alias_name=" "$ZSHRC"; then emit PASS "alias: $alias_name"
+  else emit WARN "alias: $alias_name" "missing"; fi
+done
+
+# cs-find is a function, not an alias — check for the function definition.
+if grep -qE "^cs-find\(\)" "$ZSHRC"; then emit PASS "function: cs-find"
+else emit WARN "function: cs-find" "missing"; fi
+
+# cs-recent quick recent-sessions picker
+if grep -qE "^cs-recent\(\)" "$ZSHRC"; then emit PASS "function: cs-recent"
+else emit WARN "function: cs-recent" "missing"; fi
+
+# cs-here project-scoped picker
+if grep -qE "^cs-here\(\)" "$ZSHRC"; then emit PASS "function: cs-here"
+else emit WARN "function: cs-here" "missing"; fi
+
+# cs-grep per-turn content search
+if grep -qE "^cs-grep\(\)" "$ZSHRC"; then emit PASS "function: cs-grep"
+else emit WARN "function: cs-grep" "missing"; fi
+
+# cw worktree+claude launcher
+if grep -qE "^cw\(\)" "$ZSHRC"; then emit PASS "function: cw"
+else emit WARN "function: cw" "missing"; fi
+
+# cw-go fzf-jump into existing worktree
+if grep -qE "^cw-go\(\)" "$ZSHRC"; then emit PASS "function: cw-go"
+else emit WARN "function: cw-go" "missing"; fi
+
+# cc-test-sounds hook-audio verifier
+if grep -qE "^cc-test-sounds\(\)" "$ZSHRC"; then emit PASS "function: cc-test-sounds"
+else emit WARN "function: cc-test-sounds" "missing"; fi
+
+# cc-status single-screen dashboard
+if grep -qE "^cc-status\(\)" "$ZSHRC"; then emit PASS "function: cc-status"
+else emit WARN "function: cc-status" "missing"; fi
+
+# cc-help searchable cheat sheet
+if grep -qE "^cc-help\(\)" "$ZSHRC"; then emit PASS "function: cc-help"
+else emit WARN "function: cc-help" "missing"; fi
+
+# /cc-help slash command (in-Claude reference)
+if [[ -f "$HOME/.claude/commands/cc-help.md" ]]; then emit PASS "/cc-help slash command"
+else emit WARN "/cc-help" "missing"; fi
+
+# cc-fix auto-resolver
+if grep -qE "^cc-fix\(\)" "$ZSHRC"; then emit PASS "function: cc-fix"
+else emit WARN "function: cc-fix" "missing"; fi
+
+# cc-doctor super-command (audit + test + fix)
+if grep -qE "^cc-doctor\(\)" "$ZSHRC"; then emit PASS "function: cc-doctor"
+else emit WARN "function: cc-doctor" "missing"; fi
+
+# cc-mute hook-audio toggle
+if grep -qE "^cc-mute\(\)" "$ZSHRC"; then emit PASS "function: cc-mute"
+else emit WARN "function: cc-mute" "missing"; fi
+
+# cc-sound hook helper (binary)
+if [[ -x "$HOME/bin/cc-sound" ]]; then emit PASS "cc-sound (hook-mute helper)"
+else emit WARN "cc-sound" "missing — hooks bypass mute check"; fi
+
+# cc-dirty alias (claude-dirty bash script)
+if [[ -x "$HOME/bin/claude-dirty" ]]; then emit PASS "claude-dirty (bash)"
+else emit WARN "claude-dirty" "missing"; fi
+
+section "Fonts (Nerd Font for symbol alignment)"
+if ls "$HOME/Library/Fonts/JetBrainsMonoNerdFontMono"-*.ttf >/dev/null 2>&1; then
+  emit PASS "JetBrainsMono Nerd Font Mono installed"
+else
+  emit WARN "JetBrainsMono Nerd Font Mono" "not found in ~/Library/Fonts"
+fi
+
+section "Ghostty config"
+GCONF="$HOME/.config/ghostty/config"
+if [[ ! -r "$GCONF" ]]; then
+  emit FAIL "ghostty config readable" "not found at $GCONF"
+else
+  if grep -q '^theme = Apple Classic' "$GCONF"; then emit PASS "theme = Apple Classic"
+  else emit WARN "theme" "not Apple Classic"; fi
+  if grep -q 'JetBrainsMono Nerd Font Mono' "$GCONF"; then emit PASS "font-family = JetBrainsMono Nerd Font Mono"
+  else emit WARN "font-family" "not JetBrainsMono Nerd Font Mono"; fi
+  if grep -q '^shell-integration-features = cursor,sudo$' "$GCONF"; then emit PASS "shell-integration-features (no title — zshrc OSC 2 owns it)"
+  elif grep -q '^shell-integration-features = .*title' "$GCONF"; then emit WARN "shell-integration-features" "still has 'title' — fights zshrc OSC 2 hook"
+  else emit PASS "shell-integration-features set"; fi
+fi
+
+section "Dotfiles git state"
+DOTFILES="$HOME/dev/dotfiles"
+if [[ -d "$DOTFILES/.git" ]]; then
+  modified=$(cd "$DOTFILES" && git status --porcelain 2>/dev/null | grep -c '^ M')
+  untracked=$(cd "$DOTFILES" && git status --porcelain 2>/dev/null | grep -c '^??')
+  staged=$(cd "$DOTFILES" && git status --porcelain 2>/dev/null | grep -c '^[MA]')
+  total=$((modified + untracked))
+  if [[ $total -eq 0 ]]; then
+    emit PASS "dotfiles clean (everything committed)"
+  else
+    emit WARN "dotfiles uncommitted" "$modified modified, $untracked untracked — run \`git -C ~/dev/dotfiles status\`"
+  fi
+else
+  emit WARN "dotfiles repo" "~/dev/dotfiles not a git repo"
+fi
+
+# ─── Summary ────────────────────────────────────────
+printf '\n%s──────────────────────────────────────────────────%s\n' "$C" "$N"
+total=$((PASS_N + WARN_N + FAIL_N))
+printf '  %sPASS%s %d   %sWARN%s %d   %sFAIL%s %d   (total %d)\n' \
+  "$G" "$N" "$PASS_N" "$Y" "$N" "$WARN_N" "$R" "$N" "$FAIL_N" "$total"
+
+if [[ $FAIL_N -gt 0 ]]; then
+  printf '\n%s%d FAIL(s) — system has wiring issues to fix.%s\n' "$R" "$FAIL_N" "$N"
+  exit 1
+elif [[ $WARN_N -gt 0 ]]; then
+  printf '\n%s%d WARN(s) — non-critical, system functional.%s\n' "$Y" "$WARN_N" "$N"
+  exit 0
+else
+  printf '\n%sAll green. Stack is fully wired.%s\n' "$G" "$N"
+  exit 0
+fi
