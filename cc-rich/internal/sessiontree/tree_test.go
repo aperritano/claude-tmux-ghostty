@@ -34,3 +34,14 @@ func TestLoadLinear(t *testing.T) {
 		t.Errorf("Roots = %v, want [u-1]", got)
 	}
 }
+
+func TestBranchPoints(t *testing.T) {
+	tr, err := Load("testdata/one-branch.jsonl")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := tr.BranchPoints()
+	if len(got) != 1 || got[0] != "a-1" {
+		t.Errorf("BranchPoints = %v, want [a-1]", got)
+	}
+}
