@@ -1,0 +1,174 @@
+#!/bin/bash
+# tmux-claude-test — regression suite for bin/ scripts
+# Tests logic that does not require a live tmux server.
+# Checks needing zsh are skipped when zsh is unavailable (CI on Linux).
+#
+# Exit 0 if no FAILs, non-zero otherwise.
+
+PASS=0; FAIL=0; SKIP=0
+BIN="$(cd "$(dirname "$0")" && pwd)"
+
+pass() { PASS=$((PASS + 1)); printf '  PASS  %s\n' "$*"; }
+fail() { FAIL=$((FAIL + 1)); printf '  FAIL  %s\n' "$*"; }
+skip() { SKIP=$((SKIP + 1)); printf '  SKIP  %s\n' "$*"; }
+section() { printf '\n── %s ──\n' "$*"; }
+
+HAS_ZSH=0
+command -v zsh >/dev/null 2>&1 && HAS_ZSH=1
+
+# ── Syntax: bash scripts ──────────────────────────────────
+
+section "syntax: bash scripts"
+BASH_SCRIPTS="tmux-pane-label tmux-session-list tmux-tile-session setup-github-ssh"
+for s in $BASH_SCRIPTS; do
+  if bash -n "$BIN/$s" 2>/dev/null; then
+    pass "$s: syntax OK"
+  else
+    fail "$s: syntax error"
+  fi
+done
+
+# ── Syntax: zsh scripts ───────────────────────────────────
+
+section "syntax: zsh scripts"
+ZSH_SCRIPTS="tmux-claude-session tmux-git-info tmux-kill-teammate-pane tmux-short-path tmux-tutorial claude-dev"
+for s in $ZSH_SCRIPTS; do
+  if [ "$HAS_ZSH" -eq 0 ]; then
+    skip "$s: syntax check (zsh unavailable)"
+  elif zsh -n "$BIN/$s" 2>/dev/null; then
+    pass "$s: syntax OK"
+  else
+    fail "$s: syntax error"
+  fi
+done
+
+# ── tmux-pane-label: logic (bash, no tmux needed) ────────
+
+section "tmux-pane-label"
+tmpdir=$(mktemp -d)
+out=$(bash "$BIN/tmux-pane-label" "$tmpdir" 2>/dev/null)
+expected=$(basename "$tmpdir")
+if [ "$out" = "$expected" ]; then
+  pass "non-git dir: falls back to basename"
+else
+  fail "non-git dir: expected '$expected', got '$out'"
+fi
+rmdir "$tmpdir"
+
+out=$(bash "$BIN/tmux-pane-label" "$BIN/.." 2>/dev/null)
+if [ -n "$out" ]; then
+  pass "git repo: returns non-empty label (got: $out)"
+else
+  fail "git repo: returned empty label"
+fi
+
+# Long branch name truncation: inject a fake branch via a temp git repo
+tmpgit=$(mktemp -d)
+git -C "$tmpgit" init -q
+git -C "$tmpgit" commit --allow-empty -q -m init 2>/dev/null
+git -C "$tmpgit" checkout -q -b "feature/this-is-a-very-long-branch-name-that-exceeds-thirty-five-characters" 2>/dev/null
+out=$(bash "$BIN/tmux-pane-label" "$tmpgit" 2>/dev/null)
+if [ ${#out} -le 60 ]; then
+  pass "long branch: truncated to ≤60 chars (got: $out)"
+else
+  fail "long branch: not truncated (${#out} chars)"
+fi
+rm -rf "$tmpgit"
+
+# ── tmux-session-list: exits cleanly without tmux ────────
+
+section "tmux-session-list"
+out=$(bash "$BIN/tmux-session-list" "main" 2>/dev/null)
+status=$?
+if [ "$status" -eq 0 ] && [ -z "$out" ]; then
+  pass "no tmux server: exits 0 with empty output"
+else
+  fail "no tmux server: expected exit 0 + empty, got exit=$status output='$out'"
+fi
+
+# ── tmux-short-path: path abbreviation ───────────────────
+
+section "tmux-short-path"
+if [ "$HAS_ZSH" -eq 0 ]; then
+  skip "all tmux-short-path tests (zsh unavailable)"
+else
+  SP() { zsh "$BIN/tmux-short-path" "$1" 2>/dev/null; }
+
+  out=$(SP "$HOME")
+  if [ "$out" = "~" ]; then pass "HOME -> ~"
+  else fail "HOME -> ~ (got: $out)"; fi
+
+  out=$(SP "$HOME/a/b")
+  if [ "$out" = "~/a/b" ]; then pass "2-level path: unchanged"
+  else fail "2-level path: expected '~/a/b', got '$out'"; fi
+
+  out=$(SP "$HOME/a/b/c/d")
+  if [ "$out" = "~/…/c/d" ]; then pass "4-level path: collapsed to ~/…/c/d"
+  else fail "4-level path: expected '~/…/c/d', got '$out'"; fi
+
+  out=$(SP "$HOME/dev/.worktrees/feat-x")
+  if [ "$out" = "wt:feat-x" ]; then pass "worktree path: wt:<name>"
+  else fail "worktree path: expected 'wt:feat-x', got '$out'"; fi
+
+  # Hard cap: force a path whose collapsed form exceeds 30 chars
+  long_path="$HOME/a/b/c/d/this-segment-is-quite-long/another-long-segment"
+  out=$(SP "$long_path")
+  if [ ${#out} -le 30 ]; then pass "hard cap: output ≤30 chars (got ${#out})"
+  else fail "hard cap: output exceeds 30 chars (${#out})"; fi
+fi
+
+# ── tmux-git-info: branch display ────────────────────────
+
+section "tmux-git-info"
+if [ "$HAS_ZSH" -eq 0 ]; then
+  skip "all tmux-git-info tests (zsh unavailable)"
+else
+  tmpdir=$(mktemp -d)
+  out=$(zsh "$BIN/tmux-git-info" "$tmpdir" 2>/dev/null)
+  if [ -z "$out" ]; then pass "non-git dir: empty output"
+  else fail "non-git dir: expected empty, got '$out'"; fi
+  rmdir "$tmpdir"
+
+  out=$(zsh "$BIN/tmux-git-info" "$BIN/.." 2>/dev/null)
+  if [ -n "$out" ]; then pass "git repo: non-empty output (got:$out)"
+  else fail "git repo: returned empty"; fi
+fi
+
+# ── tmux-kill-teammate-pane: no-tmux safety ──────────────
+
+section "tmux-kill-teammate-pane"
+if [ "$HAS_ZSH" -eq 0 ]; then
+  skip "tmux-kill-teammate-pane safety test (zsh unavailable)"
+else
+  TMUX="" zsh "$BIN/tmux-kill-teammate-pane" 2>/dev/null
+  if [ $? -eq 0 ]; then pass "exits cleanly when TMUX unset (safety guard works)"
+  else fail "unexpected non-zero exit when TMUX unset"; fi
+fi
+
+# ── tmux-claude-session: no-arg exit ─────────────────────
+
+section "tmux-claude-session"
+if [ "$HAS_ZSH" -eq 0 ]; then
+  skip "tmux-claude-session no-arg test (zsh unavailable)"
+else
+  zsh "$BIN/tmux-claude-session" 2>/dev/null
+  if [ $? -eq 0 ]; then pass "exits 0 with no args"
+  else fail "unexpected non-zero exit with no args"; fi
+fi
+
+# ── tmux-tile-session: syntax only (needs live tmux) ─────
+
+section "tmux-tile-session"
+if bash -n "$BIN/tmux-tile-session" 2>/dev/null; then
+  pass "syntax OK (runtime tests require live tmux server — skipped)"
+else
+  fail "syntax error"
+fi
+
+# ── Summary ───────────────────────────────────────────────
+
+printf '\n──────────────────────────────────────────────────\n'
+printf '  %3d PASS  /  %3d FAIL  /  %3d SKIP\n' "$PASS" "$FAIL" "$SKIP"
+printf '──────────────────────────────────────────────────\n'
+
+[ "$FAIL" -eq 0 ]
