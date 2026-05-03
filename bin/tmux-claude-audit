@@ -1,0 +1,150 @@
+#!/bin/bash
+# tmux-claude-audit — static checks for the claude-tmux-ghostty dotfiles repo
+# Exit 0 if no FAILs; exit 1 on any FAIL.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO/bin"
+TMUX_CONF="$REPO/tmux/tmux.conf"
+README="$REPO/README.md"
+SETTINGS="$REPO/claude/settings.json"
+
+pass=0; warn=0; fail=0
+
+_pass() { printf "PASS  %s\n" "$1"; pass=$((pass+1)); }
+_warn() { printf "WARN  %s\n" "$1"; warn=$((warn+1)); }
+_fail() { printf "FAIL  %s\n" "$1"; fail=$((fail+1)); }
+
+# ── 1. Repo skeleton ──────────────────────────────────────────────────────────
+
+for required in install.sh Brewfile tmux/tmux.conf ghostty/config zsh/zshrc claude/CLAUDE.md claude/settings.json; do
+  if [ -f "$REPO/$required" ]; then
+    _pass "repo: $required exists"
+  else
+    _fail "repo: $required MISSING"
+  fi
+done
+
+# ── 2. Every script in bin/ is executable ─────────────────────────────────────
+
+for f in "$BIN"/*; do
+  name=$(basename "$f")
+  if [ -x "$f" ]; then
+    _pass "bin/$name: executable"
+  else
+    _fail "bin/$name: NOT executable (run: chmod +x bin/$name)"
+  fi
+done
+
+# ── 3. Every script in bin/ has a valid shebang ───────────────────────────────
+
+for f in "$BIN"/*; do
+  name=$(basename "$f")
+  shebang=$(head -1 "$f")
+  if printf '%s\n' "$shebang" | grep -qE '^#!(\/usr\/bin\/env [a-z]+|\/bin\/bash|\/bin\/zsh|\/usr\/bin\/env bash|\/usr\/bin\/env zsh)'; then
+    _pass "bin/$name: shebang OK ($shebang)"
+  else
+    _fail "bin/$name: missing or unrecognised shebang: $shebang"
+  fi
+done
+
+# ── 4. Every script in bin/ is mentioned in README ────────────────────────────
+
+for f in "$BIN"/*; do
+  name=$(basename "$f")
+  if grep -q "$name" "$README"; then
+    _pass "bin/$name: documented in README"
+  else
+    _warn "bin/$name: NOT mentioned in README"
+  fi
+done
+
+# ── 5. tmux.conf references to ~/bin/* resolve to real scripts ────────────────
+# Deduplicate: report each referenced script once even if it appears multiple times.
+
+_seen_refs=""
+while IFS= read -r line; do
+  for ref in $(printf '%s\n' "$line" | grep -oE '(\$HOME|~)/bin/[a-zA-Z0-9_-]+'); do
+    script_name="${ref##*/}"
+    # Skip if already checked
+    case " $_seen_refs " in *" $script_name "*) continue ;; esac
+    _seen_refs="$_seen_refs $script_name"
+    if [ -f "$BIN/$script_name" ]; then
+      _pass "tmux.conf: ~/bin/$script_name referenced and exists"
+    else
+      _fail "tmux.conf: ~/bin/$script_name referenced but NOT FOUND in bin/"
+    fi
+  done
+done < "$TMUX_CONF"
+
+# ── 6. Bash 3.2 compatibility for bash scripts ────────────────────────────────
+# Use anchored/precise patterns to avoid false-positives from pattern strings in
+# this script itself or from other quoted contexts.
+
+for f in "$BIN"/*; do
+  name=$(basename "$f")
+  shebang=$(head -1 "$f")
+  if printf '%s\n' "$shebang" | grep -qE '(env bash|/bin/bash)'; then
+    b4=0
+    # Strip comment lines so examples in comments don't falsely fire.
+    # mapfile / readarray only matter as statement keywords.
+    if grep -v '^\s*#' "$f" | grep -qE '^[[:space:]]*(mapfile|readarray)[[:space:]]'; then b4=1; fi
+    # declare -A / typeset -A as statements (not inside quoted strings/variables)
+    if grep -v '^\s*#' "$f" | grep -qE '^[[:space:]]*declare[[:space:]]+-A[[:space:]]'; then b4=1; fi
+    if grep -v '^\s*#' "$f" | grep -qE '^[[:space:]]*typeset[[:space:]]+-A[[:space:]]'; then b4=1; fi
+    # Case-modification parameter expansions: ${var,,} ${var^^}
+    if grep -v '^\s*#' "$f" | grep -qE '\$\{[^}]+,,[^}]*\}'; then b4=1; fi
+    if grep -v '^\s*#' "$f" | grep -qE '\$\{[^}]+\^\^[^}]*\}'; then b4=1; fi
+    if [ "$b4" = "1" ]; then
+      _fail "bin/$name: uses bash 4+ features (breaks macOS bash 3.2)"
+    else
+      _pass "bin/$name: Bash 3.2 compatible"
+    fi
+  fi
+done
+
+# ── 7. No hardcoded /Users/<literal-name> paths ──────────────────────────────
+
+for f in "$BIN"/*; do
+  name=$(basename "$f")
+  # Allow /Users/$... patterns (variable references are fine); flag literal names
+  if grep -qE '/Users/[A-Za-z][A-Za-z0-9_.-]+/' "$f" 2>/dev/null; then
+    _warn "bin/$name: possible hardcoded /Users/<name> path (use \$HOME)"
+  else
+    _pass "bin/$name: no hardcoded user paths"
+  fi
+done
+
+# ── 8. tmux-kill-teammate-pane hook wiring ────────────────────────────────────
+# README claims auto-clean on SubagentStop; check settings.json for wiring.
+
+if grep -q 'tmux-kill-teammate-pane' "$SETTINGS" 2>/dev/null; then
+  _pass "settings.json: tmux-kill-teammate-pane wired as a hook"
+else
+  _warn "settings.json: tmux-kill-teammate-pane NOT wired (README claims auto-clean on SubagentStop — wire it or update README)"
+fi
+
+# ── 9. tmux-session-list usage ────────────────────────────────────────────────
+# The script exists but tmux.conf uses native #{S:} format instead.
+
+if grep -q 'tmux-session-list' "$TMUX_CONF"; then
+  _pass "tmux.conf: tmux-session-list is wired into status-left"
+else
+  _warn "tmux.conf: tmux-session-list not referenced (tmux.conf uses native #{S:} format — intentional or stale script?)"
+fi
+
+# ── 10. install.sh symlinks all expected dotfile dirs ─────────────────────────
+
+for dir in tmux zsh vim git ghostty claude; do
+  if grep -q "$dir" "$REPO/install.sh"; then
+    _pass "install.sh: references $dir/ directory"
+  else
+    _warn "install.sh: does not reference $dir/ — confirm it is bootstrapped"
+  fi
+done
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
+echo ""
+printf "%-40s  %s PASS / %s WARN / %s FAIL\n" "Audit:" "$pass" "$warn" "$fail"
+[ "$fail" -gt 0 ] && exit 1 || exit 0
