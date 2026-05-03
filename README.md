@@ -69,15 +69,17 @@ dotfiles/
 │   └── defaults.sh             # System preferences (keyboard, Dock, Finder, screenshots)
 ├── bin/
 │   ├── setup-github-ssh         # Generate SSH key and upload to GitHub
-│   ├── claude-dev              # Named tmux session launcher for Claude Code projects
-│   ├── tmux-claude-session     # Session ID + active sub-agent count for status bar
-│   ├── tmux-git-info           # Branch + dirty indicator (worktree-aware)
-│   ├── tmux-kill-teammate-pane # Auto-close teammate panes when agents finish
-│   ├── tmux-pane-label         # Pane border label — repo, branch, ahead/behind
-│   ├── tmux-session-list       # Multi-session status-left renderer
-│   ├── tmux-short-path         # Abbreviated path display (worktree-aware)
-│   ├── tmux-tile-session       # Toggle all windows into tiled panes and back
-│   └── tmux-tutorial           # Interactive walkthrough of the full setup
+│   ├── claude-dev               # Named tmux session launcher for Claude Code projects
+│   ├── tmux-claude-audit        # Repo health audit — checks scripts, wiring, tmux.conf
+│   ├── tmux-claude-session      # Session ID + active sub-agent count for status bar
+│   ├── tmux-claude-test         # Regression test suite (PASS/FAIL/SKIP output, CI-safe)
+│   ├── tmux-git-info            # Branch + dirty indicator (worktree-aware)
+│   ├── tmux-kill-teammate-pane  # Auto-close teammate panes when agents finish
+│   ├── tmux-pane-label          # Pane border label — repo, branch, ahead/behind
+│   ├── tmux-session-list        # Multi-session status-left renderer
+│   ├── tmux-short-path          # Abbreviated path display (worktree-aware)
+│   ├── tmux-tile-session        # Toggle all windows into tiled panes and back
+│   └── tmux-tutorial            # Interactive walkthrough of the full setup
 └── README.md
 ```
 
