@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# tmux-claude-test — regression tests for bin/ scripts
+#
+# Usage: bash bin/tmux-claude-test
+# Exit:  0 = all PASS (SKIP counts as pass); 1 = at least one FAIL
+#
+# Tests that require zsh or a live tmux server are automatically skipped.
+# Bash 3.2 compatible (macOS floor).
+
+PASS=0; FAIL=0; SKIP_COUNT=0
+
+pass() { printf 'PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
+fail() { printf 'FAIL  %s  (want: %s  got: %s)\n' "$1" "$2" "$3"; FAIL=$((FAIL + 1)); }
+skip() { printf 'SKIP  %s\n' "$1"; SKIP_COUNT=$((SKIP_COUNT + 1)); }
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO/bin"
+TMP=$(mktemp -d)
+
+cleanup() { rm -rf "$TMP"; }
+trap cleanup EXIT
+
+has_zsh=0; command -v zsh > /dev/null 2>&1 && has_zsh=1
+has_git=0; command -v git > /dev/null 2>&1 && has_git=1
+in_tmux=0; [ -n "$TMUX" ] && in_tmux=1
+
+# ── Fixtures ─────────────────────────────────────────────────────────────
+# Build shared git repo fixture early so bash-shebang scripts can use it
+# even when zsh is unavailable (tmux-pane-label is pure bash).
+GIT_FIXTURE=""
+if [ "$has_git" -eq 1 ]; then
+  GIT_FIXTURE="$TMP/gitrepo"
+  mkdir -p "$GIT_FIXTURE"
+  git -C "$GIT_FIXTURE" init -q 2>/dev/null
+  touch "$GIT_FIXTURE/f.txt"
+  git -C "$GIT_FIXTURE" add . 2>/dev/null
+  git -C "$GIT_FIXTURE" -c user.email="t@t.com" -c user.name="T" \
+    commit -q -m "init" 2>/dev/null
+fi
+
+# ── tmux-tile-session: argument validation ────────────────────────────────
+# Regression for: argument validation used to come after `session=$(tmux
+# display-message ...)`, making the usage message unreachable outside tmux.
+echo ""
+echo "── tmux-tile-session ──"
+
+result=$("$BIN/tmux-tile-session" "badarg" 2>&1)
+exit_code=$?
+if [ "$exit_code" -ne 0 ]; then
+  pass "tile-session: invalid arg exits non-zero"
+else
+  fail "tile-session: invalid arg exits non-zero" "exit!=0" "exit=0"
+fi
+if echo "$result" | grep -qi "usage"; then
+  pass "tile-session: invalid arg prints usage message"
+else
+  fail "tile-session: invalid arg prints usage message" "Usage:..." "$result"
+fi
+
+# Valid args should not print usage (they need tmux, but shouldn't usage-error)
+for valid_arg in tile untile toggle; do
+  check_result=$("$BIN/tmux-tile-session" "$valid_arg" 2>&1) || true
+  if echo "$check_result" | grep -qi "^Usage:"; then
+    fail "tile-session: valid arg '$valid_arg' should not print usage" "" "$check_result"
+  else
+    pass "tile-session: valid arg '$valid_arg' does not print usage"
+  fi
+done
+
+# ── tmux-short-path ───────────────────────────────────────────────────────
+echo ""
+echo "── tmux-short-path ──"
+
+if [ "$has_zsh" -eq 0 ]; then
+  skip "tmux-short-path: zsh not available — skipping all short-path tests"
+else
+  # 3-part path from HOME — returned verbatim as ~/a/b
+  result=$(HOME="/tmp/testhome" "$BIN/tmux-short-path" "/tmp/testhome/a/b")
+  [ "$result" = "~/a/b" ] \
+    && pass "short-path: 3-part path kept as-is" \
+    || fail "short-path: 3-part path kept as-is" "~/a/b" "$result"
+
+  # 5-part path — abbreviated to ~/…/c/d
+  result=$(HOME="/tmp/testhome" "$BIN/tmux-short-path" "/tmp/testhome/a/b/c/d")
+  [ "$result" = "~/…/c/d" ] \
+    && pass "short-path: 5-part path abbreviated" \
+    || fail "short-path: 5-part path abbreviated" "~/…/c/d" "$result"
+
+  # Worktree path — shows wt:<name>
+  result=$(HOME="/tmp/testhome" "$BIN/tmux-short-path" "/tmp/testhome/dev/proj/.worktrees/feat")
+  [ "$result" = "wt:feat" ] \
+    && pass "short-path: worktree shows wt:<name>" \
+    || fail "short-path: worktree shows wt:<name>" "wt:feat" "$result"
+
+  # Long worktree name (>18 chars) — truncated with ellipsis, still has wt: prefix
+  long_wt="my-very-long-feature-branch-name"
+  result=$(HOME="/tmp/testhome" "$BIN/tmux-short-path" "/tmp/testhome/dev/p/.worktrees/$long_wt")
+  if echo "$result" | grep -q "^wt:"; then
+    if [ "${#result}" -le 19 ]; then
+      pass "short-path: long worktree name truncated"
+    else
+      fail "short-path: long worktree name truncated" "<=19 chars" "${#result} chars"
+    fi
+  else
+    fail "short-path: long worktree name has wt: prefix" "wt:..." "$result"
+  fi
+
+  # 30-char hard cap — result never exceeds 30 chars
+  result=$(HOME="/tmp/testhome" "$BIN/tmux-short-path" "/tmp/testhome/averylongdir/anotherlong/c/d")
+  if [ "${#result}" -le 30 ]; then
+    pass "short-path: 30-char hard cap enforced"
+  else
+    fail "short-path: 30-char hard cap enforced" "<=30 chars" "${#result} chars: $result"
+  fi
+fi
+
+# ── tmux-git-info ─────────────────────────────────────────────────────────
+echo ""
+echo "── tmux-git-info ──"
+
+if [ "$has_zsh" -eq 0 ]; then
+  skip "tmux-git-info: zsh not available — skipping"
+elif [ "$has_git" -eq 0 ]; then
+  skip "tmux-git-info: git not available — skipping"
+else
+  # Non-git dir — no output, exit 0
+  nonrepo="$TMP/notgit"
+  mkdir -p "$nonrepo"
+  result=$("$BIN/tmux-git-info" "$nonrepo" 2>/dev/null)
+  [ -z "$result" ] \
+    && pass "git-info: non-git dir produces no output" \
+    || fail "git-info: non-git dir produces no output" "" "$result"
+
+  # Git repo — shows branch name (uses shared fixture)
+  branch=$(git -C "$GIT_FIXTURE" branch --show-current 2>/dev/null)
+  result=$("$BIN/tmux-git-info" "$GIT_FIXTURE" 2>/dev/null)
+  if echo "$result" | grep -qF "$branch"; then
+    pass "git-info: shows branch name ($branch)"
+  else
+    fail "git-info: shows branch name" "*$branch*" "$result"
+  fi
+
+  # Dirty file — shows * indicator
+  echo "dirty" >> "$GIT_FIXTURE/f.txt"
+  result=$("$BIN/tmux-git-info" "$GIT_FIXTURE" 2>/dev/null)
+  if echo "$result" | grep -q '\*'; then
+    pass "git-info: dirty repo shows * indicator"
+  else
+    fail "git-info: dirty repo shows * indicator" "*...*" "$result"
+  fi
+  # Restore clean state for subsequent tests
+  git -C "$GIT_FIXTURE" checkout -- . 2>/dev/null || true
+fi
+
+# ── tmux-pane-label ───────────────────────────────────────────────────────
+echo ""
+echo "── tmux-pane-label ──"
+
+if [ "$has_git" -eq 0 ]; then
+  skip "tmux-pane-label: git not available — skipping"
+else
+  # Non-git dir — shows basename of path (tmux-pane-label is bash, no zsh needed)
+  nonrepo="$TMP/labeltest"
+  mkdir -p "$nonrepo"
+  result=$("$BIN/tmux-pane-label" "$nonrepo" 2>/dev/null)
+  [ "$result" = "labeltest" ] \
+    && pass "pane-label: non-git dir shows dirname" \
+    || fail "pane-label: non-git dir shows dirname" "labeltest" "$result"
+
+  # Git repo — shows repo name and branch (uses shared fixture)
+  branch=$(git -C "$GIT_FIXTURE" branch --show-current 2>/dev/null)
+  result=$("$BIN/tmux-pane-label" "$GIT_FIXTURE" 2>/dev/null)
+  if echo "$result" | grep -qF "$branch"; then
+    pass "pane-label: git repo shows branch"
+  else
+    fail "pane-label: git repo shows branch" "*$branch*" "$result"
+  fi
+  if echo "$result" | grep -q "gitrepo"; then
+    pass "pane-label: git repo shows repo name"
+  else
+    fail "pane-label: git repo shows repo name" "*gitrepo*" "$result"
+  fi
+fi
+
+# ── tmux-session-list ─────────────────────────────────────────────────────
+echo ""
+echo "── tmux-session-list ──"
+
+# Outside tmux: no sessions → empty output, exit 0
+if [ "$in_tmux" -eq 0 ]; then
+  result=$("$BIN/tmux-session-list" "main" 2>/dev/null)
+  exit_code=$?
+  [ "$exit_code" -eq 0 ] \
+    && pass "session-list: exits 0 outside tmux" \
+    || fail "session-list: exits 0 outside tmux" "0" "$exit_code"
+  [ -z "$result" ] \
+    && pass "session-list: empty output outside tmux" \
+    || fail "session-list: empty output outside tmux" "" "$result"
+else
+  result=$("$BIN/tmux-session-list" "main" 2>/dev/null)
+  [ -n "$result" ] \
+    && pass "session-list: non-empty inside tmux" \
+    || fail "session-list: non-empty inside tmux" "non-empty" ""
+fi
+
+# ── tmux-kill-teammate-pane ───────────────────────────────────────────────
+echo ""
+echo "── tmux-kill-teammate-pane ──"
+
+if [ "$has_zsh" -eq 0 ]; then
+  skip "tmux-kill-teammate-pane: zsh not available — skipping"
+else
+  # Outside tmux (TMUX unset): exits 0 with no output
+  result=$(TMUX="" "$BIN/tmux-kill-teammate-pane" 2>&1)
+  exit_code=$?
+  [ "$exit_code" -eq 0 ] \
+    && pass "kill-teammate: exits 0 when TMUX is unset" \
+    || fail "kill-teammate: exits 0 when TMUX is unset" "0" "$exit_code"
+  [ -z "$result" ] \
+    && pass "kill-teammate: no output when TMUX is unset" \
+    || fail "kill-teammate: no output when TMUX is unset" "" "$result"
+fi
+
+# ── tmux-claude-session ───────────────────────────────────────────────────
+echo ""
+echo "── tmux-claude-session ──"
+
+if [ "$has_zsh" -eq 0 ]; then
+  skip "tmux-claude-session: zsh not available — skipping"
+else
+  # No argument → exit 0, no output
+  result=$("$BIN/tmux-claude-session" 2>/dev/null)
+  exit_code=$?
+  [ "$exit_code" -eq 0 ] \
+    && pass "claude-session: no arg exits 0" \
+    || fail "claude-session: no arg exits 0" "0" "$exit_code"
+  [ -z "$result" ] \
+    && pass "claude-session: no arg produces no output" \
+    || fail "claude-session: no arg produces no output" "" "$result"
+
+  # Nonexistent TTY → exit 0, no output
+  result=$("$BIN/tmux-claude-session" "/dev/ttyXXXnotreal" 2>/dev/null)
+  exit_code=$?
+  [ "$exit_code" -eq 0 ] \
+    && pass "claude-session: bad tty exits 0" \
+    || fail "claude-session: bad tty exits 0" "0" "$exit_code"
+  [ -z "$result" ] \
+    && pass "claude-session: bad tty produces no output" \
+    || fail "claude-session: bad tty produces no output" "" "$result"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────
+echo ""
+echo "────────────────────────────────────────────"
+printf 'Tests complete: %d PASS / %d FAIL / %d SKIP\n' "$PASS" "$FAIL" "$SKIP_COUNT"
+echo "────────────────────────────────────────────"
+
+[ "$FAIL" -eq 0 ]

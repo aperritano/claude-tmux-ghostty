@@ -1,0 +1,271 @@
+#!/usr/bin/env bash
+# tmux-claude-audit — integrity checks for the claude-tmux-ghostty dotfiles repo
+#
+# Usage: bash bin/tmux-claude-audit
+# Exit:  0 = all PASS or WARN only; 1 = at least one FAIL
+#
+# Bash 3.2 compatible (macOS floor). No mapfile, declare -A, ${var,,}, etc.
+
+PASS=0; WARN=0; FAIL=0
+
+pass() { printf 'PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
+warn() { printf 'WARN  %s\n' "$1"; WARN=$((WARN + 1)); }
+fail() { printf 'FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
+skip() { printf 'SKIP  %s\n' "$1"; }
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO/bin"
+TMUX_CONF="$REPO/tmux/tmux.conf"
+README="$REPO/README.md"
+INSTALL="$REPO/install.sh"
+SETTINGS="$REPO/claude/settings.json"
+
+# ── 1. bin/ script integrity ──────────────────────────────────────────────
+echo ""
+echo "── bin/ script integrity ──"
+
+for script in \
+  claude-dev \
+  setup-github-ssh \
+  tmux-claude-session \
+  tmux-git-info \
+  tmux-kill-teammate-pane \
+  tmux-pane-label \
+  tmux-session-list \
+  tmux-short-path \
+  tmux-tile-session \
+  tmux-tutorial
+do
+  f="$BIN/$script"
+  if [ ! -f "$f" ]; then
+    fail "$script: file missing"
+    continue
+  fi
+  pass "$script: file exists"
+
+  if [ -x "$f" ]; then
+    pass "$script: executable bit set"
+  else
+    fail "$script: not executable (chmod +x $f)"
+  fi
+
+  shebang=$(head -1 "$f" 2>/dev/null)
+  case "$shebang" in
+    "#!/bin/bash"|"#!/usr/bin/env bash"|"#!/bin/zsh"|"#!/usr/bin/env zsh")
+      pass "$script: valid shebang" ;;
+    *)
+      fail "$script: unexpected shebang: $shebang" ;;
+  esac
+done
+
+# ── 2. tmux.conf existence and bin/ wiring ────────────────────────────────
+echo ""
+echo "── tmux.conf → bin/ wiring ──"
+
+if [ ! -f "$TMUX_CONF" ]; then
+  fail "tmux/tmux.conf: missing"
+else
+  pass "tmux/tmux.conf: exists"
+
+  while IFS= read -r script; do
+    if [ -f "$BIN/$script" ]; then
+      pass "tmux.conf refs ~/bin/$script: present"
+    else
+      fail "tmux.conf refs ~/bin/$script: MISSING in bin/"
+    fi
+  done < <(grep -oE '~/bin/[a-zA-Z0-9_-]+|\$HOME/bin/[a-zA-Z0-9_-]+' "$TMUX_CONF" \
+    | sed 's|.*bin/||' | sort -u)
+fi
+
+# ── 3. README ↔ bin/ consistency ─────────────────────────────────────────
+echo ""
+echo "── README ↔ bin/ consistency ──"
+
+if [ ! -f "$README" ]; then
+  fail "README.md: missing"
+else
+  pass "README.md: exists"
+
+  # Check that each known bin/ script is at least mentioned in README
+  # (README uses bare names in the file-tree, not bin/scriptname prefixes)
+  for script in \
+    claude-dev setup-github-ssh tmux-claude-session tmux-git-info \
+    tmux-kill-teammate-pane tmux-pane-label tmux-session-list tmux-short-path \
+    tmux-tile-session tmux-tutorial tmux-claude-audit tmux-claude-test
+  do
+    if grep -q "$script" "$README" 2>/dev/null; then
+      pass "README mentions $script"
+    else
+      warn "README does not mention $script — add to bin/ section"
+    fi
+  done
+fi
+
+# ── 4. Dead-code check: scripts not referenced anywhere ───────────────────
+echo ""
+echo "── dead-code check ──"
+
+for f in "$BIN"/*; do
+  script=$(basename "$f")
+  # README uses bare script names in the file-tree and prose, not bin/scriptname
+  conf_refs=$(grep -c "bin/$script" "$TMUX_CONF" 2>/dev/null) || conf_refs=0
+  readme_refs=$(grep -c "$script" "$README" 2>/dev/null) || readme_refs=0
+  install_refs=$(grep -c "$script" "$INSTALL" 2>/dev/null) || install_refs=0
+  zsh_refs=$(grep -c "$script" "$REPO/zsh/zshrc" 2>/dev/null) || zsh_refs=0
+  total=$((conf_refs + readme_refs + install_refs + zsh_refs))
+
+  if [ "$total" -eq 0 ]; then
+    warn "bin/$script: not referenced in tmux.conf, README, install.sh, or zshrc"
+  else
+    pass "bin/$script: referenced (tmux.conf=${conf_refs} README=${readme_refs} install=${install_refs} zsh=${zsh_refs})"
+  fi
+done
+
+# ── 5. install.sh symlink source files ───────────────────────────────────
+echo ""
+echo "── install.sh symlink source files ──"
+
+if [ ! -f "$INSTALL" ]; then
+  fail "install.sh: missing"
+else
+  pass "install.sh: exists"
+  if [ -x "$INSTALL" ]; then
+    pass "install.sh: executable"
+  else
+    fail "install.sh: not executable"
+  fi
+
+  # Check each known symlink source referenced in install.sh
+  for src in \
+    zsh/zshrc \
+    zsh/p10k.zsh \
+    vim/vimrc \
+    git/gitconfig \
+    git/gitignore_global \
+    ghostty/config \
+    "ghostty/themes/Green CRT" \
+    ghostty/themes/claude-code \
+    ghostty/themes/claude-code-light \
+    ghostty/themes/claude-quiet \
+    tmux/tmux.conf \
+    claude/statusline-command.sh \
+    claude/settings.json \
+    claude/settings.local.json \
+    claude/CLAUDE.md \
+    "claude/rules/deterministic-execution-protocol.md"
+  do
+    if [ -e "$REPO/$src" ]; then
+      pass "install.sh src $src: exists"
+    else
+      fail "install.sh src $src: MISSING"
+    fi
+  done
+fi
+
+# ── 6. Ghostty config and themes ─────────────────────────────────────────
+echo ""
+echo "── ghostty config and themes ──"
+
+if [ -f "$REPO/ghostty/config" ]; then
+  pass "ghostty/config: exists"
+else
+  fail "ghostty/config: missing"
+fi
+
+if [ -d "$REPO/ghostty/themes" ]; then
+  theme_count=$(ls "$REPO/ghostty/themes" 2>/dev/null | wc -l | tr -d ' ')
+  pass "ghostty/themes/: exists ($theme_count themes)"
+else
+  fail "ghostty/themes/: directory missing"
+fi
+
+# ── 7. Claude files ───────────────────────────────────────────────────────
+echo ""
+echo "── claude/ config files ──"
+
+for f in \
+  claude/CLAUDE.md \
+  claude/settings.json \
+  claude/settings.local.json \
+  claude/statusline-command.sh \
+  claude/rules/deterministic-execution-protocol.md
+do
+  if [ -e "$REPO/$f" ]; then
+    pass "$f: exists"
+  else
+    fail "$f: missing"
+  fi
+done
+
+# Validate settings.json is parseable JSON
+if [ -f "$SETTINGS" ]; then
+  if python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$SETTINGS" 2>/dev/null; then
+    pass "claude/settings.json: valid JSON"
+  elif command -v jq > /dev/null 2>&1 && jq empty "$SETTINGS" > /dev/null 2>&1; then
+    pass "claude/settings.json: valid JSON (jq)"
+  else
+    warn "claude/settings.json: could not validate JSON (no python3 or jq)"
+  fi
+fi
+
+# ── 8. Known doc/impl skews ───────────────────────────────────────────────
+echo ""
+echo "── known doc/impl skews ──"
+
+# SubagentStop hook: README implies auto-clean, but settings.json has no hook
+if grep -q "SubagentStop\|auto-clean.*pane\|auto-cleans" "$README" 2>/dev/null; then
+  if grep -q "SubagentStop" "$SETTINGS" 2>/dev/null; then
+    pass "SubagentStop hook: README claim backed by hook in settings.json"
+  else
+    warn "SubagentStop hook: README implies auto-clean on SubagentStop but no hook found in claude/settings.json (open owner decision — wire hook or update README)"
+  fi
+else
+  pass "SubagentStop hook: README makes no wiring claim"
+fi
+
+# settings.json statusline: check for hardcoded /Users/... path (not portable)
+if grep -q '"command"' "$SETTINGS" 2>/dev/null; then
+  if grep -q '/Users/' "$SETTINGS" 2>/dev/null; then
+    warn "claude/settings.json: statusline command contains hardcoded /Users/... path — not portable for other users"
+  else
+    pass "claude/settings.json: statusline command path appears portable"
+  fi
+fi
+
+# tmux-session-list: script exists but status-left uses #{S:...} builtin instead
+if grep -q "tmux-session-list" "$TMUX_CONF" 2>/dev/null; then
+  pass "tmux-session-list: wired in tmux.conf"
+else
+  warn "tmux-session-list: bin/ script exists but not referenced in tmux.conf (status-left uses #{S:...} builtin)"
+fi
+
+# tmux-pane-label: script exists but pane-border-format not set in tmux.conf
+if grep -q "tmux-pane-label\|pane-border-format" "$TMUX_CONF" 2>/dev/null; then
+  pass "tmux-pane-label: referenced in tmux.conf"
+else
+  warn "tmux-pane-label: bin/ script exists but pane-border-format not set in tmux.conf — label never shown"
+fi
+
+# tmux-tile-session: early argument validation (guards set -euo pipefail exit)
+tile_script="$BIN/tmux-tile-session"
+if grep -q "case.*action.*tile|untile|toggle" "$tile_script" 2>/dev/null \
+   || (grep -n "case.*action" "$tile_script" 2>/dev/null | head -1 | grep -q "^[0-9]*:"); then
+  # Check that the first case appears before the session= line
+  first_case=$(grep -n "case.*action" "$tile_script" 2>/dev/null | head -1 | cut -d: -f1)
+  session_line=$(grep -n "session=\$(tmux display-message" "$tile_script" 2>/dev/null | head -1 | cut -d: -f1)
+  if [ -n "$first_case" ] && [ -n "$session_line" ] && [ "$first_case" -lt "$session_line" ]; then
+    pass "tmux-tile-session: argument validated before tmux display-message call"
+  else
+    fail "tmux-tile-session: argument validation comes after tmux display-message — usage unreachable outside tmux"
+  fi
+else
+  fail "tmux-tile-session: no argument validation found"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────
+echo ""
+echo "────────────────────────────────────────────"
+printf 'Audit complete: %d PASS / %d WARN / %d FAIL\n' "$PASS" "$WARN" "$FAIL"
+echo "────────────────────────────────────────────"
+
+[ "$FAIL" -eq 0 ]

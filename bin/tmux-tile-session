@@ -9,6 +9,15 @@
 set -euo pipefail
 
 action=${1:-toggle}
+
+# Validate argument before any tmux calls. Without this guard, set -euo pipefail
+# exits on `tmux display-message` when tmux isn't running, making the usage
+# message unreachable for invalid arguments (the error was a silent non-zero exit).
+case "$action" in
+  tile|untile|toggle) ;;
+  *) echo "Usage: $0 {tile|untile|toggle}" >&2; exit 1 ;;
+esac
+
 session=$(tmux display-message -p '#{session_name}')
 
 is_tiled() {
@@ -115,5 +124,4 @@ case "$action" in
   tile)   tile ;;
   untile) untile ;;
   toggle) is_tiled && untile || tile ;;
-  *)      echo "Usage: $0 {tile|untile|toggle}" >&2; exit 1 ;;
 esac
