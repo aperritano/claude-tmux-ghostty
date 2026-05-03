@@ -70,7 +70,9 @@ dotfiles/
 ├── bin/
 │   ├── setup-github-ssh         # Generate SSH key and upload to GitHub
 │   ├── claude-dev              # Named tmux session launcher for Claude Code projects
+│   ├── tmux-claude-audit       # Living spec — audits every shipped component (PASS/WARN/FAIL)
 │   ├── tmux-claude-session     # Session ID + active sub-agent count for status bar
+│   ├── tmux-claude-test        # Regression tests for bin/ scripts (PASS/FAIL/SKIP)
 │   ├── tmux-git-info           # Branch + dirty indicator (worktree-aware)
 │   ├── tmux-kill-teammate-pane # Auto-close teammate panes when agents finish
 │   ├── tmux-pane-label         # Pane border label — repo, branch, ahead/behind
