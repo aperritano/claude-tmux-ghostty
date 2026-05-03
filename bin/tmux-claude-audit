@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# tmux-claude-audit — static health check for the claude-tmux-ghostty repo
+# Usage: bin/tmux-claude-audit [--quiet]
+# Exit 0 if FAIL count is 0, non-zero otherwise.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO_ROOT/bin"
+CONF="$REPO_ROOT/tmux/tmux.conf"
+README="$REPO_ROOT/README.md"
+QUIET=0
+[[ "${1:-}" == "--quiet" ]] && QUIET=1
+
+PASS=0; WARN=0; FAIL=0
+
+pass() { PASS=$((PASS+1)); [ "$QUIET" -eq 0 ] && printf "  PASS  %s\n" "$*"; }
+warn() { WARN=$((WARN+1)); printf "  WARN  %s\n" "$*"; }
+fail() { FAIL=$((FAIL+1)); printf "  FAIL  %s\n" "$*"; }
+section() { [ "$QUIET" -eq 0 ] && printf "\n── %s ──\n" "$*"; }
+
+# ── 1. bin/ scripts: exist, executable, valid shebang ───────────────────────
+section "bin/ scripts"
+SCRIPTS=(
+  claude-dev setup-github-ssh
+  tmux-claude-audit tmux-claude-session tmux-claude-test
+  tmux-git-info tmux-kill-teammate-pane tmux-pane-label
+  tmux-session-list tmux-short-path tmux-tile-session tmux-tutorial
+)
+for s in "${SCRIPTS[@]}"; do
+  f="$BIN/$s"
+  if [ -f "$f" ]; then
+    pass "$s: exists"
+    [ -x "$f" ] && pass "$s: executable" || fail "$s: not executable"
+    head -1 "$f" | grep -q '^#!' && pass "$s: has shebang" || fail "$s: missing shebang"
+  else
+    fail "$s: missing"
+    fail "$s: (executable check skipped)"
+    fail "$s: (shebang check skipped)"
+  fi
+done
+
+# ── 2. Key config files exist ────────────────────────────────────────────────
+section "Config files"
+for c in "tmux/tmux.conf" "ghostty/config" "install.sh" \
+         "claude/CLAUDE.md" "Brewfile" "README.md" "zsh/zshrc"; do
+  [ -f "$REPO_ROOT/$c" ] && pass "$c: exists" || fail "$c: missing"
+done
+
+# ── 3. tmux.conf critical options ────────────────────────────────────────────
+section "tmux.conf structure"
+_conf() {
+  local label="$1"; shift
+  grep -qE "$*" "$CONF" && pass "tmux.conf: $label" || fail "tmux.conf: $label"
+}
+_conf "prefix C-a"       "set.*prefix C-a"
+_conf "base-index 1"     "base-index 1"
+_conf "escape-time 0"    "escape-time 0"
+_conf "allow-passthrough" "allow-passthrough on"
+_conf "mouse on"          "mouse on"
+_conf "status-interval"   "status-interval"
+_conf "history-limit"     "history-limit"
+_conf "renumber-windows"  "renumber-windows on"
+
+# ── 4. tmux.conf pane navigation ─────────────────────────────────────────────
+section "tmux.conf pane nav"
+for dir in h j k l; do
+  grep -q "bind -n C-${dir} select-pane" "$CONF" \
+    && pass "tmux.conf: C-${dir} nav" || fail "tmux.conf: C-${dir} nav missing"
+done
+
+# ── 5. tmux.conf → bin/ wiring ───────────────────────────────────────────────
+section "tmux.conf bin/ wiring"
+wired=$(grep -oE '(~/bin|\$HOME/bin)/[a-zA-Z0-9_-]+' "$CONF" | sort -u | sed 's|.*/||')
+for s in $wired; do
+  [ -f "$BIN/$s" ] && pass "wired: $s resolves" || fail "wired: $s missing in bin/"
+done
+
+# ── 6. Bash 3.2 portability ──────────────────────────────────────────────────
+# Meta-tools (tmux-claude-audit, tmux-claude-test) are excluded: they contain
+# these patterns intentionally inside their own grep invocations.
+section "Bash 3.2 portability"
+for f in "$BIN"/*; do
+  [ -f "$f" ] || continue
+  head -1 "$f" | grep -qE '#!/.*bash' || continue
+  name=$(basename "$f")
+  case "$name" in tmux-claude-audit|tmux-claude-test) continue ;; esac
+  grep -qE 'mapfile|readarray' "$f" \
+    && fail "$name: uses mapfile/readarray (bash 4+)" || pass "$name: no mapfile"
+  grep -qE 'declare -A' "$f" \
+    && fail "$name: uses declare -A (bash 4+)"        || pass "$name: no declare -A"
+  grep -qE '\$\{[a-zA-Z_][a-zA-Z_0-9]*,,' "$f" \
+    && fail "$name: uses \${var,,} (bash 4+)"          || pass "$name: no \${var,,}"
+done
+
+# ── 7. BSD tail -r (portability) ─────────────────────────────────────────────
+# Meta-tools excluded for the same reason as section 6.
+section "BSD tail -r"
+for f in "$BIN"/*; do
+  [ -f "$f" ] || continue
+  name=$(basename "$f")
+  case "$name" in tmux-claude-audit|tmux-claude-test) continue ;; esac
+  grep -q 'tail -r' "$f" \
+    && warn "$name: uses BSD-only 'tail -r' (will break on Linux/CI)" \
+    || pass "$name: no tail -r"
+done
+
+# ── 8. README mentions every bin/ script ─────────────────────────────────────
+section "README coverage"
+for f in "$BIN"/*; do
+  [ -f "$f" ] || continue
+  name=$(basename "$f")
+  grep -q "$name" "$README" \
+    && pass "README: mentions $name" \
+    || warn "README: does not mention $name"
+done
+
+# ── 9. Specific correctness checks ───────────────────────────────────────────
+section "Correctness checks"
+
+# claude-dev: must use switch-client (not bare attach) when TMUX is set
+grep -q 'switch-client' "$BIN/claude-dev" \
+  && pass "claude-dev: has switch-client guard for nested tmux" \
+  || fail "claude-dev: missing switch-client — 'tmux attach' fails inside tmux"
+
+# tmux-short-path: non-home paths must not use ~/… prefix
+grep -q "'~'\*" "$BIN/tmux-short-path" \
+  && pass "tmux-short-path: non-home prefix fix present" \
+  || fail "tmux-short-path: missing non-home prefix fix (non-HOME paths get ~/… prefix)"
+
+# ── 10. Known open questions (WARN, not FAIL) ────────────────────────────────
+section "Known open questions"
+SETTINGS="$REPO_ROOT/claude/settings.json"
+if grep -q "tmux-kill-teammate-pane" "$README" 2>/dev/null && \
+   ! grep -q '"hooks"' "$SETTINGS" 2>/dev/null; then
+  warn "tmux-kill-teammate-pane: README claims SubagentStop hook, but settings.json has no 'hooks' section"
+fi
+
+if ! grep -q 'tmux-session-list' "$CONF" 2>/dev/null; then
+  warn "tmux-session-list: not referenced in tmux.conf — may be dead code (status-left uses native #{S:...})"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+printf "\n%d PASS / %d WARN / %d FAIL\n" "$PASS" "$WARN" "$FAIL"
+[ "$FAIL" -eq 0 ]

@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# tmux-claude-test — regression test suite for bin/ scripts
+# Usage: bin/tmux-claude-test
+# CI-safe: skips tests that require zsh or a live tmux server.
+# Exit 0 if FAIL count is 0, non-zero otherwise.
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO_ROOT/bin"
+
+PASS=0; FAIL=0; SKIP=0
+
+pass() { PASS=$((PASS+1)); printf "  PASS  %s\n" "$*"; }
+fail() { FAIL=$((FAIL+1)); printf "  FAIL  %s\n" "$*"; }
+skip() { SKIP=$((SKIP+1)); printf "  SKIP  %s\n" "$*"; }
+section() { printf "\n── %s ──\n" "$*"; }
+
+have_zsh()  { command -v zsh  >/dev/null 2>&1; }
+have_tmux() { tmux list-sessions >/dev/null 2>&1; }
+
+# ── Syntax checks ─────────────────────────────────────────────────────────────
+section "Syntax"
+for f in "$BIN"/*; do
+  [ -f "$f" ] || continue
+  name=$(basename "$f")
+  shebang=$(head -1 "$f")
+  case "$shebang" in
+    *bash*)
+      bash -n "$f" 2>/dev/null \
+        && pass "$name: bash syntax" || fail "$name: bash syntax error"
+      ;;
+    *zsh*)
+      if have_zsh; then
+        zsh -n "$f" 2>/dev/null \
+          && pass "$name: zsh syntax" || fail "$name: zsh syntax error"
+      else
+        skip "$name: zsh syntax (zsh not available)"
+      fi
+      ;;
+  esac
+done
+
+# ── tmux-short-path ────────────────────────────────────────────────────────────
+section "tmux-short-path"
+SP="$BIN/tmux-short-path"
+if have_zsh; then
+  H="$HOME"
+
+  result=$(zsh "$SP" "$H")
+  [ "$result" = "~" ] \
+    && pass "short-path: HOME → ~" \
+    || fail "short-path: HOME → ~ (got '$result')"
+
+  result=$(zsh "$SP" "$H/dev")
+  [ "$result" = "~/dev" ] \
+    && pass "short-path: 2-level unchanged" \
+    || fail "short-path: 2-level unchanged (got '$result')"
+
+  result=$(zsh "$SP" "$H/a/b/c/d")
+  [ "$result" = "~/…/c/d" ] \
+    && pass "short-path: 4-level collapsed" \
+    || fail "short-path: 4-level collapsed (got '$result')"
+
+  # Regression: non-HOME path must NOT use ~/… prefix
+  result=$(zsh "$SP" "/opt/homebrew/Cellar/something/bin")
+  case "$result" in
+    '~'*) fail "short-path: non-home path wrongly uses ~/… prefix (got '$result')" ;;
+    *)    pass "short-path: non-home path does not use ~/… prefix" ;;
+  esac
+
+  result=$(zsh "$SP" "$H/very/long/path/that/exceeds/the/limit/here")
+  [ "${#result}" -le 30 ] \
+    && pass "short-path: 30-char hard cap" \
+    || fail "short-path: 30-char cap exceeded (${#result} chars: '$result')"
+
+  result=$(zsh "$SP" "$H/dev/myrepo/.worktrees/feature-foo")
+  case "$result" in
+    wt:*) pass "short-path: worktree → wt: prefix" ;;
+    *)    fail "short-path: worktree prefix (got '$result')" ;;
+  esac
+else
+  for t in "HOME → ~" "2-level unchanged" "4-level collapsed" \
+           "non-home prefix" "30-char cap" "worktree prefix"; do
+    skip "short-path: $t (zsh not available)"
+  done
+fi
+
+# ── tmux-pane-label ────────────────────────────────────────────────────────────
+section "tmux-pane-label"
+PL="$BIN/tmux-pane-label"
+
+result=$(bash "$PL" /tmp 2>/dev/null)
+[ "$result" = "tmp" ] \
+  && pass "pane-label: non-git dir → dirname" \
+  || fail "pane-label: non-git dir (got '$result')"
+
+bash "$PL" /nonexistent/path/here >/dev/null 2>&1
+status=$?
+[ "$status" -le 1 ] \
+  && pass "pane-label: non-existent path exits cleanly" \
+  || fail "pane-label: non-existent path exited $status"
+
+result=$(bash "$PL" "$REPO_ROOT" 2>/dev/null)
+[ -n "$result" ] \
+  && pass "pane-label: git repo produces output" \
+  || fail "pane-label: git repo produced empty output"
+
+# ── tmux-session-list ──────────────────────────────────────────────────────────
+section "tmux-session-list"
+SL="$BIN/tmux-session-list"
+
+result=$(bash "$SL" "" 2>/dev/null)
+status=$?
+[ "$status" -eq 0 ] \
+  && pass "session-list: exits 0 without server" \
+  || fail "session-list: exited $status without server"
+[ -z "$result" ] \
+  && pass "session-list: empty output without server" \
+  || fail "session-list: non-empty output without server (got '$result')"
+
+# ── tmux-kill-teammate-pane ────────────────────────────────────────────────────
+section "tmux-kill-teammate-pane"
+KP="$BIN/tmux-kill-teammate-pane"
+if have_zsh; then
+  TMUX="" zsh "$KP" 2>/dev/null
+  status=$?
+  [ "$status" -eq 0 ] \
+    && pass "kill-teammate: exits 0 when TMUX unset (safety guard)" \
+    || fail "kill-teammate: exited $status when TMUX unset"
+else
+  skip "kill-teammate: exits 0 without TMUX (zsh not available)"
+fi
+
+# ── tmux-claude-session ────────────────────────────────────────────────────────
+section "tmux-claude-session"
+CS="$BIN/tmux-claude-session"
+if have_zsh; then
+  zsh "$CS" 2>/dev/null
+  [ $? -eq 0 ] \
+    && pass "claude-session: no args exits 0" \
+    || fail "claude-session: no args non-zero"
+
+  zsh "$CS" /dev/ttyNONEXISTENT 2>/dev/null
+  [ $? -eq 0 ] \
+    && pass "claude-session: bogus TTY exits 0" \
+    || fail "claude-session: bogus TTY non-zero"
+else
+  skip "claude-session: no args exits 0 (zsh not available)"
+  skip "claude-session: bogus TTY exits 0 (zsh not available)"
+fi
+
+# ── tmux-git-info ──────────────────────────────────────────────────────────────
+section "tmux-git-info"
+GI="$BIN/tmux-git-info"
+if have_zsh; then
+  result=$(zsh "$GI" /tmp 2>/dev/null)
+  [ -z "$result" ] \
+    && pass "git-info: non-git dir → empty output" \
+    || fail "git-info: non-git dir non-empty (got '$result')"
+
+  result=$(zsh "$GI" "$REPO_ROOT" 2>/dev/null)
+  [ -n "$result" ] \
+    && pass "git-info: git repo → non-empty output" \
+    || fail "git-info: git repo produced empty output"
+else
+  skip "git-info: non-git dir empty (zsh not available)"
+  skip "git-info: git repo non-empty (zsh not available)"
+fi
+
+# ── claude-dev: TMUX guard (regression for attach→switch-client fix) ──────────
+section "claude-dev"
+CD="$BIN/claude-dev"
+
+grep -q 'switch-client' "$CD" \
+  && pass "claude-dev: contains switch-client" \
+  || fail "claude-dev: missing switch-client — revert of attach→switch-client fix"
+
+grep -q 'TMUX' "$CD" \
+  && pass "claude-dev: checks \$TMUX before attaching" \
+  || fail "claude-dev: does not check \$TMUX env"
+
+# ── tmux-tile-session ──────────────────────────────────────────────────────────
+section "tmux-tile-session"
+TS="$BIN/tmux-tile-session"
+if have_tmux; then
+  skip "tmux-tile-session: has live server — skipping no-server exit test"
+else
+  bash "$TS" toggle >/dev/null 2>&1
+  status=$?
+  [ "$status" -ne 0 ] \
+    && pass "tile-session: exits non-zero without tmux server" \
+    || fail "tile-session: unexpectedly exited 0 without tmux server"
+fi
+
+# ── Summary ────────────────────────────────────────────────────────────────────
+printf "\n%d PASS / %d FAIL / %d SKIP\n" "$PASS" "$FAIL" "$SKIP"
+[ "$FAIL" -eq 0 ]
