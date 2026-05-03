@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# bin/tmux-claude-audit — living spec for the claude-tmux-ghostty repo
+# Every shipped component gets an audit check here.
+# Usage: bash bin/tmux-claude-audit [--quiet]
+# Exit 0 if zero FAILs; exit 1 if any FAIL.
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+QUIET=0
+[[ "${1:-}" == "--quiet" ]] && QUIET=1
+
+PASS=0; WARN=0; FAIL=0
+
+_pass() { PASS=$((PASS+1)); [ "$QUIET" -eq 1 ] || printf 'PASS  %s\n' "$1"; }
+_warn() { WARN=$((WARN+1));                       printf 'WARN  %s\n' "$1"; }
+_fail() { FAIL=$((FAIL+1));                       printf 'FAIL  %s\n' "$1"; }
+
+file_check() {
+  local label="$1" path="$2"
+  if [ -f "$path" ]; then _pass "$label: exists"
+  else                    _fail "$label: missing ($path)"
+  fi
+}
+
+grep_check() {
+  local label="$1" file="$2" pattern="$3"
+  if grep -qE "$pattern" "$file" 2>/dev/null; then _pass "$label"
+  else                                             _fail "$label"
+  fi
+}
+
+grep_warn() {
+  local label="$1" file="$2" pattern="$3"
+  if grep -qE "$pattern" "$file" 2>/dev/null; then _warn "$label"
+  fi
+}
+
+# ─── Bin scripts: exists / executable / shebang ───────────────────────────────
+
+BIN_SCRIPTS=(
+  tmux-claude-audit
+  tmux-claude-test
+  claude-dev
+  setup-github-ssh
+  tmux-claude-session
+  tmux-git-info
+  tmux-kill-teammate-pane
+  tmux-pane-label
+  tmux-session-list
+  tmux-short-path
+  tmux-tile-session
+  tmux-tutorial
+)
+
+for s in "${BIN_SCRIPTS[@]}"; do
+  f="$REPO_ROOT/bin/$s"
+  if [ -f "$f" ]; then _pass "bin/$s: exists"
+  else               _fail "bin/$s: missing"
+  fi
+done
+
+for s in "${BIN_SCRIPTS[@]}"; do
+  f="$REPO_ROOT/bin/$s"
+  [ -f "$f" ] || continue
+  if [ -x "$f" ]; then _pass "bin/$s: executable"
+  else               _fail "bin/$s: not executable (run: chmod +x bin/$s)"
+  fi
+done
+
+for s in "${BIN_SCRIPTS[@]}"; do
+  f="$REPO_ROOT/bin/$s"
+  [ -f "$f" ] || continue
+  shebang=$(head -1 "$f")
+  if echo "$shebang" | grep -qE '^#!.*(bash|zsh|env bash|env zsh)$'; then
+    _pass "bin/$s: valid shebang"
+  else
+    _fail "bin/$s: unexpected shebang: $shebang"
+  fi
+done
+
+# ─── Shell compatibility: bash scripts must not use bash 4+ features ──────────
+
+BASH4_PATTERN='(^|[[:space:]])declare[[:space:]]+-[a-zA-Z]*A|mapfile[[:space:]]|\$\{[a-zA-Z_][a-zA-Z0-9_]*,,\}|\$\{[a-zA-Z_][a-zA-Z0-9_]*\^\^\}'
+
+for s in tmux-pane-label tmux-session-list tmux-tile-session; do
+  f="$REPO_ROOT/bin/$s"
+  [ -f "$f" ] || continue
+  if grep -qEe "$BASH4_PATTERN" "$f" 2>/dev/null; then
+    _fail "bin/$s: uses bash 4+ features (incompatible with macOS bash 3.2)"
+  else
+    _pass "bin/$s: no bash 4+ features"
+  fi
+done
+
+f="$REPO_ROOT/install.sh"
+if [ -f "$f" ]; then
+  shebang=$(head -1 "$f")
+  if echo "$shebang" | grep -qE '#!.*(bash|env bash)'; then _pass "install.sh: bash shebang"
+  else                                                     _fail "install.sh: expected bash shebang, got: $shebang"
+  fi
+else
+  _fail "install.sh: missing"
+fi
+
+# ─── tmux.conf ────────────────────────────────────────────────────────────────
+
+TC="$REPO_ROOT/tmux/tmux.conf"
+file_check "tmux/tmux.conf" "$TC"
+
+grep_check "tmux.conf: escape-time 0"         "$TC" 'escape-time\s+0'
+grep_check "tmux.conf: allow-passthrough on"  "$TC" 'allow-passthrough\s+on'
+grep_check "tmux.conf: mouse on"              "$TC" 'set\s+-g\s+mouse\s+on'
+grep_check "tmux.conf: history-limit ≥10k"   "$TC" 'history-limit\s+[0-9]{5,}'
+grep_check "tmux.conf: prefix C-a"           "$TC" 'set\s+-g\s+prefix\s+C-a'
+grep_check "tmux.conf: base-index 1"         "$TC" 'base-index\s+1'
+grep_check "tmux.conf: renumber-windows on"  "$TC" 'renumber-windows\s+on'
+grep_check "tmux.conf: set-clipboard on"     "$TC" 'set-clipboard\s+on'
+grep_check "tmux.conf: pane-border-lines heavy" "$TC" 'pane-border-lines\s+heavy'
+grep_check "tmux.conf: status-position bottom"  "$TC" 'status-position\s+bottom'
+grep_check "tmux.conf: status-interval"         "$TC" 'status-interval\s+[0-9]'
+
+# Script references in status-right
+grep_check "tmux.conf: calls tmux-short-path"     "$TC" 'tmux-short-path'
+grep_check "tmux.conf: calls tmux-git-info"       "$TC" 'tmux-git-info'
+grep_check "tmux.conf: calls tmux-claude-session" "$TC" 'tmux-claude-session'
+
+# Key bindings
+grep_check "tmux.conf: bind c (new Claude pane)"    "$TC" 'bind\s+c\s+split-window'
+grep_check "tmux.conf: bind g (session manager)"    "$TC" 'bind\s+g\s+display-popup'
+grep_check "tmux.conf: bind E (tile toggle)"        "$TC" 'bind\s+E\s+run-shell.*tmux-tile-session'
+grep_check "tmux.conf: bind X (kill panes)"         "$TC" 'bind\s+X\s+'
+grep_check "tmux.conf: Ctrl-h/j/k/l nav (C-h)"     "$TC" 'bind\s+-n\s+C-h\s+select-pane'
+
+# Status bar must use ANSI palette refs (colour[N]), not hardcoded hex, for theme portability
+if grep -E 'set\s+-g\s+status-(left|right)\s+' "$TC" 2>/dev/null | grep -qE '#[0-9A-Fa-f]{6}'; then
+  _warn "tmux.conf: status bar uses hardcoded hex colors — breaks theme portability; prefer ANSI colour[N] refs"
+else
+  _pass "tmux.conf: status bar uses ANSI palette refs (theme-portable)"
+fi
+
+# ─── install.sh coverage ──────────────────────────────────────────────────────
+
+IS="$REPO_ROOT/install.sh"
+grep_check "install.sh: links tmux.conf"            "$IS" 'link.*tmux\.conf'
+grep_check "install.sh: links bin scripts (glob)"   "$IS" 'for.*bin/\*|link.*bin/'
+grep_check "install.sh: links ghostty/config"       "$IS" 'ghostty/config'
+grep_check "install.sh: links claude/CLAUDE.md"     "$IS" 'CLAUDE\.md'
+grep_check "install.sh: links statusline-command"   "$IS" 'statusline-command\.sh'
+
+# ─── Ghostty ──────────────────────────────────────────────────────────────────
+
+GC="$REPO_ROOT/ghostty/config"
+file_check "ghostty/config" "$GC"
+
+grep_check "ghostty/config: claude-code theme set" "$GC" 'claude-code'
+grep_check "ghostty/config: font configured"       "$GC" 'font-family\s*='
+grep_check "ghostty/config: shell-integration"     "$GC" 'shell-integration\s*='
+
+for theme in "claude-code" "claude-code-light" "claude-quiet" "Green CRT"; do
+  if [ -f "$REPO_ROOT/ghostty/themes/$theme" ]; then
+    _pass "ghostty/themes/$theme: exists"
+  else
+    _fail "ghostty/themes/$theme: missing"
+  fi
+done
+
+# ─── Claude files ─────────────────────────────────────────────────────────────
+
+for f in CLAUDE.md settings.json settings.local.json statusline-command.sh; do
+  file_check "claude/$f" "$REPO_ROOT/claude/$f"
+done
+file_check "claude/rules/deterministic-execution-protocol.md" \
+  "$REPO_ROOT/claude/rules/deterministic-execution-protocol.md"
+
+# ─── Root + per-tool config files ─────────────────────────────────────────────
+
+file_check "Brewfile"              "$REPO_ROOT/Brewfile"
+file_check ".env.template"         "$REPO_ROOT/.env.template"
+file_check ".gitignore"            "$REPO_ROOT/.gitignore"
+file_check "zsh/zshrc"             "$REPO_ROOT/zsh/zshrc"
+file_check "zsh/p10k.zsh"          "$REPO_ROOT/zsh/p10k.zsh"
+file_check "vim/vimrc"             "$REPO_ROOT/vim/vimrc"
+file_check "git/gitconfig"         "$REPO_ROOT/git/gitconfig"
+file_check "git/gitignore_global"  "$REPO_ROOT/git/gitignore_global"
+
+# ─── README coverage ──────────────────────────────────────────────────────────
+
+README="$REPO_ROOT/README.md"
+for s in "${BIN_SCRIPTS[@]}"; do
+  if grep -q "$s" "$README" 2>/dev/null; then
+    _pass "README: documents bin/$s"
+  else
+    _warn "README: does not document bin/$s"
+  fi
+done
+
+# ─── Known doc/impl skews (WARN only, never FAIL — owner decides) ─────────────
+
+# 1. README claims tmux-kill-teammate-pane auto-cleans on SubagentStop,
+#    but no hook is wired in claude/settings.json.
+settings="$REPO_ROOT/claude/settings.json"
+if [ -f "$settings" ] && grep -qE 'SubagentStop|TeammateIdle' "$settings" 2>/dev/null; then
+  _pass "claude/settings.json: SubagentStop hook wired"
+else
+  _warn "DOC/IMPL SKEW: README claims tmux-kill-teammate-pane auto-cleans on SubagentStop, but no hook found in claude/settings.json — owner decision pending (see PR history)"
+fi
+
+# 2. tmux-session-list uses hardcoded hex colors; tmux.conf uses ANSI palette refs.
+if [ -f "$REPO_ROOT/bin/tmux-session-list" ] && grep -qE '#[0-9A-Fa-f]{6}' "$REPO_ROOT/bin/tmux-session-list" 2>/dev/null; then
+  _warn "bin/tmux-session-list: hardcoded hex colors break theme portability (tmux.conf uses ANSI colour[N] refs)"
+fi
+
+# 3. tmux-session-list appears to be dead code (status-left now uses #{S:...} format).
+if ! grep -q 'tmux-session-list' "$TC" 2>/dev/null; then
+  _warn "bin/tmux-session-list: not called from tmux.conf (status-left uses native #{S:...} format) — may be dead code"
+fi
+
+# ─── Summary ──────────────────────────────────────────────────────────────────
+
+echo ""
+printf '  PASS: %d  WARN: %d  FAIL: %d\n' "$PASS" "$WARN" "$FAIL"
+echo ""
+
+[ "$FAIL" -eq 0 ]

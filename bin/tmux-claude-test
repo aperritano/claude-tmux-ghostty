@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# bin/tmux-claude-test — regression tests for bin/ scripts
+# Usage: bash bin/tmux-claude-test [--quiet]
+# Exit 0 if zero FAILs (SKIPs are not failures); exit 1 if any FAIL.
+#
+# SKIP reasons printed when a dependency is unavailable:
+#   zsh  — tests for #!/bin/zsh scripts (skipped on non-macOS/CI without zsh)
+#   tmux — tests that require a live tmux session
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+QUIET=0
+[[ "${1:-}" == "--quiet" ]] && QUIET=1
+
+PASS=0; FAIL=0; SKIP=0
+
+_pass() { PASS=$((PASS+1)); [ "$QUIET" -eq 1 ] || printf 'PASS  %s\n' "$1"; }
+_fail() { FAIL=$((FAIL+1));                       printf 'FAIL  %s\n' "$*"; }
+_skip() { SKIP=$((SKIP+1));                       printf 'SKIP  %s\n' "$1"; }
+
+# Check for optional runtimes once
+HAS_ZSH=0
+command -v zsh >/dev/null 2>&1 && HAS_ZSH=1
+
+HAS_TMUX_SESSION=0
+tmux list-sessions >/dev/null 2>&1 && HAS_TMUX_SESSION=1
+
+assert_eq() {
+  local desc="$1" got="$2" want="$3"
+  if [ "$got" = "$want" ]; then
+    _pass "$desc"
+  else
+    _fail "$desc: got $(printf '%q' "$got"), want $(printf '%q' "$want")"
+  fi
+}
+
+assert_empty() {
+  local desc="$1" got="$2"
+  if [ -z "$got" ]; then _pass "$desc"
+  else                   _fail "$desc: expected empty output, got: $(printf '%q' "$got")"
+  fi
+}
+
+assert_nonempty() {
+  local desc="$1" got="$2"
+  if [ -n "$got" ]; then _pass "$desc"
+  else                   _fail "$desc: expected non-empty output, got empty"
+  fi
+}
+
+assert_contains() {
+  local desc="$1" haystack="$2" needle="$3"
+  if printf '%s' "$haystack" | grep -qF "$needle"; then _pass "$desc"
+  else _fail "$desc: output $(printf '%q' "$haystack") does not contain $(printf '%q' "$needle")"
+  fi
+}
+
+assert_exit() {
+  local desc="$1" want_code="$2"; shift 2
+  local got_code=0
+  "$@" >/dev/null 2>&1 || got_code=$?
+  if [ "$got_code" -eq "$want_code" ]; then _pass "$desc"
+  else _fail "$desc: expected exit $want_code, got $got_code"
+  fi
+}
+
+# ─── tmux-short-path ──────────────────────────────────────────────────────────
+# Script uses #!/bin/zsh and zsh-specific array syntax; skip if no zsh.
+
+SHORT_PATH="$REPO_ROOT/bin/tmux-short-path"
+
+if [ "$HAS_ZSH" -eq 0 ]; then
+  for desc in \
+    "short-path: home → ~" \
+    "short-path: home/a/b → ~/a/b (≤3 parts)" \
+    "short-path: deep path abbreviates" \
+    "short-path: worktree path → wt:name" \
+    "short-path: long worktree name truncated to 15+ellipsis" \
+    "short-path: hard cap at 30 chars" \
+    "short-path: empty arg → empty output" \
+    "short-path: exit 0 on valid path"
+  do _skip "$desc (zsh unavailable)"; done
+else
+  assert_eq "short-path: home → ~" \
+    "$(zsh "$SHORT_PATH" "$HOME")" "~"
+
+  assert_eq "short-path: home/a/b → ~/a/b (≤3 parts)" \
+    "$(zsh "$SHORT_PATH" "$HOME/a/b")" "~/a/b"
+
+  got=$(zsh "$SHORT_PATH" "$HOME/a/b/c/d")
+  assert_eq "short-path: deep path abbreviates" "$got" "~/…/c/d"
+
+  got=$(zsh "$SHORT_PATH" "$HOME/.worktrees/my-feature")
+  assert_eq "short-path: worktree path → wt:name" "$got" "wt:my-feature"
+
+  # Long worktree name: "a-very-long-feature-branch-name" → "wt:a-very-long-f…"
+  got=$(zsh "$SHORT_PATH" "$HOME/.worktrees/a-very-long-feature-branch-name")
+  assert_eq "short-path: long worktree name truncated to 15+ellipsis" \
+    "$got" "wt:a-very-long-f…"
+
+  # Hard cap: result must be ≤30 chars
+  long_path="$HOME/projects/work/deep/nested/very/long/directory/name"
+  got=$(zsh "$SHORT_PATH" "$long_path")
+  if [ ${#got} -le 30 ]; then _pass "short-path: hard cap at 30 chars (${#got} chars)"
+  else _fail "short-path: hard cap at 30 chars — got ${#got} chars: $got"
+  fi
+
+  assert_empty "short-path: empty arg → empty output" \
+    "$(zsh "$SHORT_PATH" "" 2>/dev/null)"
+
+  assert_exit "short-path: exit 0 on valid path" 0 zsh "$SHORT_PATH" "$HOME"
+fi
+
+# ─── tmux-pane-label ──────────────────────────────────────────────────────────
+# Bash script; runs everywhere.
+
+PANE_LABEL="$REPO_ROOT/bin/tmux-pane-label"
+
+tmpdir=$(mktemp -d)
+got=$("$PANE_LABEL" "$tmpdir" 2>/dev/null)
+assert_eq "pane-label: non-git dir → basename" "$got" "$(basename "$tmpdir")"
+assert_exit "pane-label: non-git dir → exit 0" 0 "$PANE_LABEL" "$tmpdir"
+rmdir "$tmpdir"
+
+# Real git repo (the repo itself): output should contain branch + repo name
+got=$("$PANE_LABEL" "$REPO_ROOT" 2>/dev/null)
+assert_nonempty "pane-label: git repo → non-empty output" "$got"
+
+# ─── tmux-git-info ────────────────────────────────────────────────────────────
+# Script uses #!/bin/zsh; skip if no zsh.
+
+GIT_INFO="$REPO_ROOT/bin/tmux-git-info"
+
+if [ "$HAS_ZSH" -eq 0 ]; then
+  for desc in \
+    "git-info: non-git dir → empty output" \
+    "git-info: non-git dir → exit 0" \
+    "git-info: git repo → non-empty output"
+  do _skip "$desc (zsh unavailable)"; done
+else
+  tmpdir=$(mktemp -d)
+  assert_empty "git-info: non-git dir → empty output" \
+    "$(zsh "$GIT_INFO" "$tmpdir" 2>/dev/null)"
+  assert_exit "git-info: non-git dir → exit 0" 0 zsh "$GIT_INFO" "$tmpdir"
+  rmdir "$tmpdir"
+
+  got=$(zsh "$GIT_INFO" "$REPO_ROOT" 2>/dev/null)
+  assert_nonempty "git-info: git repo → non-empty output" "$got"
+fi
+
+# ─── tmux-claude-session ──────────────────────────────────────────────────────
+# Script uses #!/bin/zsh; skip if no zsh.
+
+CLAUDE_SESSION="$REPO_ROOT/bin/tmux-claude-session"
+
+if [ "$HAS_ZSH" -eq 0 ]; then
+  for desc in \
+    "claude-session: no arg → empty output" \
+    "claude-session: no arg → exit 0" \
+    "claude-session: nonexistent tty → empty output"
+  do _skip "$desc (zsh unavailable)"; done
+else
+  assert_empty "claude-session: no arg → empty output" \
+    "$(zsh "$CLAUDE_SESSION" 2>/dev/null)"
+  assert_exit "claude-session: no arg → exit 0" 0 zsh "$CLAUDE_SESSION"
+
+  # Non-existent TTY: ps won't find a claude process there → empty, exit 0
+  assert_empty "claude-session: nonexistent tty → empty output" \
+    "$(zsh "$CLAUDE_SESSION" /dev/ttyNONEXISTENT 2>/dev/null)"
+fi
+
+# ─── tmux-kill-teammate-pane ──────────────────────────────────────────────────
+# Script uses #!/bin/zsh; skip if no zsh.
+
+KILL_PANE="$REPO_ROOT/bin/tmux-kill-teammate-pane"
+
+if [ "$HAS_ZSH" -eq 0 ]; then
+  _skip "kill-teammate-pane: outside tmux → exit 0 (zsh unavailable)"
+else
+  # Strip TMUX from env so the guard fires
+  got=0
+  env -i HOME="$HOME" PATH="$PATH" zsh "$KILL_PANE" >/dev/null 2>&1 || got=$?
+  assert_eq "kill-teammate-pane: outside tmux → exit 0" "$got" "0"
+fi
+
+# ─── tmux-session-list ────────────────────────────────────────────────────────
+# Bash script; runs everywhere.
+
+SESSION_LIST="$REPO_ROOT/bin/tmux-session-list"
+
+# Without a tmux server the inner 'tmux list-sessions' fails → empty output
+got=$(env TMUX="" "$SESSION_LIST" "nosession" 2>/dev/null)
+assert_empty "session-list: no tmux server → empty output" "$got"
+assert_exit "session-list: no tmux server → exit 0" 0 \
+  env TMUX="" "$SESSION_LIST" "nosession"
+
+if [ "$HAS_TMUX_SESSION" -eq 1 ]; then
+  # With a live server we get ANSI-colored output; just check it's non-empty
+  got=$(tmux list-sessions -F '#S' 2>/dev/null | head -1)
+  if [ -n "$got" ]; then
+    result=$("$SESSION_LIST" "$got" 2>/dev/null)
+    assert_nonempty "session-list: live session → non-empty formatted output" "$result"
+  fi
+else
+  _skip "session-list: live session test (no tmux session)"
+fi
+
+# ─── tmux-tile-session ────────────────────────────────────────────────────────
+# Bash script; arg-validation runs without a tmux session.
+
+TILE="$REPO_ROOT/bin/tmux-tile-session"
+
+assert_exit "tile-session: invalid action → exit 1" 1 "$TILE" "badarg"
+
+if [ "$HAS_TMUX_SESSION" -eq 0 ]; then
+  _skip "tile-session: tile/untile require live tmux session"
+else
+  # is_tiled() reads a tmux option; just check the script doesn't crash
+  assert_exit "tile-session: toggle in live session → exit 0 or 1" 0 "$TILE" toggle || true
+fi
+
+# ─── Summary ──────────────────────────────────────────────────────────────────
+
+echo ""
+printf '  PASS: %d  FAIL: %d  SKIP: %d\n' "$PASS" "$FAIL" "$SKIP"
+echo ""
+
+[ "$FAIL" -eq 0 ]
