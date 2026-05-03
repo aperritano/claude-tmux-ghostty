@@ -1,0 +1,172 @@
+#!/bin/bash
+# tmux-claude-audit — living spec for the claude-tmux-ghostty repo
+# Every shipped tool gets an audit check here.  Run after any change.
+#
+# Exit 0 if no FAILs, non-zero otherwise.
+# Output: one line per check, summary at bottom.
+
+PASS=0; WARN=0; FAIL=0
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO/bin"
+
+pass() { PASS=$((PASS + 1)); printf '  PASS  %s\n' "$*"; }
+warn() { WARN=$((WARN + 1)); printf '  WARN  %s\n' "$*"; }
+fail() { FAIL=$((FAIL + 1)); printf '  FAIL  %s\n' "$*"; }
+section() { printf '\n── %s ──\n' "$*"; }
+
+# ── Bin scripts: exist + executable ──────────────────────
+
+section "bin scripts"
+BIN_SCRIPTS="claude-dev setup-github-ssh tmux-claude-session tmux-git-info
+tmux-kill-teammate-pane tmux-pane-label tmux-session-list
+tmux-short-path tmux-tile-session tmux-tutorial"
+for script in $BIN_SCRIPTS; do
+  f="$BIN/$script"
+  if [ ! -f "$f" ]; then
+    fail "$script: file missing"
+  elif [ ! -x "$f" ]; then
+    warn "$script: exists but not executable"
+  else
+    pass "$script: exists and executable"
+  fi
+done
+
+# ── Audit + test scripts themselves ──────────────────────
+
+section "audit + test scripts"
+for script in tmux-claude-audit tmux-claude-test; do
+  f="$BIN/$script"
+  if [ ! -f "$f" ]; then
+    fail "$script: missing"
+  elif [ ! -x "$f" ]; then
+    warn "$script: exists but not executable"
+  else
+    pass "$script: exists and executable"
+  fi
+done
+
+# ── tmux.conf: settings + status-bar wiring + bindings ───
+
+section "tmux/tmux.conf"
+conf="$REPO/tmux/tmux.conf"
+if [ ! -f "$conf" ]; then
+  fail "tmux/tmux.conf: missing"
+else
+  pass "tmux/tmux.conf: present"
+
+  grep -q "set.*prefix C-a" "$conf" && pass "prefix C-a set" || fail "prefix C-a not found"
+  grep -q "escape-time 0" "$conf" && pass "escape-time 0 set" || warn "escape-time 0 not found"
+  grep -q "allow-passthrough on" "$conf" && pass "allow-passthrough on" || warn "allow-passthrough not set"
+  grep -q "history-limit" "$conf" && pass "history-limit set" || warn "history-limit not set"
+  grep -q "base-index 1" "$conf" && pass "base-index 1 set" || warn "base-index 1 not set"
+  grep -q "pane-base-index 1" "$conf" && pass "pane-base-index 1 set" || warn "pane-base-index 1 not set"
+  grep -q "mouse on" "$conf" && pass "mouse on set" || warn "mouse on not set"
+  grep -q "renumber-windows on" "$conf" && pass "renumber-windows on set" || warn "renumber-windows on not set"
+
+  # Status-right must call all three status scripts
+  grep -q "tmux-short-path" "$conf" && pass "status-right: tmux-short-path wired" || fail "status-right: tmux-short-path missing"
+  grep -q "tmux-git-info" "$conf" && pass "status-right: tmux-git-info wired" || fail "status-right: tmux-git-info missing"
+  grep -q "tmux-claude-session" "$conf" && pass "status-right: tmux-claude-session wired" || fail "status-right: tmux-claude-session missing"
+
+  # Key bindings
+  grep -q "bind E.*tmux-tile-session" "$conf" && pass "bind E: tmux-tile-session wired" || fail "bind E: tmux-tile-session not wired"
+  grep -q "bind y.*tmux-claude-session" "$conf" && pass "bind y: tmux-claude-session wired" || fail "bind y: tmux-claude-session not wired"
+  grep -q "bind X" "$conf" && pass "bind X: kill-pane -a wired" || warn "bind X not found"
+  grep -q "bind g.*display-popup" "$conf" && pass "bind g: claude-tmux popup wired" || warn "bind g popup not found"
+fi
+
+# ── Claude Code configs ───────────────────────────────────
+
+section "claude/"
+for f in CLAUDE.md settings.json statusline-command.sh; do
+  if [ -f "$REPO/claude/$f" ]; then
+    pass "claude/$f: present"
+  else
+    fail "claude/$f: missing"
+  fi
+done
+
+# ── Ghostty config ────────────────────────────────────────
+
+section "ghostty/"
+if [ -f "$REPO/ghostty/config" ]; then
+  pass "ghostty/config: present"
+else
+  fail "ghostty/config: missing"
+fi
+if [ -d "$REPO/ghostty/themes" ] && ls "$REPO/ghostty/themes/"* >/dev/null 2>&1; then
+  pass "ghostty/themes: at least one theme present"
+else
+  warn "ghostty/themes: empty or missing"
+fi
+
+# ── iTerm color presets ───────────────────────────────────
+
+section "iterm/"
+itermcount=$(ls "$REPO/iterm/"*.itermcolors 2>/dev/null | wc -l | tr -d ' ')
+if [ "$itermcount" -gt 0 ]; then
+  pass "iterm/: $itermcount .itermcolors preset(s) present"
+else
+  warn "iterm/: no .itermcolors presets found"
+fi
+
+# ── install.sh ────────────────────────────────────────────
+
+section "install.sh"
+inst="$REPO/install.sh"
+if [ ! -f "$inst" ]; then
+  fail "install.sh: missing"
+else
+  pass "install.sh: present"
+  # Expects the glob pattern that picks up all bin/ scripts at once
+  grep -q 'bin/\*' "$inst" && pass "install.sh: symlinks bin/* glob (covers all scripts)" || warn "install.sh: bin/* glob not found — new scripts may not be symlinked"
+  grep -q 'claude/statusline-command.sh' "$inst" && pass "install.sh: links statusline-command.sh" || warn "install.sh: statusline-command.sh link not found"
+  grep -q 'tmux/tmux.conf' "$inst" && pass "install.sh: links tmux/tmux.conf" || fail "install.sh: tmux.conf link missing"
+fi
+
+# ── README.md ─────────────────────────────────────────────
+
+section "README.md"
+readme="$REPO/README.md"
+if [ ! -f "$readme" ]; then
+  fail "README.md: missing"
+else
+  pass "README.md: present"
+  # OPEN QUESTION: README claims tmux-kill-teammate-pane auto-cleans on agent stop,
+  # but the SubagentStop/TeammateIdle hook is not wired in claude/settings.json.
+  # Owner has not decided to wire it or drop the README claim (carry-over note).
+  if grep -q "auto-clean\|auto-close\|agents finish" "$readme" 2>/dev/null; then
+    warn "README.md claims tmux-kill-teammate-pane auto-cleans on agent stop, but claude/settings.json has no hooks wired (open question — wire or retract)"
+  fi
+fi
+
+# ── SubagentStop hook (carry-over open question) ──────────
+
+section "SubagentStop hook"
+if grep -q '"hooks"' "$REPO/claude/settings.json" 2>/dev/null; then
+  pass "claude/settings.json: hooks section present"
+else
+  warn "claude/settings.json: no hooks section — tmux-kill-teammate-pane not triggered automatically (wire SubagentStop/TeammateIdle or remove README claim)"
+fi
+
+# ── Bash portability: no bash 4+ constructs in bash scripts ─
+
+section "bash portability (3.2 floor)"
+for f in "$BIN/tmux-pane-label" "$BIN/tmux-session-list" "$BIN/tmux-tile-session" \
+         "$BIN/setup-github-ssh" "$REPO/install.sh"; do
+  [ -f "$f" ] || continue
+  name="$(basename "$f")"
+  if grep -q "^mapfile\|[^#]mapfile\|declare -A " "$f" 2>/dev/null; then
+    fail "$name: uses bash 4+ construct (mapfile/declare -A)"
+  else
+    pass "$name: no bash 4+ constructs"
+  fi
+done
+
+# ── Summary ───────────────────────────────────────────────
+
+printf '\n──────────────────────────────────────────\n'
+printf '  %3d PASS  /  %3d WARN  /  %3d FAIL\n' "$PASS" "$WARN" "$FAIL"
+printf '──────────────────────────────────────────\n'
+
+[ "$FAIL" -eq 0 ]
