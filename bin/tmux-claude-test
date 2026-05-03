@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+# tmux-claude-test — regression tests for claude-tmux-ghostty bin/ scripts
+#
+# Tests that require zsh are skipped if zsh is not in PATH.
+# Tests that require a live tmux server are skipped if none is running.
+# Exits 0 if no FAIL.
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PASS=0; FAIL=0
+
+_pass() { printf 'PASS  %s\n' "$1"; PASS=$((PASS+1)); }
+_fail() { printf 'FAIL  %s  [%s]\n' "$1" "$2"; FAIL=$((FAIL+1)); }
+_skip() { printf 'SKIP  %s\n' "$1"; }
+_hdr()  { printf '%s\n' "$1"; }
+
+_assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [ "$expected" = "$actual" ]; then
+    _pass "$desc"
+  else
+    _fail "$desc" "expected='$expected' got='$actual'"
+  fi
+}
+
+_assert_nonempty() {
+  local desc="$1" actual="$2"
+  if [ -n "$actual" ]; then
+    _pass "$desc"
+  else
+    _fail "$desc" "expected non-empty output, got empty"
+  fi
+}
+
+_assert_exit() {
+  local desc="$1" expected="$2" actual="$3"
+  if [ "$expected" = "$actual" ]; then
+    _pass "$desc"
+  else
+    _fail "$desc" "expected exit=$expected got=$actual"
+  fi
+}
+
+HAS_ZSH=0
+command -v zsh >/dev/null 2>&1 && HAS_ZSH=1
+
+HAS_TMUX_SERVER=0
+tmux list-sessions >/dev/null 2>&1 && HAS_TMUX_SERVER=1
+
+printf 'tmux-claude-test  %s\n' "$(date '+%Y-%m-%d %H:%M')"
+printf '(zsh=%s  tmux-server=%s)\n\n' \
+  "$([ $HAS_ZSH -eq 1 ] && printf yes || printf no)" \
+  "$([ $HAS_TMUX_SERVER -eq 1 ] && printf yes || printf no)"
+
+# ── syntax: bash scripts ───────────────────────────────────────────────────
+_hdr '--- syntax: bash scripts'
+for f in "$REPO_ROOT"/bin/*; do
+  name=$(basename "$f")
+  first=$(head -1 "$f")
+  case "$first" in
+    '#!/usr/bin/env bash'|'#!/bin/bash') ;;
+    *) continue ;;
+  esac
+  if bash -n "$f" 2>/dev/null; then
+    _pass "bash -n bin/$name"
+  else
+    _fail "bash -n bin/$name" "syntax error"
+  fi
+done
+printf '\n'
+
+# ── syntax: zsh scripts ────────────────────────────────────────────────────
+_hdr '--- syntax: zsh scripts'
+for f in "$REPO_ROOT"/bin/*; do
+  name=$(basename "$f")
+  first=$(head -1 "$f")
+  case "$first" in
+    '#!/bin/zsh'|'#!/usr/bin/env zsh') ;;
+    *) continue ;;
+  esac
+  if [ "$HAS_ZSH" -eq 1 ]; then
+    if zsh -n "$f" 2>/dev/null; then
+      _pass "zsh -n bin/$name"
+    else
+      _fail "zsh -n bin/$name" "syntax error"
+    fi
+  else
+    _skip "zsh -n bin/$name  (zsh not in PATH)"
+  fi
+done
+printf '\n'
+
+# ── tmux-pane-label ────────────────────────────────────────────────────────
+_hdr '--- tmux-pane-label'
+# non-git dir → outputs last path component
+actual=$(bash "$REPO_ROOT/bin/tmux-pane-label" /tmp 2>/dev/null)
+_assert_eq "tmux-pane-label /tmp → 'tmp'" "tmp" "$actual"
+
+# non-existent path → outputs last component (git fails silently)
+actual=$(bash "$REPO_ROOT/bin/tmux-pane-label" /no/such/path 2>/dev/null)
+_assert_eq "tmux-pane-label /no/such/path → 'path'" "path" "$actual"
+
+# git repo → non-empty output
+actual=$(bash "$REPO_ROOT/bin/tmux-pane-label" "$REPO_ROOT" 2>/dev/null)
+_assert_nonempty "tmux-pane-label git repo → non-empty" "$actual"
+
+# git repo output starts with repo directory name
+case "$actual" in
+  'claude-tmux-ghostty'*)
+    _pass "tmux-pane-label git repo → starts with 'claude-tmux-ghostty'"
+    ;;
+  *)
+    _fail "tmux-pane-label git repo → starts with 'claude-tmux-ghostty'" "got='$actual'"
+    ;;
+esac
+
+# exits 0 for normal use
+bash "$REPO_ROOT/bin/tmux-pane-label" /tmp >/dev/null 2>&1
+_assert_exit "tmux-pane-label exits 0" "0" "$?"
+
+# no args → uses current dir (.), exits 0
+bash "$REPO_ROOT/bin/tmux-pane-label" >/dev/null 2>&1
+_assert_exit "tmux-pane-label no args exits 0" "0" "$?"
+printf '\n'
+
+# ── tmux-session-list ─────────────────────────────────────────────────────
+_hdr '--- tmux-session-list'
+if [ "$HAS_TMUX_SERVER" -eq 0 ]; then
+  actual=$(bash "$REPO_ROOT/bin/tmux-session-list" "" 2>/dev/null)
+  _assert_eq "tmux-session-list no-server → empty output" "" "$actual"
+
+  bash "$REPO_ROOT/bin/tmux-session-list" "" >/dev/null 2>&1
+  _assert_exit "tmux-session-list no-server exits 0" "0" "$?"
+else
+  _skip "tmux-session-list: tmux server is running; run manually to verify empty-session path"
+fi
+printf '\n'
+
+# ── tmux-kill-teammate-pane ───────────────────────────────────────────────
+_hdr '--- tmux-kill-teammate-pane'
+if [ "$HAS_ZSH" -eq 1 ]; then
+  TMUX="" zsh "$REPO_ROOT/bin/tmux-kill-teammate-pane" >/dev/null 2>&1
+  _assert_exit "tmux-kill-teammate-pane exits 0 without TMUX env" "0" "$?"
+else
+  _skip "tmux-kill-teammate-pane  (zsh not in PATH)"
+fi
+printf '\n'
+
+# ── tmux-claude-session ───────────────────────────────────────────────────
+_hdr '--- tmux-claude-session'
+if [ "$HAS_ZSH" -eq 1 ]; then
+  zsh "$REPO_ROOT/bin/tmux-claude-session" >/dev/null 2>&1
+  _assert_exit "tmux-claude-session no args exits 0" "0" "$?"
+
+  zsh "$REPO_ROOT/bin/tmux-claude-session" "/dev/ttys999" >/dev/null 2>&1
+  _assert_exit "tmux-claude-session bogus TTY exits 0" "0" "$?"
+else
+  _skip "tmux-claude-session  (zsh not in PATH)"
+fi
+printf '\n'
+
+# ── tmux-git-info ─────────────────────────────────────────────────────────
+_hdr '--- tmux-git-info'
+if [ "$HAS_ZSH" -eq 1 ]; then
+  actual=$(zsh "$REPO_ROOT/bin/tmux-git-info" /tmp 2>/dev/null)
+  _assert_eq "tmux-git-info non-git dir → empty output" "" "$actual"
+
+  zsh "$REPO_ROOT/bin/tmux-git-info" "$REPO_ROOT" >/dev/null 2>&1
+  _assert_exit "tmux-git-info git repo exits 0" "0" "$?"
+else
+  _skip "tmux-git-info  (zsh not in PATH)"
+fi
+printf '\n'
+
+# ── tmux-short-path ───────────────────────────────────────────────────────
+_hdr '--- tmux-short-path'
+if [ "$HAS_ZSH" -eq 1 ]; then
+  # short path (≤3 parts) → unchanged after HOME substitution
+  actual=$(HOME=/home/user zsh "$REPO_ROOT/bin/tmux-short-path" "/home/user/dev" 2>/dev/null)
+  _assert_eq "tmux-short-path short path → ~/dev" "~/dev" "$actual"
+
+  # worktree path → wt:<name>
+  actual=$(HOME=/home/user zsh "$REPO_ROOT/bin/tmux-short-path" "/home/user/dev/.worktrees/feat-x" 2>/dev/null)
+  _assert_eq "tmux-short-path worktree → wt:feat-x" "wt:feat-x" "$actual"
+
+  # long path (>3 parts) → ~/…/penultimate/last
+  actual=$(HOME=/home/user zsh "$REPO_ROOT/bin/tmux-short-path" "/home/user/a/b/c/d" 2>/dev/null)
+  _assert_eq "tmux-short-path long path → ~/…/c/d" "~/…/c/d" "$actual"
+
+  # hard cap: path that would exceed 30 chars after abbreviation is truncated
+  actual=$(HOME=/home/user zsh "$REPO_ROOT/bin/tmux-short-path" "/home/user/a/b/verylongdirname/anotherlongname" 2>/dev/null)
+  if [ "${#actual}" -le 30 ]; then
+    _pass "tmux-short-path long path capped at 30 chars (got ${#actual})"
+  else
+    _fail "tmux-short-path 30-char cap" "output '${actual}' has ${#actual} chars (> 30)"
+  fi
+else
+  _skip "tmux-short-path  (zsh not in PATH)"
+fi
+printf '\n'
+
+# ── tmux-tile-session ─────────────────────────────────────────────────────
+_hdr '--- tmux-tile-session'
+if [ "$HAS_TMUX_SERVER" -eq 0 ]; then
+  # Without a server, the script should exit non-zero (tmux display-message fails)
+  bash "$REPO_ROOT/bin/tmux-tile-session" toggle >/dev/null 2>&1
+  actual_exit=$?
+  if [ "$actual_exit" -ne 0 ]; then
+    _pass "tmux-tile-session exits non-zero without tmux server (exit $actual_exit)"
+  else
+    _fail "tmux-tile-session without tmux server" "expected non-zero exit, got 0"
+  fi
+
+  # Invalid action → should also exit non-zero
+  bash "$REPO_ROOT/bin/tmux-tile-session" bogusaction >/dev/null 2>&1
+  actual_exit=$?
+  if [ "$actual_exit" -ne 0 ]; then
+    _pass "tmux-tile-session exits non-zero with invalid action (exit $actual_exit)"
+  else
+    _fail "tmux-tile-session invalid action" "expected non-zero exit, got 0"
+  fi
+else
+  _skip "tmux-tile-session  (tmux server is running — run manually: tile/untile roundtrip)"
+fi
+printf '\n'
+
+# ── Summary ───────────────────────────────────────────────────────────────
+printf 'Results: %d PASS / %d FAIL\n' "$PASS" "$FAIL"
+[ "$FAIL" -gt 0 ] && exit 1 || exit 0
