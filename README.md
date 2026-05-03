@@ -77,7 +77,9 @@ dotfiles/
 │   ├── tmux-session-list       # Multi-session status-left renderer
 │   ├── tmux-short-path         # Abbreviated path display (worktree-aware)
 │   ├── tmux-tile-session       # Toggle all windows into tiled panes and back
-│   └── tmux-tutorial           # Interactive walkthrough of the full setup
+│   ├── tmux-tutorial           # Interactive walkthrough of the full setup
+│   ├── tmux-claude-audit       # Integrity checks — file wiring, dead code, skew detection
+│   └── tmux-claude-test        # Regression tests for all bin/ scripts
 └── README.md
 ```
 
