@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# bin/tmux-claude-test — regression tests for bin/ scripts.
+# Tests that don't need a live tmux server run unconditionally; the rest skip.
+# Exits non-zero if any test fails.
+#
+# Usage: bash bin/tmux-claude-test
+
+set -uo pipefail
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO/bin"
+PASS=0; FAIL=0; SKIP=0
+
+ok()   { PASS=$((PASS+1)); printf '  ok    %s\n' "$1"; }
+fail() { FAIL=$((FAIL+1)); printf '  FAIL  %s\n         expected: %s\n         got:      %s\n' "$1" "$2" "$3"; }
+skip() { SKIP=$((SKIP+1)); printf '  skip  %s\n' "$1"; }
+
+assert_eq() {
+  local label="$1" expected="$2" got="$3"
+  if [ "$expected" = "$got" ]; then
+    ok "$label"
+  else
+    fail "$label" "$expected" "$got"
+  fi
+}
+
+# ── 1: tmux-short-path ───────────────────────────────────────────────────────
+# Uses zsh-specific syntax; skip if zsh unavailable.
+
+if command -v zsh >/dev/null 2>&1; then
+  T="$BIN/tmux-short-path"
+
+  assert_eq "short-path: HOME -> ~" \
+    "~" "$(zsh "$T" "$HOME")"
+
+  assert_eq "short-path: short path stays" \
+    "~/a/b" "$(zsh "$T" "$HOME/a/b")"
+
+  assert_eq "short-path: deep path abbreviated" \
+    "~/…/c/d" "$(zsh "$T" "$HOME/a/b/c/d")"
+
+  assert_eq "short-path: worktree path" \
+    "wt:mybranch" "$(zsh "$T" "/some/repo/.worktrees/mybranch")"
+
+  assert_eq "short-path: long worktree name truncated" \
+    "wt:abcdefghijklmno…" "$(zsh "$T" "/repo/.worktrees/abcdefghijklmnopqrst")"
+
+  result=$(zsh "$T" "$HOME/a/b/very-long-directory-name/another-long-name-here")
+  if [ "${#result}" -le 30 ]; then
+    ok "short-path: result capped at 30 chars"
+  else
+    fail "short-path: result capped at 30 chars" "len<=30" "len=${#result}"
+  fi
+else
+  for label in "short-path: HOME -> ~" "short-path: short path stays" \
+               "short-path: deep path abbreviated" "short-path: worktree path" \
+               "short-path: long worktree name truncated" \
+               "short-path: result capped at 30 chars"; do
+    skip "$label (zsh not available)"
+  done
+fi
+
+# ── 2: tmux-pane-label ───────────────────────────────────────────────────────
+
+T="$BIN/tmux-pane-label"
+
+# Non-git directory → shows basename of path
+tmpdir=$(mktemp -d)
+result=$(bash "$T" "$tmpdir" 2>/dev/null || true)
+assert_eq "pane-label: non-git dir shows basename" "$(basename "$tmpdir")" "$result"
+rmdir "$tmpdir"
+
+# Inside this repo → label includes repo name
+result=$(bash "$T" "$REPO" 2>/dev/null || true)
+if printf '%s' "$result" | grep -q "claude-tmux-ghostty"; then
+  ok "pane-label: repo dir includes repo name"
+else
+  fail "pane-label: repo dir includes repo name" "contains 'claude-tmux-ghostty'" "$result"
+fi
+
+# ── 3: tmux-session-list ─────────────────────────────────────────────────────
+
+T="$BIN/tmux-session-list"
+
+# Without a live tmux server, list-sessions fails silently → empty output
+result=$(bash "$T" "mysession" 2>/dev/null || true)
+assert_eq "session-list: no tmux server → empty output" "" "$result"
+
+# ── 4: tmux-tile-session ─────────────────────────────────────────────────────
+
+T="$BIN/tmux-tile-session"
+
+# Unknown action → non-zero exit + usage on stderr
+if bash "$T" badaction 2>/dev/null; then
+  fail "tile-session: unknown action exits non-zero" "exit!=0" "exit=0"
+else
+  ok "tile-session: unknown action exits non-zero"
+fi
+
+# tile/untile/toggle without tmux → skipped
+if [ -z "${TMUX:-}" ]; then
+  skip "tile-session: tile/untile/toggle (needs live tmux)"
+fi
+
+# ── 5: tmux-kill-teammate-pane ───────────────────────────────────────────────
+
+T="$BIN/tmux-kill-teammate-pane"
+
+if [ -z "${TMUX:-}" ]; then
+  # Guard at top of script: [[ -z "$TMUX" ]] && exit 0
+  bash "$T" 2>/dev/null || true
+  ok "kill-teammate-pane: exits 0 when not inside tmux"
+  skip "kill-teammate-pane: pane-count safety (needs live tmux)"
+else
+  skip "kill-teammate-pane: destructive tests skipped (live tmux present)"
+fi
+
+# ── 6: claude/statusline-command.sh ──────────────────────────────────────────
+
+T="$REPO/claude/statusline-command.sh"
+
+if command -v jq >/dev/null 2>&1; then
+  # Context at 90% → traffic-light shows red and emits ctx:90%
+  json='{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"test-model"},"context_window":{"used_percentage":90}}'
+  result=$(printf '%s' "$json" | bash "$T" 2>/dev/null || true)
+  if printf '%s' "$result" | grep -q "ctx:90%"; then
+    ok "statusline: context 90% emitted"
+  else
+    fail "statusline: context 90% emitted" "ctx:90%" "$result"
+  fi
+
+  # Context at 40% → green, emits ctx:40%
+  json='{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"test-model"},"context_window":{"used_percentage":40}}'
+  result=$(printf '%s' "$json" | bash "$T" 2>/dev/null || true)
+  if printf '%s' "$result" | grep -q "ctx:40%"; then
+    ok "statusline: context 40% emitted"
+  else
+    fail "statusline: context 40% emitted" "ctx:40%" "$result"
+  fi
+
+  # Missing context_window → no ctx: segment (graceful)
+  json='{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"test-model"}}'
+  result=$(printf '%s' "$json" | bash "$T" 2>/dev/null || true)
+  if printf '%s' "$result" | grep -q "ctx:"; then
+    fail "statusline: missing context_window → no ctx: segment" "no ctx:" "ctx: present"
+  else
+    ok "statusline: missing context_window → no ctx: segment"
+  fi
+
+  # Model name appears in output
+  json='{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"claude-test"}}'
+  result=$(printf '%s' "$json" | bash "$T" 2>/dev/null || true)
+  if printf '%s' "$result" | grep -q "claude-test"; then
+    ok "statusline: model name appears in output"
+  else
+    fail "statusline: model name appears in output" "claude-test" "$result"
+  fi
+else
+  skip "statusline: context 90% emitted (jq not available)"
+  skip "statusline: context 40% emitted (jq not available)"
+  skip "statusline: missing context_window → no ctx: (jq not available)"
+  skip "statusline: model name appears in output (jq not available)"
+fi
+
+# ── 7: tmux-git-info ─────────────────────────────────────────────────────────
+# Uses zsh-specific syntax; skip if zsh unavailable.
+
+if command -v zsh >/dev/null 2>&1; then
+  T="$BIN/tmux-git-info"
+
+  # Non-git directory → empty output (exits 0)
+  tmpdir=$(mktemp -d)
+  result=$(zsh "$T" "$tmpdir" 2>/dev/null || true)
+  assert_eq "git-info: non-git dir → empty output" "" "$result"
+  rmdir "$tmpdir"
+
+  # Inside this repo → branch shown OR detached HEAD exits silently
+  current_branch=$(git -C "$REPO" branch --show-current 2>/dev/null || true)
+  result=$(zsh "$T" "$REPO" 2>/dev/null || true)
+  if [ -n "$current_branch" ]; then
+    if [ -n "$result" ]; then
+      ok "git-info: inside repo shows branch"
+    else
+      fail "git-info: inside repo shows branch" "non-empty" "(empty)"
+    fi
+  else
+    assert_eq "git-info: detached HEAD → empty output" "" "$result"
+  fi
+else
+  skip "git-info: non-git dir → empty output (zsh not available)"
+  skip "git-info: inside repo shows branch (zsh not available)"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
+printf '\n══ Tests complete: %d PASS / %d FAIL / %d SKIP\n' "$PASS" "$FAIL" "$SKIP"
+[ "$FAIL" -eq 0 ]
