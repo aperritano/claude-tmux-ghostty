@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# tmux-claude-audit — living spec for the claude-tmux-ghostty repo
+#
+# Checks existence, executability, shebangs, syntax, tmux.conf wiring,
+# Claude settings wiring, install.sh coverage, and portability notes.
+#
+# Exit 0 if no FAILs; exit 1 if any FAIL.
+# Some checks require zsh or a live tmux server; those are WARN-skipped.
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+PASS=0; WARN=0; FAIL=0
+
+pass() { printf '[PASS] %s\n' "$1"; PASS=$((PASS+1)); }
+warn() { printf '[WARN] %s\n' "$1"; WARN=$((WARN+1)); }
+fail() { printf '[FAIL] %s\n' "$1"; FAIL=$((FAIL+1)); }
+
+HAS_ZSH=0; command -v zsh >/dev/null 2>&1 && HAS_ZSH=1
+
+echo
+echo "╔══════════════════════════════════════════════════╗"
+echo "║  claude-tmux-ghostty audit                       ║"
+echo "╚══════════════════════════════════════════════════╝"
+
+# ── 1. bin/ scripts: existence + executability ─────────
+echo
+echo "=== bin/ scripts ==="
+
+SCRIPTS=(
+  claude-dev
+  setup-github-ssh
+  tmux-claude-audit
+  tmux-claude-session
+  tmux-claude-test
+  tmux-git-info
+  tmux-kill-teammate-pane
+  tmux-pane-label
+  tmux-session-list
+  tmux-short-path
+  tmux-tile-session
+  tmux-tutorial
+)
+
+for s in "${SCRIPTS[@]}"; do
+  f="$REPO/bin/$s"
+  if [ ! -f "$f" ]; then
+    fail "$s: not found in bin/"
+  elif [ ! -x "$f" ]; then
+    fail "$s: not executable (chmod +x bin/$s)"
+  else
+    pass "$s: exists + executable"
+  fi
+done
+
+# ── 2. Shebangs ────────────────────────────────────────
+echo
+echo "=== Shebangs ==="
+
+for s in "${SCRIPTS[@]}"; do
+  f="$REPO/bin/$s"
+  [ -f "$f" ] || continue
+  first=$(head -1 "$f")
+  case "$first" in
+    '#!/'*) pass "$s: shebang present" ;;
+    *)      fail "$s: missing or invalid shebang" ;;
+  esac
+done
+
+# ── 3. Syntax checks ──────────────────────────────────
+echo
+echo "=== Syntax checks ==="
+
+for s in "${SCRIPTS[@]}"; do
+  f="$REPO/bin/$s"
+  [ -f "$f" ] || continue
+  interp=$(head -1 "$f")
+  case "$interp" in
+    *bash*)
+      if bash -n "$f" 2>/dev/null; then
+        pass "$s: bash syntax OK"
+      else
+        fail "$s: bash syntax error"
+      fi
+      ;;
+    *zsh*)
+      if [ "$HAS_ZSH" = 1 ]; then
+        if zsh --no-rcs -n "$f" 2>/dev/null; then
+          pass "$s: zsh syntax OK"
+        else
+          fail "$s: zsh syntax error"
+        fi
+      else
+        warn "$s: zsh script — syntax check skipped (zsh not in PATH)"
+      fi
+      ;;
+    *)
+      pass "$s: interpreter not bash/zsh — syntax check skipped"
+      ;;
+  esac
+done
+
+# ── 4. tmux/tmux.conf wiring ──────────────────────────
+echo
+echo "=== tmux/tmux.conf ==="
+
+CONF="$REPO/tmux/tmux.conf"
+
+if [ ! -f "$CONF" ]; then
+  fail "tmux/tmux.conf: not found"
+else
+  pass "tmux/tmux.conf: exists"
+
+  conf_has() {
+    local label="$1" pattern="$2" sev="${3:-fail}"
+    if grep -qF "$pattern" "$CONF" 2>/dev/null; then
+      pass "tmux.conf: $label"
+    else
+      "$sev" "tmux.conf: $label — pattern not found: $pattern"
+    fi
+  }
+
+  conf_has "prefix C-a"                     "set -g prefix C-a"
+  conf_has "mouse enabled"                  "set -g mouse on"
+  conf_has "allow-passthrough (Claude Code)" "allow-passthrough on"
+  conf_has "escape-time 0 (vim/Claude Code)" "escape-time 0"
+  conf_has "history-limit configured"        "history-limit" "warn"
+  conf_has "default-terminal set"            "default-terminal"
+  conf_has "base-index 1"                   "base-index 1"
+  conf_has "renumber-windows on"            "renumber-windows on"
+  conf_has "pane-border-lines heavy"        "pane-border-lines heavy"
+  conf_has "set-clipboard on"               "set-clipboard on"
+  conf_has "status-right: tmux-short-path"  "tmux-short-path"
+  conf_has "status-right: tmux-git-info"    "tmux-git-info"
+  conf_has "status-right: tmux-claude-session" "tmux-claude-session"
+  conf_has "key E: tmux-tile-session"       "tmux-tile-session"
+fi
+
+# ── 5. Claude config ───────────────────────────────────
+echo
+echo "=== claude/ config ==="
+
+SETTINGS="$REPO/claude/settings.json"
+if [ ! -f "$SETTINGS" ]; then
+  fail "claude/settings.json: not found"
+else
+  pass "claude/settings.json: exists"
+
+  if grep -qF "teammateMode" "$SETTINGS"; then
+    pass "claude/settings.json: teammateMode configured"
+  else
+    warn "claude/settings.json: teammateMode not set"
+  fi
+
+  if grep -qF "tmux-kill-teammate-pane" "$SETTINGS"; then
+    pass "claude/settings.json: SubagentStop hook wires tmux-kill-teammate-pane"
+  else
+    warn "claude/settings.json: tmux-kill-teammate-pane NOT wired as hook — README claims auto-cleanup but hook is absent (open Q: wire it or retract the README claim)"
+  fi
+fi
+
+STATUSLINE="$REPO/claude/statusline-command.sh"
+if [ ! -f "$STATUSLINE" ]; then
+  fail "claude/statusline-command.sh: not found"
+else
+  pass "claude/statusline-command.sh: exists"
+fi
+
+CLAUDE_MD="$REPO/claude/CLAUDE.md"
+if [ ! -f "$CLAUDE_MD" ]; then
+  warn "claude/CLAUDE.md: not found"
+else
+  pass "claude/CLAUDE.md: exists"
+fi
+
+# ── 6. install.sh coverage ────────────────────────────
+echo
+echo "=== install.sh ==="
+
+INSTALL="$REPO/install.sh"
+if [ ! -f "$INSTALL" ]; then
+  fail "install.sh: not found"
+else
+  pass "install.sh: exists"
+
+  if grep -qF '"$DOTFILES"/bin/*' "$INSTALL" || grep -q '\$DOTFILES/bin/\*' "$INSTALL"; then
+    pass "install.sh: symlinks bin/ scripts via glob"
+  else
+    warn "install.sh: no glob over bin/ found — new scripts may not be auto-symlinked"
+  fi
+
+  for f in tmux.conf CLAUDE.md statusline-command.sh settings.json; do
+    if grep -qF "$f" "$INSTALL"; then
+      pass "install.sh: references $f"
+    else
+      warn "install.sh: does not reference $f"
+    fi
+  done
+fi
+
+# ── 7. Portability notes ──────────────────────────────
+echo
+echo "=== Portability ==="
+
+TILE="$REPO/bin/tmux-tile-session"
+if [ -f "$TILE" ]; then
+  if grep -qF "tail -r" "$TILE"; then
+    warn "tmux-tile-session: uses 'tail -r' (BSD/macOS only; GNU coreutils needs 'tac') — acceptable for macOS-only, but note if Linux support is ever desired"
+  else
+    pass "tmux-tile-session: no 'tail -r' portability issue"
+  fi
+fi
+
+# ── Summary ────────────────────────────────────────────
+echo
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+printf ' PASS: %-4d  WARN: %-4d  FAIL: %d\n' "$PASS" "$WARN" "$FAIL"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+[ "$FAIL" -gt 0 ] && exit 1
+exit 0

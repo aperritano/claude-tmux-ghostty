@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+# tmux-claude-test — regression tests for bin/ scripts
+#
+# Tests what can run without a live tmux server or zsh.
+# Requires zsh for zsh-shebang scripts; those tests are SKIP-ed if zsh is absent.
+# Requires tmux running for tile/session tests; those are SKIP-ed otherwise.
+
+set -u
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO/bin"
+PASS=0; FAIL=0; SKIP=0
+
+pass() { printf '[PASS] %s\n' "$1"; PASS=$((PASS+1)); }
+fail() { printf '[FAIL] %s\n' "$1"; FAIL=$((FAIL+1)); }
+skip() { printf '[SKIP] %s\n' "$1"; SKIP=$((SKIP+1)); }
+
+check_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [ "$actual" = "$expected" ]; then
+    pass "$desc"
+  else
+    printf '[FAIL] %s\n' "$desc"
+    printf '       expected: %s\n' "$expected"
+    printf '       actual:   %s\n' "$actual"
+    FAIL=$((FAIL+1))
+  fi
+}
+
+HAS_ZSH=0; command -v zsh >/dev/null 2>&1 && HAS_ZSH=1
+IN_TMUX=0; [ -n "${TMUX:-}" ] && IN_TMUX=1
+
+echo
+echo "╔══════════════════════════════════════════════════╗"
+echo "║  claude-tmux regression tests                    ║"
+echo "╚══════════════════════════════════════════════════╝"
+printf '  zsh: %s   tmux-session: %s\n' \
+  "$([ "$HAS_ZSH" = 1 ] && echo yes || echo no)" \
+  "$([ "$IN_TMUX" = 1 ] && echo yes || echo no)"
+
+# ── Temp git repos for isolation ──────────────────────
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+# Non-git directory
+NONGIT="$TMP/nongit/myproject"
+mkdir -p "$NONGIT"
+
+# Normal git repo (no commits needed; branch --show-current works on unborn branch)
+GITREPO="$TMP/gitrepo"
+git init -q "$GITREPO"
+
+# Repo with a very long branch name (>35 chars)
+LONGREPO="$TMP/longrepo"
+git init -q "$LONGREPO"
+git -C "$LONGREPO" checkout -q -b "feature/this-is-a-very-long-branch-name-exceeding-35-chars"
+
+# ── tmux-pane-label ────────────────────────────────────
+echo
+echo "=== tmux-pane-label ==="
+
+LABEL="$BIN/tmux-pane-label"
+
+if [ ! -x "$LABEL" ]; then
+  skip "tmux-pane-label: not found/executable — all tests skipped"
+else
+  # Non-git path: returns just the dirname
+  result=$("$LABEL" "$NONGIT" 2>/dev/null)
+  check_eq "non-git path returns dirname" "myproject" "$result"
+
+  # Git repo with a branch: produces non-empty output
+  result=$("$LABEL" "$GITREPO" 2>/dev/null)
+  if [ -n "$result" ]; then
+    pass "git repo produces label+branch output"
+  else
+    fail "git repo should produce label+branch output (got empty)"
+  fi
+
+  # Long branch (>35 chars) should be truncated to <=35 chars
+  result=$("$LABEL" "$LONGREPO" 2>/dev/null)
+  # Last space-delimited token is the branch (no upstream sync on a fresh repo)
+  branch_tok=$(printf '%s' "$result" | awk '{print $NF}')
+  if [ "${#branch_tok}" -le 38 ]; then
+    pass "long branch truncated to <=38 chars (got ${#branch_tok})"
+  else
+    fail "long branch should be truncated — got ${#branch_tok} chars: $branch_tok"
+  fi
+fi
+
+# ── tmux-tile-session ──────────────────────────────────
+echo
+echo "=== tmux-tile-session ==="
+
+TILE="$BIN/tmux-tile-session"
+
+if [ ! -x "$TILE" ]; then
+  skip "tmux-tile-session: not found/executable — all tests skipped"
+else
+  # Unknown action exits non-zero (usage check)
+  if "$TILE" badaction 2>/dev/null; then
+    fail "invalid action 'badaction' should exit non-zero"
+  else
+    pass "invalid action exits non-zero"
+  fi
+
+  # Without a live tmux session the script should fail (calls tmux internally)
+  if [ "$IN_TMUX" = 0 ]; then
+    if "$TILE" toggle 2>/dev/null; then
+      fail "'toggle' outside tmux should exit non-zero"
+    else
+      pass "'toggle' outside tmux exits non-zero (expected)"
+    fi
+    skip "tile/untile functional tests: require live tmux session"
+  else
+    skip "tile/untile: inside tmux — skipping to avoid side effects"
+  fi
+fi
+
+# ── tmux-kill-teammate-pane ────────────────────────────
+echo
+echo "=== tmux-kill-teammate-pane ==="
+
+KILLPANE="$BIN/tmux-kill-teammate-pane"
+
+if [ ! -x "$KILLPANE" ]; then
+  skip "tmux-kill-teammate-pane: not found/executable"
+elif [ "$HAS_ZSH" = 0 ]; then
+  skip "tmux-kill-teammate-pane: zsh script — skipped (zsh not in PATH)"
+else
+  # TMUX unset → exits 0 without doing anything
+  if TMUX="" zsh "$KILLPANE" 2>/dev/null; then
+    pass "exits 0 cleanly when TMUX is unset"
+  else
+    fail "should exit 0 when TMUX is unset"
+  fi
+fi
+
+# ── tmux-claude-session ────────────────────────────────
+echo
+echo "=== tmux-claude-session ==="
+
+SESSION="$BIN/tmux-claude-session"
+
+if [ ! -x "$SESSION" ]; then
+  skip "tmux-claude-session: not found/executable"
+elif [ "$HAS_ZSH" = 0 ]; then
+  skip "tmux-claude-session: zsh script — skipped (zsh not in PATH)"
+else
+  # No arg → exits 0 silently
+  if zsh "$SESSION" 2>/dev/null; then
+    pass "no-arg exits 0"
+  else
+    fail "no-arg should exit 0"
+  fi
+
+  # Non-existent TTY → exits 0 silently
+  if zsh "$SESSION" "/dev/tty_nonexistent_999" 2>/dev/null; then
+    pass "bogus TTY exits 0"
+  else
+    fail "bogus TTY should exit 0"
+  fi
+fi
+
+# ── tmux-git-info ──────────────────────────────────────
+echo
+echo "=== tmux-git-info ==="
+
+GITINFO="$BIN/tmux-git-info"
+
+if [ ! -x "$GITINFO" ]; then
+  skip "tmux-git-info: not found/executable"
+elif [ "$HAS_ZSH" = 0 ]; then
+  skip "tmux-git-info: zsh script — skipped (zsh not in PATH)"
+else
+  # Non-git dir → empty output
+  result=$(zsh "$GITINFO" "$NONGIT" 2>/dev/null)
+  check_eq "non-git dir produces empty output" "" "$result"
+
+  # Git repo → non-empty output (branch name present)
+  result=$(zsh "$GITINFO" "$GITREPO" 2>/dev/null)
+  if [ -n "$result" ]; then
+    pass "git repo produces non-empty branch output"
+  else
+    fail "git repo should produce branch output (got empty)"
+  fi
+fi
+
+# ── tmux-short-path ────────────────────────────────────
+echo
+echo "=== tmux-short-path ==="
+
+SHORT="$BIN/tmux-short-path"
+
+if [ ! -x "$SHORT" ]; then
+  skip "tmux-short-path: not found/executable"
+elif [ "$HAS_ZSH" = 0 ]; then
+  skip "tmux-short-path: zsh script — skipped (zsh not in PATH)"
+else
+  # HOME replacement
+  result=$(zsh "$SHORT" "$HOME/dev/project" 2>/dev/null)
+  if printf '%s' "$result" | grep -q "~"; then
+    pass "replaces \$HOME with ~"
+  else
+    fail "should replace \$HOME with ~ (got: $result)"
+  fi
+
+  # Deep path → abbreviated with ellipsis
+  result=$(zsh "$SHORT" "/home/user/a/b/c/d/e/f" 2>/dev/null)
+  if printf '%s' "$result" | grep -q "…"; then
+    pass "deep path abbreviated with ellipsis"
+  else
+    fail "deep path should be abbreviated with … (got: $result)"
+  fi
+
+  # Hard cap at 30 chars
+  result=$(zsh "$SHORT" "/home/user/a/b/c/d/e/averylonglastdir" 2>/dev/null)
+  if [ "${#result}" -le 30 ]; then
+    pass "output capped at 30 chars (got ${#result})"
+  else
+    fail "output should be capped at 30 chars (got ${#result}: $result)"
+  fi
+
+  # Worktree path → wt: prefix
+  result=$(zsh "$SHORT" "/home/user/proj/.worktrees/feature-x" 2>/dev/null)
+  if printf '%s' "$result" | grep -q "wt:"; then
+    pass "worktree path shows wt: prefix"
+  else
+    fail "worktree path should show wt: prefix (got: $result)"
+  fi
+fi
+
+# ── Summary ────────────────────────────────────────────
+echo
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+printf ' PASS: %-4d  FAIL: %-4d  SKIP: %d\n' "$PASS" "$FAIL" "$SKIP"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+[ "$FAIL" -gt 0 ] && exit 1
+exit 0
