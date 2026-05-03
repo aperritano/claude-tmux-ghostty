@@ -1,0 +1,175 @@
+#!/bin/bash
+# tmux-claude-test — regression tests for claude-tmux-ghostty bin scripts
+# Some tests require zsh (macOS default) or a live tmux server and skip if absent.
+# Exit 0 if no FAILs; exit 1 on any FAIL.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO/bin"
+
+pass=0; fail=0; skip=0
+
+_pass() { printf "PASS  %s\n" "$1"; pass=$((pass+1)); }
+_fail() { printf "FAIL  %s\n" "$1"; fail=$((fail+1)); }
+_skip() { printf "SKIP  %s\n" "$1 (skipped)"; skip=$((skip+1)); }
+
+_assert_eq() {
+  local label="$1" expected="$2" actual="$3"
+  if [ "$actual" = "$expected" ]; then
+    _pass "$label"
+  else
+    _fail "$label — expected: $(printf '%s' "$expected" | cat -v) got: $(printf '%s' "$actual" | cat -v)"
+  fi
+}
+
+_assert_contains() {
+  local label="$1" needle="$2" actual="$3"
+  if printf '%s\n' "$actual" | grep -qF "$needle"; then
+    _pass "$label"
+  else
+    _fail "$label — expected to contain: $needle — got: $actual"
+  fi
+}
+
+_assert_not_contains() {
+  local label="$1" needle="$2" actual="$3"
+  if printf '%s\n' "$actual" | grep -qF "$needle"; then
+    _fail "$label — expected NOT to contain: $needle — got: $actual"
+  else
+    _pass "$label"
+  fi
+}
+
+HAS_ZSH=0
+command -v zsh >/dev/null 2>&1 && HAS_ZSH=1
+
+HAS_TMUX=0
+[ -n "${TMUX:-}" ] && HAS_TMUX=1
+
+# ── tmux-short-path ───────────────────────────────────────────────────────────
+
+if [ "$HAS_ZSH" = "1" ]; then
+  # Home substitution: 2-part path kept as-is
+  r=$(HOME=/home/testuser "$BIN/tmux-short-path" "/home/testuser/dev/myproject")
+  _assert_eq "short-path: 2-part home path kept" "~/dev/myproject" "$r"
+
+  # Home substitution: 4-part path abbreviates to ~/…/c/d
+  r=$(HOME=/home/testuser "$BIN/tmux-short-path" "/home/testuser/a/b/c/d")
+  _assert_eq "short-path: 4-part home path abbreviates" "~/…/c/d" "$r"
+
+  # Bug regression: non-home absolute path must NOT get ~/… prefix
+  r=$(HOME=/home/testuser "$BIN/tmux-short-path" "/var/folders/ab/cd/ef/gh")
+  _assert_not_contains "short-path: non-home path does NOT use ~/… prefix" "~/" "$r"
+  _assert_contains     "short-path: non-home path uses …/ prefix" "…/" "$r"
+
+  # Worktree path: shows wt:<name>
+  r=$(HOME=/home/testuser "$BIN/tmux-short-path" "/home/testuser/projects/.worktrees/my-feature")
+  _assert_eq "short-path: worktree path shows wt:name" "wt:my-feature" "$r"
+
+  # Long worktree name is truncated to ≤ 21 chars (wt: + 15 + …)
+  r=$(HOME=/home/testuser "$BIN/tmux-short-path" "/home/testuser/.worktrees/this-is-a-very-long-name-indeed")
+  len=$(printf '%s' "$r" | wc -c | tr -d ' ')
+  [ "$len" -le 21 ] && _pass "short-path: long worktree name truncated (len=$len)" \
+                     || _fail "short-path: long worktree name too long (len=$len, max 21)"
+
+  # Hard cap: any path output is ≤ 30 chars
+  r=$(HOME=/home/testuser "$BIN/tmux-short-path" "/home/testuser/very/long/path/deeply/nested/here")
+  len=$(printf '%s' "$r" | wc -c | tr -d ' ')
+  [ "$len" -le 30 ] && _pass "short-path: output capped at 30 chars (len=$len)" \
+                      || _fail "short-path: output exceeds 30 chars (len=$len)"
+
+  # Just home: returns ~
+  r=$(HOME=/home/testuser "$BIN/tmux-short-path" "/home/testuser")
+  _assert_eq "short-path: bare home dir returns ~" "~" "$r"
+else
+  for label in \
+    "short-path: 2-part home path kept" \
+    "short-path: 4-part home path abbreviates" \
+    "short-path: non-home path does NOT use ~/… prefix" \
+    "short-path: non-home path uses …/ prefix" \
+    "short-path: worktree path shows wt:name" \
+    "short-path: long worktree name truncated" \
+    "short-path: output capped at 30 chars" \
+    "short-path: bare home dir returns ~"
+  do
+    _skip "$label (zsh unavailable)"
+  done
+fi
+
+# ── tmux-pane-label ───────────────────────────────────────────────────────────
+
+# Non-git directory: output is the basename of the path
+tmpdir=$(mktemp -d)
+r=$("$BIN/tmux-pane-label" "$tmpdir")
+expected=$(basename "$tmpdir")
+_assert_eq "pane-label: non-git dir shows basename" "$expected" "$r"
+rmdir "$tmpdir"
+
+# Git repository: output contains the repo name
+r=$("$BIN/tmux-pane-label" "$REPO")
+_assert_contains "pane-label: git repo output contains repo name" "claude-tmux-ghostty" "$r"
+
+# Git repository: output contains the current branch name
+branch=$(git -C "$REPO" branch --show-current 2>/dev/null || true)
+if [ -n "$branch" ]; then
+  _assert_contains "pane-label: git repo output contains branch name" "$branch" "$r"
+else
+  _skip "pane-label: branch in output (detached HEAD)"
+fi
+
+# ── tmux-git-info ─────────────────────────────────────────────────────────────
+
+if [ "$HAS_ZSH" = "1" ]; then
+  # Non-git dir: no output
+  tmpdir=$(mktemp -d)
+  r=$("$BIN/tmux-git-info" "$tmpdir" 2>/dev/null || true)
+  _assert_eq "git-info: non-git dir produces no output" "" "$r"
+  rmdir "$tmpdir"
+
+  # Git repo: output contains current branch name
+  if [ -n "${branch:-}" ]; then
+    r=$("$BIN/tmux-git-info" "$REPO")
+    _assert_contains "git-info: git repo contains branch name" "$branch" "$r"
+  else
+    _skip "git-info: branch in output (detached HEAD)"
+  fi
+else
+  _skip "git-info: non-git dir (zsh unavailable)"
+  _skip "git-info: branch output (zsh unavailable)"
+fi
+
+# ── tmux-kill-teammate-pane ───────────────────────────────────────────────────
+
+if [ "$HAS_ZSH" = "1" ]; then
+  # Without TMUX set: script exits silently with no output
+  r=$(TMUX="" "$BIN/tmux-kill-teammate-pane" 2>&1 || true)
+  _assert_eq "kill-teammate: exits silently when not in tmux" "" "$r"
+else
+  _skip "kill-teammate: no-op outside tmux (zsh unavailable)"
+fi
+
+# ── tmux-session-list ─────────────────────────────────────────────────────────
+
+if [ "$HAS_TMUX" = "1" ]; then
+  current=$(tmux display-message -p '#{session_name}')
+  r=$("$BIN/tmux-session-list" "$current")
+  _assert_contains "session-list: output contains current session name" "$current" "$r"
+else
+  _skip "session-list: output contains current session (no live tmux)"
+fi
+
+# ── tmux-tile-session arg parsing ─────────────────────────────────────────────
+
+if [ "$HAS_TMUX" = "1" ]; then
+  # Bad argument should print usage to stderr and exit non-zero
+  r=$("$BIN/tmux-tile-session" bad_arg 2>&1 || true)
+  _assert_contains "tile-session: bad arg prints usage" "Usage" "$r"
+else
+  _skip "tile-session: bad arg prints usage (no live tmux)"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
+echo ""
+printf "%-40s  %s PASS / %s FAIL / %s SKIP\n" "Tests:" "$pass" "$fail" "$skip"
+[ "$fail" -gt 0 ] && exit 1 || exit 0
