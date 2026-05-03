@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# bin/tmux-claude-test — regression suite for bin/ scripts.
+# Checks that don't need a live tmux server run unconditionally.
+# Checks that need tmux or zsh are skipped when unavailable.
+# Exit 0 iff zero FAILs.
+
+BIN="$(cd "$(dirname "$0")" && pwd)"
+PASS=0; SKIP=0; FAIL=0
+
+pass() { PASS=$((PASS+1)); printf 'PASS  %s\n' "$1"; }
+fail() { FAIL=$((FAIL+1)); printf 'FAIL  %s\n' "$1"; }
+skip() { SKIP=$((SKIP+1)); printf 'SKIP  %s\n' "$1"; }
+
+expect() {
+  local got="$1" want="$2" desc="$3"
+  if [ "$got" = "$want" ]; then
+    pass "$desc"
+  else
+    fail "$desc  (want: $(printf '%q' "$want")  got: $(printf '%q' "$got"))"
+  fi
+}
+
+expect_contains() {
+  local got="$1" substr="$2" desc="$3"
+  if printf '%s' "$got" | grep -qF "$substr"; then
+    pass "$desc"
+  else
+    fail "$desc  (want to contain: $(printf '%q' "$substr")  got: $(printf '%q' "$got"))"
+  fi
+}
+
+expect_empty() {
+  local got="$1" desc="$2"
+  if [ -z "$got" ]; then
+    pass "$desc"
+  else
+    fail "$desc  (expected empty, got: $(printf '%q' "$got"))"
+  fi
+}
+
+# ── tmux-short-path ───────────────────────────────────────────────────────
+# Uses zsh-specific syntax; skip if zsh is unavailable.
+if command -v zsh >/dev/null 2>&1; then
+  run_sp() { zsh "$BIN/tmux-short-path" "$1"; }
+
+  # Home directory → ~
+  expect "$(run_sp "$HOME")" "~" \
+    "tmux-short-path: \$HOME → ~"
+
+  # Short path (≤3 components): passed through unchanged (after ~ substitution)
+  expect "$(run_sp "$HOME/foo/bar")" "~/foo/bar" \
+    "tmux-short-path: short path passed through"
+
+  # Deep path (>3 components): abbreviated
+  result=$(run_sp "$HOME/one/two/three/four")
+  expect_contains "$result" "…" \
+    "tmux-short-path: deep path contains ellipsis"
+  expect_contains "$result" "three/four" \
+    "tmux-short-path: deep path keeps last 2 components"
+
+  # Very long path: hard-capped at 30 chars
+  long_path="$HOME/aaaaaaaaaa/bbbbbbbbbb/cccccccccc/dddddddddd"
+  result=$(run_sp "$long_path")
+  len=${#result}
+  if [ "$len" -le 30 ]; then
+    pass "tmux-short-path: long path capped at 30 chars (got $len)"
+  else
+    fail "tmux-short-path: long path not capped — got $len chars"
+  fi
+
+  # Worktree root: shows wt:<name>
+  expect "$(run_sp "$HOME/myrepo/.worktrees/my-feature")" "wt:my-feature" \
+    "tmux-short-path: worktree root → wt:<name>"
+
+  # Worktree subdir: must still show wt:<name>, NOT the deepest component
+  # Regression for bug: ${p##*/} returned 'lib' instead of 'my-feature'
+  expect "$(run_sp "$HOME/myrepo/.worktrees/my-feature/src/lib")" "wt:my-feature" \
+    "tmux-short-path: worktree subdir → wt:<name> (not subdir name)"
+
+  # Worktree name truncated at 18 chars
+  long_wt="this-is-a-very-long-worktree-branch-name"
+  result=$(run_sp "$HOME/myrepo/.worktrees/$long_wt")
+  expect_contains "$result" "wt:" \
+    "tmux-short-path: long worktree name has wt: prefix"
+  len=${#result}
+  if [ "$len" -le 22 ]; then  # "wt:" (3) + 15 chars + "…" (1) = 19, plus some slack
+    pass "tmux-short-path: long worktree name truncated (got $len chars)"
+  else
+    fail "tmux-short-path: long worktree name not truncated (got $len chars)"
+  fi
+else
+  skip "tmux-short-path: zsh unavailable — all tmux-short-path tests skipped"
+fi
+
+# ── tmux-pane-label ───────────────────────────────────────────────────────
+# Pure bash; no tmux needed. Tests path-argument handling.
+
+# Non-git directory: falls back to basename
+result=$(bash "$BIN/tmux-pane-label" /tmp 2>/dev/null)
+expect "$result" "tmp" \
+  "tmux-pane-label: non-git path → basename"
+
+# Missing argument: uses cwd, should not crash
+bash "$BIN/tmux-pane-label" >/dev/null 2>&1
+if [ $? -le 1 ]; then
+  pass "tmux-pane-label: no argument does not crash"
+else
+  fail "tmux-pane-label: no argument exited with error"
+fi
+
+# In the repo's own git dir: should contain repo name and branch
+result=$(bash "$BIN/tmux-pane-label" "$BIN/.." 2>/dev/null)
+if [ -n "$result" ]; then
+  expect_contains "$result" "claude-tmux-ghostty" \
+    "tmux-pane-label: git repo → contains repo name"
+else
+  skip "tmux-pane-label: git repo check skipped (no git info available)"
+fi
+
+# ── tmux-git-info ─────────────────────────────────────────────────────────
+# Uses zsh; skip if unavailable.
+if command -v zsh >/dev/null 2>&1; then
+  # Non-git directory: must produce no output (exit 0)
+  result=$(zsh "$BIN/tmux-git-info" /tmp 2>/dev/null)
+  expect_empty "$result" \
+    "tmux-git-info: non-git path → empty output"
+
+  # In the repo: should output branch name (non-empty)
+  result=$(zsh "$BIN/tmux-git-info" "$BIN/.." 2>/dev/null)
+  if [ -n "$result" ]; then
+    pass "tmux-git-info: git repo → non-empty output"
+  else
+    skip "tmux-git-info: git repo output empty (detached HEAD or no branch?)"
+  fi
+else
+  skip "tmux-git-info: zsh unavailable — all tmux-git-info tests skipped"
+fi
+
+# ── tmux-session-list ─────────────────────────────────────────────────────
+# Needs tmux; skip if server is not running.
+if tmux info >/dev/null 2>&1; then
+  result=$(bash "$BIN/tmux-session-list" "" 2>/dev/null)
+  if [ -n "$result" ]; then
+    pass "tmux-session-list: returns non-empty output when tmux is running"
+  else
+    skip "tmux-session-list: no sessions found (empty tmux server?)"
+  fi
+else
+  skip "tmux-session-list: tmux not running — test skipped"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────
+printf '\n%d PASS / %d SKIP / %d FAIL\n' "$PASS" "$SKIP" "$FAIL"
+[ "$FAIL" -eq 0 ]

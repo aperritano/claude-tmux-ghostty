@@ -4,7 +4,11 @@ p="${1/#$HOME/~}"
 
 # For worktree paths, just show "wt:<name>"
 if [[ "$p" == */.worktrees/* ]]; then
-  wtname="${p##*/}"
+  # Strip everything up to and including /.worktrees/, then take the first path
+  # component.  ${p##*/} is wrong here: it returns the deepest component (e.g.
+  # "lib" for ~/repo/.worktrees/branch/src/lib) instead of the branch name.
+  after_wt="${p#*/.worktrees/}"
+  wtname="${after_wt%%/*}"
   (( ${#wtname} > 18 )) && wtname="${wtname:0:15}…"
   echo "wt:${wtname}"
   return

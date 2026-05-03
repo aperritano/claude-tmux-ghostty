@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# bin/tmux-claude-audit — living spec for this dotfiles repo.
+# Each line is PASS / WARN / FAIL.  Exit 0 iff zero FAILs.
+# WARN marks known open questions; they never block CI.
+# Runs without a live tmux server; tmux-dependent checks skip when absent.
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+PASS=0; WARN=0; FAIL=0
+
+pass() { PASS=$((PASS+1)); printf 'PASS  %s\n' "$1"; }
+warn() { WARN=$((WARN+1)); printf 'WARN  %s\n' "$1"; }
+fail() { FAIL=$((FAIL+1)); printf 'FAIL  %s\n' "$1"; }
+
+check_contains() {
+  local file="$1" pattern="$2" desc="$3"
+  if grep -qF "$pattern" "$file" 2>/dev/null; then
+    pass "$desc"
+  else
+    fail "$desc"
+  fi
+}
+
+# ── bin/ scripts ──────────────────────────────────────────────────────────
+check_script() {
+  local name="$1"
+  local path="$REPO/bin/$name"
+  if [ ! -f "$path" ]; then
+    fail "bin/$name: missing"
+    return
+  fi
+  pass "bin/$name: exists"
+  if [ -x "$path" ]; then
+    pass "bin/$name: executable"
+  else
+    fail "bin/$name: not executable"
+  fi
+  local shebang
+  shebang=$(head -1 "$path" 2>/dev/null)
+  if printf '%s' "$shebang" | grep -q '^#!'; then
+    pass "bin/$name: has shebang"
+  else
+    fail "bin/$name: missing shebang"
+  fi
+  case "$shebang" in
+    *bash*)
+      if bash -n "$path" 2>/dev/null; then
+        pass "bin/$name: bash syntax OK"
+      else
+        fail "bin/$name: bash syntax error"
+      fi
+      ;;
+    *zsh*)
+      if command -v zsh >/dev/null 2>&1; then
+        if zsh -n "$path" 2>/dev/null; then
+          pass "bin/$name: zsh syntax OK"
+        else
+          fail "bin/$name: zsh syntax error"
+        fi
+      else
+        warn "bin/$name: zsh unavailable — syntax unchecked"
+      fi
+      ;;
+    *)
+      warn "bin/$name: unrecognised interpreter in shebang"
+      ;;
+  esac
+}
+
+for _s in claude-dev setup-github-ssh tmux-claude-session tmux-git-info \
+          tmux-kill-teammate-pane tmux-pane-label tmux-session-list \
+          tmux-short-path tmux-tile-session tmux-tutorial \
+          tmux-claude-audit tmux-claude-test; do
+  check_script "$_s"
+done
+
+# ── tmux/tmux.conf ────────────────────────────────────────────────────────
+TCONF="$REPO/tmux/tmux.conf"
+tc() { check_contains "$TCONF" "$1" "tmux.conf: $2"; }
+
+# Core settings
+tc "set -g prefix C-a"        "prefix is C-a"
+tc "set -g mouse on"          "mouse enabled"
+tc "escape-time 0"            "escape-time 0"
+tc "set -g base-index 1"      "base-index 1"
+tc "pane-base-index 1"        "pane-base-index 1"
+tc "renumber-windows on"      "renumber-windows on"
+tc "allow-passthrough on"     "allow-passthrough on"
+tc "history-limit"            "history-limit set"
+tc "set-clipboard on"         "set-clipboard on"
+tc "pane-border-lines heavy"  "pane-border-lines heavy"
+tc "status-position bottom"   "status-position bottom"
+
+# Status-bar script references
+tc "tmux-short-path"     "status-right: tmux-short-path"
+tc "tmux-git-info"       "status-right: tmux-git-info"
+tc "tmux-claude-session" "status-right: tmux-claude-session"
+
+# Key bindings wired to workflow scripts
+tc "bind E"    "bind E (tile toggle → tmux-tile-session)"
+tc "bind g "   "bind g (Claude session manager popup)"
+tc "bind X "   "bind X (kill agent panes)"
+tc "bind R "   "bind R (rename session)"
+tc "bind c "   "bind c (new Claude pane)"
+tc "bind s "   "bind s (new shell pane)"
+tc "bind C "   "bind C (Claude dev layout)"
+tc "bind r "   "bind r (reload config)"
+tc "bind m "   "bind m (mouse toggle)"
+tc "bind y "   "bind y (copy session ID)"
+tc "bind p "   "bind p (copy pane path)"
+tc "bind Tab"  "bind Tab (next session)"
+tc 'bind ?'    "bind ? (help popup)"
+
+# Copy-mode clipboard
+tc "pbcopy"    "copy-mode: piped to pbcopy"
+
+# ── ghostty/config ────────────────────────────────────────────────────────
+GCONF="$REPO/ghostty/config"
+gc() { check_contains "$GCONF" "$1" "ghostty/config: $2"; }
+
+if [ -f "$GCONF" ]; then
+  pass "ghostty/config: exists"
+  gc "theme"             "theme configured"
+  gc "font-family"       "font-family set"
+  gc "font-size"         "font-size set"
+  gc "cursor-style"      "cursor-style set"
+  gc "scrollback-limit"  "scrollback-limit set"
+  gc "copy-on-select"    "copy-on-select set"
+  gc "shell-integration" "shell-integration set"
+else
+  fail "ghostty/config: missing"
+fi
+
+# ── Root files ────────────────────────────────────────────────────────────
+for _f in install.sh Brewfile .env.template; do
+  if [ -f "$REPO/$_f" ]; then
+    pass "$_f: exists"
+  else
+    fail "$_f: missing"
+  fi
+done
+if [ -x "$REPO/install.sh" ]; then
+  pass "install.sh: executable"
+else
+  fail "install.sh: not executable"
+fi
+
+check_contains "$REPO/Brewfile" "tmux"     "Brewfile: tmux present"
+check_contains "$REPO/Brewfile" "ghostty"  "Brewfile: ghostty present"
+check_contains "$REPO/Brewfile" "fzf"      "Brewfile: fzf present"
+
+# ── Config dirs ───────────────────────────────────────────────────────────
+for _f in zsh/zshrc zsh/p10k.zsh vim/vimrc git/gitconfig git/gitignore_global \
+          macos/defaults.sh claude/CLAUDE.md claude/settings.json \
+          claude/statusline-command.sh \
+          claude/rules/deterministic-execution-protocol.md; do
+  if [ -f "$REPO/$_f" ]; then
+    pass "$_f: exists"
+  else
+    fail "$_f: missing"
+  fi
+done
+if [ -x "$REPO/macos/defaults.sh" ]; then
+  pass "macos/defaults.sh: executable"
+else
+  fail "macos/defaults.sh: not executable"
+fi
+
+# claude/settings.json key fields
+if grep -qF '"model"' "$REPO/claude/settings.json" 2>/dev/null; then
+  pass "claude/settings.json: model configured"
+else
+  warn "claude/settings.json: model field missing"
+fi
+if grep -qF '"teammateMode"' "$REPO/claude/settings.json" 2>/dev/null; then
+  pass "claude/settings.json: teammateMode set"
+else
+  warn "claude/settings.json: teammateMode not set"
+fi
+
+# ── Open questions (WARN, never FAIL) ─────────────────────────────────────
+# The SubagentStop hook for auto-kill is undecided; see README and commit notes.
+if grep -qF "tmux-kill-teammate-pane" "$REPO/claude/settings.json" 2>/dev/null; then
+  pass "tmux-kill-teammate-pane: SubagentStop hook wired in claude/settings.json"
+else
+  warn "tmux-kill-teammate-pane: SubagentStop hook NOT wired (open question — wire or drop README claim)"
+fi
+
+# ── README consistency ────────────────────────────────────────────────────
+for _tok in tmux-kill-teammate-pane tmux-claude-session tmux-pane-label tmux-short-path; do
+  check_contains "$REPO/README.md" "$_tok" "README: documents $_tok"
+done
+
+# ── Summary ───────────────────────────────────────────────────────────────
+printf '\n%d PASS / %d WARN / %d FAIL\n' "$PASS" "$WARN" "$FAIL"
+[ "$FAIL" -eq 0 ]
