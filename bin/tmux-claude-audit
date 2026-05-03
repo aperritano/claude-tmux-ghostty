@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+# bin/tmux-claude-audit — living spec for the claude-tmux-ghostty repo.
+# Checks scripts, tmux.conf wiring, README coverage, and config consistency.
+# Requires no live tmux session. Exits non-zero if any FAIL is recorded.
+#
+# Usage: bash bin/tmux-claude-audit
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO/bin"
+PASS=0; WARN=0; FAIL=0
+
+pass() { PASS=$((PASS+1)); printf '  PASS  %s\n' "$1"; }
+warn() { WARN=$((WARN+1)); printf '  WARN  %s\n' "$1"; }
+fail() { FAIL=$((FAIL+1)); printf '  FAIL  %s\n' "$1"; }
+section() { printf '\n── %s ──\n' "$1"; }
+
+conf_has() { grep -q "$1" "$CONF"; }
+readme_has() { grep -q "$1" "$README"; }
+
+# ── A: bin/ scripts — existence, executability, shebang ──────────────────────
+
+section "A: bin/ scripts"
+
+BIN_SCRIPTS="claude-dev setup-github-ssh tmux-claude-audit tmux-claude-session
+             tmux-claude-test tmux-git-info tmux-kill-teammate-pane tmux-pane-label
+             tmux-session-list tmux-short-path tmux-tile-session tmux-tutorial"
+
+for name in $BIN_SCRIPTS; do
+  f="$BIN/$name"
+  if [ -f "$f" ]; then
+    pass "$name: exists"
+  else
+    fail "$name: missing from bin/"
+    continue
+  fi
+
+  if [ -x "$f" ]; then
+    pass "$name: executable"
+  else
+    fail "$name: not executable (chmod +x needed)"
+  fi
+
+  shebang=$(head -1 "$f")
+  case "$shebang" in
+    "#!/bin/zsh"|"#!/bin/bash"|"#!/usr/bin/env bash"|"#!/usr/bin/env zsh"|"#!/bin/sh")
+      pass "$name: valid shebang" ;;
+    *)
+      fail "$name: unexpected or missing shebang: $shebang" ;;
+  esac
+done
+
+# ── B: tmux/tmux.conf ─────────────────────────────────────────────────────────
+
+section "B: tmux/tmux.conf"
+CONF="$REPO/tmux/tmux.conf"
+
+if [ -f "$CONF" ]; then
+  pass "tmux.conf: exists"
+else
+  fail "tmux.conf: missing"
+fi
+
+# Scripts referenced in status-right / bindings
+for script in tmux-short-path tmux-git-info tmux-claude-session tmux-tile-session; do
+  if conf_has "$script"; then
+    pass "tmux.conf: references $script"
+  else
+    fail "tmux.conf: does not reference $script"
+  fi
+done
+
+# Required options
+for opt in "allow-passthrough" "escape-time 0" "base-index 1" \
+           "renumber-windows on" "history-limit" "status-interval" \
+           "mouse on" "pane-border-lines"; do
+  if conf_has "$opt"; then
+    pass "tmux.conf: option '$opt' set"
+  else
+    fail "tmux.conf: option '$opt' missing"
+  fi
+done
+
+# Key bindings
+for binding in \
+  "bind j split-window -h" \
+  "bind i split-window -v" \
+  "bind -n C-h select-pane" \
+  "bind -n C-j select-pane" \
+  "bind -n C-k select-pane" \
+  "bind -n C-l select-pane" \
+  "bind c split-window" \
+  "bind s split-window" \
+  "bind C new-window" \
+  "bind E run-shell" \
+  "bind X confirm-before" \
+  "bind g display-popup" \
+  "bind y run-shell" \
+  "bind p run-shell" \
+  "bind ? display-popup" \
+  "bind R command-prompt"; do
+  if conf_has "$binding"; then
+    pass "tmux.conf: binding '${binding}'"
+  else
+    fail "tmux.conf: binding missing: '${binding}'"
+  fi
+done
+
+# ── C: README.md coverage ─────────────────────────────────────────────────────
+
+section "C: README.md"
+README="$REPO/README.md"
+
+if [ -f "$README" ]; then
+  pass "README.md: exists"
+else
+  fail "README.md: missing"
+fi
+
+for name in $BIN_SCRIPTS; do
+  if readme_has "$name"; then
+    pass "README.md: mentions $name"
+  else
+    fail "README.md: does not mention $name"
+  fi
+done
+
+for heading in "tmux Key Bindings" "Claude Code Status Line" "Claude Code Agent Teams"; do
+  if readme_has "$heading"; then
+    pass "README.md: section '$heading' present"
+  else
+    fail "README.md: section '$heading' missing"
+  fi
+done
+
+# ── D: claude/statusline-command.sh ──────────────────────────────────────────
+
+section "D: claude/statusline-command.sh"
+SL="$REPO/claude/statusline-command.sh"
+
+if [ -f "$SL" ]; then
+  pass "statusline-command.sh: exists"
+else
+  fail "statusline-command.sh: missing"
+fi
+
+if [ -x "$SL" ]; then
+  pass "statusline-command.sh: executable"
+else
+  fail "statusline-command.sh: not executable"
+fi
+
+for token in "jq" "workspace.current_dir" "model.display_name" \
+             "context_window.used_percentage"; do
+  if grep -q "$token" "$SL"; then
+    pass "statusline-command.sh: '$token' present"
+  else
+    fail "statusline-command.sh: '$token' missing"
+  fi
+done
+
+# Traffic-light thresholds
+for threshold in "80" "50"; do
+  if grep -q "used_int.*$threshold\|$threshold.*used_int" "$SL"; then
+    pass "statusline-command.sh: traffic-light threshold $threshold present"
+  else
+    fail "statusline-command.sh: traffic-light threshold $threshold missing"
+  fi
+done
+
+# ── E: install.sh completeness ────────────────────────────────────────────────
+
+section "E: install.sh"
+INSTALL="$REPO/install.sh"
+
+if [ -f "$INSTALL" ]; then
+  pass "install.sh: exists"
+else
+  fail "install.sh: missing"
+fi
+
+if [ -x "$INSTALL" ]; then
+  pass "install.sh: executable"
+else
+  fail "install.sh: not executable"
+fi
+
+# bin/ scripts are covered by the for loop
+if grep -q '"$DOTFILES"/bin/' "$INSTALL"; then
+  pass "install.sh: bin/ loop symlinks all scripts"
+else
+  fail "install.sh: bin/ loop not found"
+fi
+
+# Critical config symlinks
+for item in "tmux/tmux.conf" "claude/statusline-command.sh" "claude/settings.json" \
+            "claude/CLAUDE.md" "ghostty/config" "zsh/zshrc" "git/gitconfig"; do
+  if grep -q "$item" "$INSTALL"; then
+    pass "install.sh: '$item' is symlinked"
+  else
+    fail "install.sh: '$item' not symlinked"
+  fi
+done
+
+# ── F: claude/settings.json ───────────────────────────────────────────────────
+
+section "F: claude/settings.json"
+SETTINGS="$REPO/claude/settings.json"
+
+if [ -f "$SETTINGS" ]; then
+  pass "settings.json: exists"
+else
+  fail "settings.json: missing"
+fi
+
+if grep -q '"teammateMode".*"tmux"' "$SETTINGS"; then
+  pass "settings.json: teammateMode=tmux"
+else
+  fail "settings.json: teammateMode not set to 'tmux'"
+fi
+
+if grep -q "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS" "$SETTINGS"; then
+  pass "settings.json: CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS env var set"
+else
+  fail "settings.json: CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS not set"
+fi
+
+# ── G: doc/impl consistency ───────────────────────────────────────────────────
+
+section "G: doc/impl consistency"
+
+# README claims tmux-kill-teammate-pane auto-cleans panes on SubagentStop.
+# The hook must be wired in settings.json for the claim to be true.
+if grep -q "SubagentStop\|TeammateIdle" "$SETTINGS"; then
+  pass "settings.json: SubagentStop/TeammateIdle hook wired for tmux-kill-teammate-pane"
+else
+  warn "settings.json: SubagentStop hook NOT wired — README claims auto-clean on agent finish but the hook is absent (open question: wire it or update README claim)"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
+printf '\n══ Audit complete: %d PASS / %d WARN / %d FAIL\n' "$PASS" "$WARN" "$FAIL"
+[ "$FAIL" -eq 0 ]
