@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# tmux-claude-audit — static health checks for claude-tmux-ghostty dotfiles
+#
+# Checks: executable bits, shebangs, key file presence, tmux.conf wiring,
+# bash 3.2 portability, structural tmux.conf settings, README coverage.
+#
+# Exits 0 when no FAIL; exits 1 if any FAIL. No tmux server required.
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PASS=0; WARN=0; FAIL=0
+
+_pass() { printf 'PASS  %s\n' "$1"; PASS=$((PASS+1)); }
+_warn() { printf 'WARN  %s\n' "$1"; WARN=$((WARN+1)); }
+_fail() { printf 'FAIL  %s\n' "$1"; FAIL=$((FAIL+1)); }
+_skip() { printf 'SKIP  %s\n' "$1"; }
+_hdr()  { printf '%s\n' "$1"; }
+
+printf 'tmux-claude-audit  %s\n\n' "$(date '+%Y-%m-%d %H:%M')"
+
+# ── 1. bin/: executable bit ───────────────────────────────────────────────
+_hdr '--- bin/: executable bit'
+for f in "$REPO_ROOT"/bin/*; do
+  name=$(basename "$f")
+  if [ -x "$f" ]; then
+    _pass "bin/$name is executable"
+  else
+    _fail "bin/$name NOT executable (fix: chmod +x bin/$name)"
+  fi
+done
+printf '\n'
+
+# ── 2. bin/: shebang on first line ────────────────────────────────────────
+_hdr '--- bin/: shebang'
+for f in "$REPO_ROOT"/bin/*; do
+  name=$(basename "$f")
+  first=$(head -1 "$f")
+  case "$first" in
+    '#!/'*) _pass "bin/$name  →  $first" ;;
+    *)      _fail "bin/$name missing shebang (got: $first)" ;;
+  esac
+done
+printf '\n'
+
+# ── 3. Key config files exist ─────────────────────────────────────────────
+_hdr '--- key config files'
+for rel in \
+  "tmux/tmux.conf" \
+  "ghostty/config" \
+  "install.sh" \
+  "claude/CLAUDE.md" \
+  "Brewfile"
+do
+  if [ -f "$REPO_ROOT/$rel" ]; then
+    _pass "$rel exists"
+  else
+    _fail "$rel MISSING"
+  fi
+done
+printf '\n'
+
+# ── 4. install.sh is executable ───────────────────────────────────────────
+_hdr '--- install.sh permissions'
+if [ -x "$REPO_ROOT/install.sh" ]; then
+  _pass "install.sh is executable"
+else
+  _fail "install.sh NOT executable"
+fi
+printf '\n'
+
+# ── 5. tmux.conf: ~/bin/ and $HOME/bin/ references wired ──────────────────
+_hdr '--- tmux.conf: ~/bin/ wiring'
+tmux_conf="$REPO_ROOT/tmux/tmux.conf"
+if [ -f "$tmux_conf" ]; then
+  seen=""
+  while IFS= read -r line; do
+    for ref in $(printf '%s\n' "$line" | grep -oE '(~/bin/|\$HOME/bin/)[A-Za-z0-9_-]+'); do
+      script_name="${ref##*/}"
+      case "$seen" in *"|$script_name|"*) continue ;; esac
+      seen="${seen}|$script_name|"
+      if [ -f "$REPO_ROOT/bin/$script_name" ]; then
+        _pass "tmux.conf ~/bin/$script_name → bin/$script_name exists"
+      else
+        _fail "tmux.conf ~/bin/$script_name → bin/$script_name NOT found"
+      fi
+    done
+  done < "$tmux_conf"
+
+  # Open question: README claims SubagentStop auto-cleans panes via this script
+  # but the hook is not wired in tmux.conf or claude/settings.json.
+  if ! grep -q "tmux-kill-teammate-pane" "$tmux_conf"; then
+    _warn "tmux-kill-teammate-pane not wired in tmux.conf (README claims SubagentStop auto-cleans panes — hook absent, open question)"
+  fi
+else
+  _fail "tmux/tmux.conf not found; skipping wiring checks"
+fi
+printf '\n'
+
+# ── 6. Bash scripts: portability (bash 3.2 floor) ─────────────────────────
+# Meta-tools (this script and its test counterpart) are skipped — they reference
+# forbidden patterns only inside grep commands, not as actual usage.
+_hdr '--- bash scripts: portability (bash 3.2 floor)'
+for f in "$REPO_ROOT"/bin/*; do
+  name=$(basename "$f")
+  case "$name" in
+    tmux-claude-audit|tmux-claude-test) continue ;;
+  esac
+  first=$(head -1 "$f")
+  case "$first" in
+    '#!/usr/bin/env bash'|'#!/bin/bash') ;;
+    *) continue ;;
+  esac
+
+  if grep -qE '\b(mapfile|readarray)\b' "$f" 2>/dev/null; then
+    _fail "bin/$name uses mapfile/readarray (bash 4+ only)"
+  else
+    _pass "bin/$name: no mapfile/readarray"
+  fi
+
+  if grep -qE 'declare\s+-[a-zA-Z]*A[a-zA-Z ]*' "$f" 2>/dev/null; then
+    _fail "bin/$name uses declare -A (bash 4+ associative arrays)"
+  else
+    _pass "bin/$name: no declare -A"
+  fi
+
+  if grep -qE '\$\{[a-zA-Z_][a-zA-Z0-9_]*,,' "$f" 2>/dev/null; then
+    _fail "bin/$name uses \${var,,} lowercase expansion (bash 4+)"
+  else
+    _pass "bin/$name: no \${var,,}"
+  fi
+
+  if grep -qE '\$\{[a-zA-Z_][a-zA-Z0-9_]*\^\^' "$f" 2>/dev/null; then
+    _fail "bin/$name uses \${var^^} uppercase expansion (bash 4+)"
+  else
+    _pass "bin/$name: no \${var^^}"
+  fi
+done
+printf '\n'
+
+# ── 7. Bash scripts: tail -r portability ──────────────────────────────────
+_hdr '--- bash scripts: tail -r portability'
+found_tailr=0
+for f in "$REPO_ROOT"/bin/*; do
+  name=$(basename "$f")
+  case "$name" in
+    tmux-claude-audit|tmux-claude-test) continue ;;
+  esac
+  first=$(head -1 "$f")
+  case "$first" in
+    '#!/usr/bin/env bash'|'#!/bin/bash') ;;
+    *) continue ;;
+  esac
+  if grep -q 'tail -r' "$f" 2>/dev/null; then
+    _warn "bin/$name uses 'tail -r' (macOS BSD only — use 'tac' on Linux)"
+    found_tailr=1
+  fi
+done
+[ "$found_tailr" -eq 0 ] && _pass "no bash scripts use non-portable 'tail -r'"
+printf '\n'
+
+# ── 8. tmux.conf: structural settings ─────────────────────────────────────
+_hdr '--- tmux.conf: structural settings'
+if [ -f "$tmux_conf" ]; then
+  grep -q "set -g prefix C-a" "$tmux_conf" \
+    && _pass "tmux.conf: prefix C-a" \
+    || _fail "tmux.conf: 'set -g prefix C-a' not found"
+
+  grep -q "set -g base-index 1" "$tmux_conf" \
+    && _pass "tmux.conf: base-index 1" \
+    || _fail "tmux.conf: 'set -g base-index 1' not found"
+
+  grep -q "set -sg escape-time 0" "$tmux_conf" \
+    && _pass "tmux.conf: escape-time 0" \
+    || _fail "tmux.conf: 'set -sg escape-time 0' not found (vim/Claude Code key latency)"
+
+  grep -q "set -g status-interval" "$tmux_conf" \
+    && _pass "tmux.conf: status-interval configured" \
+    || _warn "tmux.conf: status-interval not set (statusline may not refresh)"
+
+  grep -q "set -g allow-passthrough on" "$tmux_conf" \
+    && _pass "tmux.conf: allow-passthrough on" \
+    || _fail "tmux.conf: allow-passthrough on MISSING (Claude Code cursor+clipboard needs this)"
+
+  grep -q "set -g mouse on" "$tmux_conf" \
+    && _pass "tmux.conf: mouse on" \
+    || _warn "tmux.conf: mouse not enabled by default"
+
+  grep -q "set -g history-limit" "$tmux_conf" \
+    && _pass "tmux.conf: history-limit configured" \
+    || _warn "tmux.conf: history-limit not set"
+
+  grep -q "set -g renumber-windows on" "$tmux_conf" \
+    && _pass "tmux.conf: renumber-windows on" \
+    || _warn "tmux.conf: renumber-windows not set"
+fi
+printf '\n'
+
+# ── 9. tmux.conf: pane navigation bindings ────────────────────────────────
+_hdr '--- tmux.conf: pane navigation'
+if [ -f "$tmux_conf" ]; then
+  for key in C-h C-j C-k C-l; do
+    grep -q "bind -n $key select-pane" "$tmux_conf" \
+      && _pass "tmux.conf: bind -n $key select-pane" \
+      || _fail "tmux.conf: bind -n $key select-pane MISSING"
+  done
+fi
+printf '\n'
+
+# ── 10. README.md: mentions all bin/ scripts ──────────────────────────────
+_hdr '--- README.md: bin/ coverage'
+readme="$REPO_ROOT/README.md"
+if [ -f "$readme" ]; then
+  for f in "$REPO_ROOT"/bin/*; do
+    name=$(basename "$f")
+    if grep -q "$name" "$readme"; then
+      _pass "README.md mentions $name"
+    else
+      _warn "README.md does not mention $name"
+    fi
+  done
+else
+  _warn "README.md not found"
+fi
+printf '\n'
+
+# ── Summary ───────────────────────────────────────────────────────────────
+printf 'Results: %d PASS / %d WARN / %d FAIL\n' "$PASS" "$WARN" "$FAIL"
+[ "$FAIL" -gt 0 ] && exit 1 || exit 0
