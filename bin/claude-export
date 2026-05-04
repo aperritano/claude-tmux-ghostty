@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""
+claude-export — render a Claude Code session transcript as readable markdown.
+
+Useful for: sharing a notable session, archiving for documentation,
+preserving a reference conversation before pruning.
+
+Usage:
+  claude-export <session-id-or-prefix>             # to stdout
+  claude-export <session-id> -o session.md         # to file
+  claude-export <session-id> --no-tools            # text only, skip tool blocks
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+PROJECTS = Path.home() / ".claude" / "projects"
+
+# ─── OSC 8 link rendering ───────────────────────────────────────────────
+# Mirrors cc-rich's linkify pass. Only applied when stdout is a TTY —
+# OSC 8 escapes corrupt markdown when written to a .md file.
+
+_URL_RE = re.compile(r"https?://[^\s)\]]+")
+_PR_RE = re.compile(r"\b(PR|issue)[-_](\d+)\b", re.IGNORECASE)
+_FILE_RE = re.compile(r"[\w./~-]+/[\w./-]*[\w]+\.[a-zA-Z][a-zA-Z0-9]{0,8}(?::\d+)?\b")
+_REPO_CACHE: dict[str, str] = {}
+
+def _osc8(url: str, text: str) -> str:
+    return f"\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\"
+
+def _repo_slug(cwd: str) -> str:
+    if not cwd:
+        return ""
+    if cwd in _REPO_CACHE:
+        return _REPO_CACHE[cwd]
+    try:
+        url = subprocess.check_output(
+            ["git", "-C", cwd, "remote", "get-url", "origin"],
+            text=True, stderr=subprocess.DEVNULL, timeout=2,
+        ).strip()
+    except Exception:
+        _REPO_CACHE[cwd] = ""
+        return ""
+    slug = ""
+    if url.startswith("https://github.com/"):
+        slug = url[len("https://github.com/"):]
+    elif url.startswith("git@github.com:"):
+        slug = url[len("git@github.com:"):]
+    slug = slug.removesuffix(".git").removesuffix("/")
+    _REPO_CACHE[cwd] = slug
+    return slug
+
+def _resolve_path(p: str, cwd: str) -> str:
+    if p.startswith("~/"):
+        home = os.environ.get("HOME", "")
+        return os.path.join(home, p[2:]) if home else ""
+    if os.path.isabs(p):
+        return p
+    return os.path.join(cwd, p) if cwd else ""
+
+def linkify(text: str, cwd: str) -> str:
+    if not text:
+        return text
+    text = _URL_RE.sub(lambda m: _osc8(m.group(0), m.group(0)), text)
+    slug = _repo_slug(cwd)
+    if slug:
+        def pr_repl(m):
+            kind, num = m.group(1).lower(), m.group(2)
+            path = "issues" if kind == "issue" else "pull"
+            return _osc8(f"https://github.com/{slug}/{path}/{num}", m.group(0))
+        text = _PR_RE.sub(pr_repl, text)
+    if cwd:
+        def file_repl(m):
+            match = m.group(0)
+            path, line_suffix = match, ""
+            colon = match.rfind(":")
+            if colon > 0 and match[colon + 1:].isdigit():
+                path, line_suffix = match[:colon], match[colon:]
+            abs_path = _resolve_path(path, cwd)
+            if not abs_path or not os.path.isfile(abs_path):
+                return match
+            return _osc8(f"vscode://file{abs_path}{line_suffix}", match)
+        text = _FILE_RE.sub(file_repl, text)
+    return text
+
+
+
+def find_session(session_id: str) -> Path | None:
+    for proj in PROJECTS.iterdir():
+        if not proj.is_dir():
+            continue
+        exact = proj / f"{session_id}.jsonl"
+        if exact.exists():
+            return exact
+        if len(session_id) >= 4:
+            for f in proj.glob(f"{session_id}*.jsonl"):
+                return f
+    return None
+
+
+def fmt_content(content, include_tools: bool = True) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            t = b.get("type")
+            if t == "text":
+                txt = (b.get("text") or "").strip()
+                if txt:
+                    parts.append(txt)
+            elif t == "tool_use" and include_tools:
+                inp = b.get("input") or {}
+                input_str = json.dumps(inp, indent=2, ensure_ascii=False)
+                if len(input_str) > 400:
+                    input_str = input_str[:397] + "..."
+                parts.append(f"\n**🔧 tool_use** — `{b.get('name', '?')}`\n```json\n{input_str}\n```")
+            elif t == "tool_result" and include_tools:
+                rc = b.get("content", "")
+                if isinstance(rc, list) and rc:
+                    first = rc[0]
+                    rc = first.get("text", "") if isinstance(first, dict) else str(first)
+                rc_str = str(rc).strip()
+                if len(rc_str) > 400:
+                    rc_str = rc_str[:397] + "..."
+                parts.append(f"\n**📋 tool_result**\n```\n{rc_str}\n```")
+        return "\n\n".join(parts)
+    return str(content)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("session_id", help="full UUID or prefix")
+    ap.add_argument("--output", "-o", help="write to file (default: stdout)")
+    ap.add_argument("--no-tools", action="store_true", help="omit tool_use / tool_result blocks")
+    args = ap.parse_args()
+
+    path = find_session(args.session_id)
+    if not path:
+        print(f"claude-export: session '{args.session_id}' not found in {PROJECTS}", file=sys.stderr)
+        return 1
+
+    include_tools = not args.no_tools
+    out_lines = []
+    out_lines.append(f"# Claude Code session — `{path.stem}`")
+    out_lines.append("")
+
+    cwd = ""
+    started = ""
+    user_count = 0
+    asst_count = 0
+
+    # First pass: header metadata
+    with path.open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not cwd and obj.get("cwd"):
+                cwd = obj["cwd"]
+            if not started and obj.get("timestamp"):
+                started = obj["timestamp"]
+            if obj.get("type") == "user":
+                user_count += 1
+            elif obj.get("type") == "assistant":
+                asst_count += 1
+
+    out_lines.append(f"- **cwd:** `{cwd or '(unknown)'}`")
+    out_lines.append(f"- **started:** {started or '(unknown)'}")
+    out_lines.append(f"- **turns:** {user_count} user / {asst_count} assistant")
+    out_lines.append(f"- **source:** `{path}`")
+    out_lines.append("")
+    out_lines.append("---")
+    out_lines.append("")
+
+    # Second pass: body
+    with path.open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            typ = obj.get("type")
+            if typ not in ("user", "assistant"):
+                continue
+            content = (obj.get("message") or {}).get("content", "")
+            text = fmt_content(content, include_tools)
+            if not text:
+                continue
+            # Wrap URLs / PR refs / file paths in OSC 8 only for TTY
+            # stdout. When -o file.md, leave the markdown clean — OSC 8
+            # escapes would corrupt the file's portability.
+            if not args.output and sys.stdout.isatty():
+                text = linkify(text, obj.get("cwd", "") or cwd)
+            ts = obj.get("timestamp", "")
+            ts_short = ts.split("T")[1][:8] if "T" in ts else ""
+            if typ == "user":
+                out_lines.append(f"## 👤 User  {ts_short}")
+            else:
+                out_lines.append(f"## 🤖 Assistant  {ts_short}")
+            out_lines.append("")
+            out_lines.append(text)
+            out_lines.append("")
+
+    output = "\n".join(out_lines)
+    if args.output:
+        Path(args.output).write_text(output, encoding="utf-8")
+        print(f"wrote {args.output} ({len(output):,} bytes)", file=sys.stderr)
+    else:
+        sys.stdout.write(output)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

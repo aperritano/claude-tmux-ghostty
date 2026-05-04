@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""
+claude-tail — live-tail a Claude Code session transcript with formatted output.
+
+Useful for monitoring an agent-team teammate from a different pane: watch
+what it's doing in real-time without switching focus to its pane.
+
+Usage:
+  claude-tail                    # auto-detect from current pane (uses tmux-claude-session)
+  claude-tail <session-id>       # tail specific session by full UUID
+  claude-tail <prefix>           # tail session whose UUID starts with <prefix>
+
+Format:
+  HH:MM:SS  👤  user message
+  HH:MM:SS  🤖  assistant message
+  HH:MM:SS  ⓘ   system / tool events
+
+Ctrl-C to stop.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+PROJECTS = Path.home() / ".claude" / "projects"
+
+# ─── Link rendering (OSC 8 hyperlinks) ──────────────────────────────────
+# Mirror cc-rich's linkify pass. Detects:
+#   - https?:// URLs → wrap as-is
+#   - PR-N / issue-N → wrap as github.com/<slug>/{pull|issues}/N
+#                      (slug looked up via `git -C <cwd> remote get-url origin`,
+#                       cached per cwd)
+#   - existing local file paths → wrap as vscode://file/<abs-path>
+# Terminals that don't support OSC 8 see only the text. tmux passes them
+# through with default config (3.4+).
+
+_URL_RE = re.compile(r"https?://[^\s)\]]+")
+_PR_RE = re.compile(r"\b(PR|issue)[-_](\d+)\b", re.IGNORECASE)
+_FILE_RE = re.compile(r"[\w./~-]+/[\w./-]*[\w]+\.[a-zA-Z][a-zA-Z0-9]{0,8}(?::\d+)?\b")
+_REPO_CACHE: dict[str, str] = {}  # cwd -> "owner/repo" or "" (no GitHub)
+
+def _osc8(url: str, text: str) -> str:
+    return f"\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\"
+
+def _repo_slug(cwd: str) -> str:
+    """Return owner/repo for cwd's GitHub remote, or '' if none."""
+    if not cwd:
+        return ""
+    if cwd in _REPO_CACHE:
+        return _REPO_CACHE[cwd]
+    try:
+        url = subprocess.check_output(
+            ["git", "-C", cwd, "remote", "get-url", "origin"],
+            text=True, stderr=subprocess.DEVNULL, timeout=2,
+        ).strip()
+    except Exception:
+        _REPO_CACHE[cwd] = ""
+        return ""
+    slug = ""
+    if url.startswith("https://github.com/"):
+        slug = url[len("https://github.com/"):]
+    elif url.startswith("git@github.com:"):
+        slug = url[len("git@github.com:"):]
+    slug = slug.removesuffix(".git").removesuffix("/")
+    _REPO_CACHE[cwd] = slug
+    return slug
+
+def _resolve_path(p: str, cwd: str) -> str:
+    if p.startswith("~/"):
+        home = os.environ.get("HOME", "")
+        return os.path.join(home, p[2:]) if home else ""
+    if os.path.isabs(p):
+        return p
+    return os.path.join(cwd, p) if cwd else ""
+
+def linkify(text: str, cwd: str) -> str:
+    """Wrap URLs, GitHub refs, and local file paths in OSC 8 escapes."""
+    if not text:
+        return text
+    text = _URL_RE.sub(lambda m: _osc8(m.group(0), m.group(0)), text)
+    slug = _repo_slug(cwd)
+    if slug:
+        def pr_repl(m):
+            kind, num = m.group(1).lower(), m.group(2)
+            path = "issues" if kind == "issue" else "pull"
+            return _osc8(f"https://github.com/{slug}/{path}/{num}", m.group(0))
+        text = _PR_RE.sub(pr_repl, text)
+    if cwd:
+        def file_repl(m):
+            match = m.group(0)
+            path, line_suffix = match, ""
+            # Detect optional :N line suffix.
+            colon = match.rfind(":")
+            if colon > 0 and match[colon + 1:].isdigit():
+                path, line_suffix = match[:colon], match[colon:]
+            abs_path = _resolve_path(path, cwd)
+            if not abs_path or not os.path.isfile(abs_path):
+                return match
+            return _osc8(f"vscode://file{abs_path}{line_suffix}", match)
+        text = _FILE_RE.sub(file_repl, text)
+    return text
+
+
+
+def find_session_jsonl(session_id_or_prefix: str) -> Path | None:
+    """Find the .jsonl for a session ID. Accepts full UUID or prefix."""
+    for proj in PROJECTS.iterdir():
+        if not proj.is_dir():
+            continue
+        # Exact match first
+        exact = proj / f"{session_id_or_prefix}.jsonl"
+        if exact.exists():
+            return exact
+        # Prefix match
+        if len(session_id_or_prefix) >= 4:
+            for f in proj.glob(f"{session_id_or_prefix}*.jsonl"):
+                return f
+    return None
+
+
+def auto_detect_session() -> str | None:
+    """Use tmux-claude-session helper to find the session for the current TTY."""
+    tty = subprocess.run(["tty"], capture_output=True, text=True).stdout.strip()
+    if not tty:
+        return None
+    helper = Path.home() / "bin" / "tmux-claude-session"
+    if not helper.exists():
+        return None
+    out = subprocess.run([str(helper), tty], capture_output=True, text=True).stdout
+    m = re.search(r"claude:([a-f0-9-]+)", out)
+    return m.group(1) if m else None
+
+
+def fmt_content(content) -> str:
+    """Reduce a message.content (str or list-of-blocks) to a single line."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            t = b.get("type")
+            if t == "text":
+                parts.append(b.get("text", ""))
+            elif t == "tool_use":
+                parts.append(f"[tool: {b.get('name', '?')}]")
+            elif t == "tool_result":
+                # Get a snippet of the result content
+                rc = b.get("content", "")
+                if isinstance(rc, list) and rc:
+                    rc = rc[0].get("text", "") if isinstance(rc[0], dict) else str(rc[0])
+                parts.append(f"[result: {str(rc)[:50]}]")
+        return " ".join(parts)
+    return str(content)
+
+
+def fmt_timestamp(ts: str) -> str:
+    if not ts:
+        return "        "
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).strftime("%H:%M:%S")
+    except Exception:
+        return "        "
+
+
+def emit_entry(line: str) -> None:
+    line = line.strip()
+    if not line:
+        return
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        return
+
+    msg = obj.get("message", {})
+    content = msg.get("content", "")
+    text = fmt_content(content)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > 200:
+        text = text[:197] + "..."
+    # OSC 8 link wrapping — URLs, PR/issue refs, local files.
+    text = linkify(text, obj.get("cwd", ""))
+
+    ts = fmt_timestamp(obj.get("timestamp", ""))
+    typ = obj.get("type", "")
+
+    if typ == "user":
+        prefix = f"\033[36m{ts}  👤\033[0m"
+    elif typ == "assistant":
+        prefix = f"\033[32m{ts}  🤖\033[0m"
+    elif typ == "system":
+        prefix = f"\033[90m{ts}  ⓘ \033[0m"
+    elif typ == "summary":
+        prefix = f"\033[35m{ts}  📋\033[0m"
+    else:
+        return  # skip noise
+
+    print(f"{prefix} {text}")
+    sys.stdout.flush()
+
+
+def follow(path: Path, history: int = 5) -> None:
+    """Show last N entries, then follow file for new ones."""
+    with path.open() as f:
+        lines = f.readlines()
+    for line in lines[-history:]:
+        emit_entry(line)
+
+    with path.open() as f:
+        f.seek(0, 2)  # end of file
+        while True:
+            where = f.tell()
+            line = f.readline()
+            if not line:
+                time.sleep(0.5)
+                f.seek(where)
+            else:
+                emit_entry(line)
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) > 1:
+        session_id = argv[1]
+    else:
+        session_id = auto_detect_session()
+        if not session_id:
+            print("usage: claude-tail [<session-id-or-prefix>]", file=sys.stderr)
+            print("  no session detected from current pane TTY.", file=sys.stderr)
+            return 1
+
+    path = find_session_jsonl(session_id)
+    if not path:
+        print(f"claude-tail: session '{session_id}' not found in {PROJECTS}", file=sys.stderr)
+        return 1
+
+    print(f"\033[33mtailing: {path.name}\033[0m  \033[90m({path.parent.name})\033[0m")
+    print()
+
+    try:
+        follow(path)
+    except KeyboardInterrupt:
+        print("\n\033[90mstopped\033[0m")
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
