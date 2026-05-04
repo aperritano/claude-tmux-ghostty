@@ -123,7 +123,15 @@ func (m *ConversationModel) renderMarkdown(md string) string {
 	return wrapHyperlinks(strings.TrimRight(out, "\n"))
 }
 
-func (m ConversationModel) View() string {
+// buildContent renders all messages into a single string, with the
+// cursor row decorated by a magenta rounded border. Returned string is
+// what gets fed to the viewport in subsequent versions of this model.
+//
+// Pulled out of View() so that the viewport-aware version of this model
+// can call buildContent() on cursor / width / msg-list changes and pass
+// the result to viewport.SetContent — instead of rebuilding from inside
+// View() (which Bubble Tea calls every frame, where work is wasteful).
+func (m ConversationModel) buildContent() string {
 	if len(m.msgs) == 0 {
 		return StyleMuted.Render("(empty session)")
 	}
@@ -167,4 +175,8 @@ func (m ConversationModel) View() string {
 		sb.WriteString("\n\n")
 	}
 	return sb.String()
+}
+
+func (m ConversationModel) View() string {
+	return m.buildContent()
 }
