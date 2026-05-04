@@ -1,6 +1,7 @@
 package view
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -176,6 +177,40 @@ func TestConversationWrapsLinksInOSC8(t *testing.T) {
 	osc8 := "\x1b]8;;https://anthropic.com"
 	if !strings.Contains(got, osc8) {
 		t.Errorf("URL not wrapped in OSC 8 hyperlink escape:\n%s", got)
+	}
+}
+
+// A transcript taller than the pane height must not lose content. With
+// a viewport in place, content past the visible window is reachable
+// (Tasks 4-5 add the keys); without one, it's clipped at render time
+// and gone forever. This test pins the "content reachable" property
+// by sending a PgDn and looking for the last message in the output.
+func TestConversationViewportShowsAllContent(t *testing.T) {
+	// 50 messages, each 3 lines tall after rendering — far past a
+	// 10-row pane.
+	msgs := make([]*sessiontree.Message, 50)
+	for i := range msgs {
+		msgs[i] = &sessiontree.Message{
+			UUID:      fmt.Sprintf("u-%02d", i),
+			Role:      "user",
+			Timestamp: time.Now(),
+			Content:   []sessiontree.Block{{Type: "text", Text: fmt.Sprintf("message %02d body line", i)}},
+		}
+	}
+	m := NewConversation(msgs)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 10))
+	tm.Send(tea.WindowSizeMsg{Width: 80, Height: 10})
+	// Send enough PgDn to reach the bottom: 50 msgs / ~3 lines per
+	// msg / ~5 lines per HalfPageDown = ~30 keypresses. Use 60 to be
+	// safe; viewport clamps at the bottom so extra is harmless.
+	for i := 0; i < 60; i++ {
+		tm.Send(tea.KeyMsg{Type: tea.KeyPgDown})
+	}
+	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
+	got := readOutput(t, tm)
+
+	if !strings.Contains(got, "message 49") {
+		t.Errorf("scroll-to-bottom did not reveal last message; viewport not wired:\n%s", got)
 	}
 }
 

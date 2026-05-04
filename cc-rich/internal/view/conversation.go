@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/ansi"
@@ -55,6 +56,9 @@ func styleConfig() ansi.StyleConfig {
 }
 
 // ConversationModel renders a list of messages as a scrollable column.
+// The actual scroll state (YOffset) lives in viewport; we own cursor
+// position and the message list and feed the viewport pre-rendered
+// content via SetContent on state changes.
 type ConversationModel struct {
 	msgs   []*sessiontree.Message
 	cursor int
@@ -63,6 +67,9 @@ type ConversationModel struct {
 	done   bool
 	md     *glamour.TermRenderer // built lazily on first WindowSizeMsg
 	mdW    int                   // width the renderer was built for
+
+	vp    viewport.Model // owns scroll position; we feed it content
+	ready bool           // becomes true after first WindowSizeMsg
 }
 
 func NewConversation(msgs []*sessiontree.Message) ConversationModel {
@@ -72,10 +79,25 @@ func NewConversation(msgs []*sessiontree.Message) ConversationModel {
 func (m ConversationModel) Init() tea.Cmd { return nil }
 
 func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
 	switch t := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = t.Width
 		m.height = t.Height
+		if !m.ready {
+			m.vp = viewport.New(t.Width, t.Height)
+			m.ready = true
+		} else {
+			m.vp.Width = t.Width
+			m.vp.Height = t.Height
+		}
+		// Width changed → Glamour wrap recomputes → cached renderer
+		// invalidates on its own (handled inside renderMarkdown). We
+		// must always re-set viewport content because line wrapping
+		// changes with width.
+		m.vp.SetContent(m.buildContent())
+
 	case tea.KeyMsg:
 		switch t.String() {
 		case "esc", "q":
@@ -84,14 +106,29 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "j", "down":
 			if m.cursor < len(m.msgs)-1 {
 				m.cursor++
+				if m.ready {
+					m.vp.SetContent(m.buildContent())
+				}
 			}
 		case "k", "up":
 			if m.cursor > 0 {
 				m.cursor--
+				if m.ready {
+					m.vp.SetContent(m.buildContent())
+				}
 			}
 		}
 	}
-	return m, nil
+
+	// Forward unhandled keys + mouse to viewport so PgUp/PgDn/wheel
+	// work without us having to enumerate them. Tasks 4-5 add the
+	// rest of the explicit keymap above this fallthrough.
+	if m.ready {
+		var cmd tea.Cmd
+		m.vp, cmd = m.vp.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+	return m, tea.Batch(cmds...)
 }
 
 // renderMarkdown lazily builds a width-tuned Glamour renderer and runs the
@@ -178,5 +215,11 @@ func (m ConversationModel) buildContent() string {
 }
 
 func (m ConversationModel) View() string {
-	return m.buildContent()
+	if !m.ready {
+		// Pre-WindowSizeMsg: viewport has no size; fall back to the
+		// raw content (terminal will clip it, but at least the user
+		// sees something for the first frame).
+		return m.buildContent()
+	}
+	return m.vp.View()
 }
