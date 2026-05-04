@@ -1,0 +1,333 @@
+#!/usr/bin/env bash
+# tmux-claude-test — regression tests for bin/ scripts.
+# Skips tests that require zsh, jq, or a live tmux server (CI-safe).
+# Usage: bash bin/tmux-claude-test
+# Exits 0 if no FAILs; exits 1 on any FAIL.
+
+# No set -e: tests explicitly handle non-zero exits from subprocesses.
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO_ROOT/bin"
+PASS=0; FAIL=0; SKIP=0
+
+pass() { PASS=$((PASS+1)); printf 'PASS  %s\n' "$1"; }
+fail() { FAIL=$((FAIL+1)); printf 'FAIL  %s\n' "$1"; }
+skip() { SKIP=$((SKIP+1)); printf 'SKIP  %s\n' "$1"; }
+section() { printf '\n==> %s\n' "$1"; }
+
+ZSH=$(command -v zsh 2>/dev/null || true)
+JQ=$(command -v jq 2>/dev/null || true)
+has_zsh()  { [ -n "$ZSH" ]; }
+has_jq()   { [ -n "$JQ" ]; }
+has_tmux() { command -v tmux >/dev/null 2>&1 && tmux info >/dev/null 2>&1; }
+
+# ── Syntax checks ─────────────────────────────────────────────────────────────
+
+section "Syntax — bash scripts"
+for name in setup-github-ssh tmux-claude-audit tmux-claude-test \
+            tmux-pane-label tmux-session-list tmux-tile-session; do
+  if bash -n "$BIN/$name" 2>/dev/null; then
+    pass "bash -n bin/$name"
+  else
+    fail "bash -n bin/$name"
+  fi
+done
+
+section "Syntax — sh script"
+if bash -n "$REPO_ROOT/claude/statusline-command.sh" 2>/dev/null; then
+  pass "bash -n claude/statusline-command.sh"
+else
+  fail "bash -n claude/statusline-command.sh"
+fi
+
+section "Syntax — zsh scripts"
+for name in claude-dev tmux-claude-session tmux-git-info \
+            tmux-kill-teammate-pane tmux-short-path tmux-tutorial; do
+  if has_zsh; then
+    if "$ZSH" -n "$BIN/$name" 2>/dev/null; then
+      pass "zsh -n bin/$name"
+    else
+      fail "zsh -n bin/$name"
+    fi
+  else
+    skip "zsh -n bin/$name (zsh not in PATH)"
+  fi
+done
+
+# ── tmux-pane-label ───────────────────────────────────────────────────────────
+
+section "tmux-pane-label"
+
+# Non-git dir → basename of path
+result=$("$BIN/tmux-pane-label" /tmp 2>/dev/null)
+if [ "$result" = "tmp" ]; then
+  pass "tmux-pane-label /tmp → 'tmp'"
+else
+  fail "tmux-pane-label /tmp expected 'tmp', got '$result'"
+fi
+
+# Non-existent path → exit 0, outputs basename
+result=$("$BIN/tmux-pane-label" /nonexistent/path 2>/dev/null); code=$?
+if [ $code -eq 0 ]; then
+  pass "tmux-pane-label non-existent path exits 0"
+else
+  fail "tmux-pane-label non-existent path exited $code"
+fi
+
+# Git repo → non-empty output
+result=$("$BIN/tmux-pane-label" "$REPO_ROOT" 2>/dev/null)
+if [ -n "$result" ]; then
+  pass "tmux-pane-label repo → non-empty output"
+else
+  fail "tmux-pane-label repo → empty output"
+fi
+
+# Git repo → contains repo name
+if printf '%s' "$result" | grep -q "claude-tmux-ghostty"; then
+  pass "tmux-pane-label repo → contains repo name"
+else
+  fail "tmux-pane-label repo → missing repo name (got: '$result')"
+fi
+
+# Git repo → contains branch name
+if printf '%s' "$result" | grep -q "main\|master\|[a-zA-Z0-9/._-]"; then
+  pass "tmux-pane-label repo → output contains branch"
+else
+  fail "tmux-pane-label repo → output missing branch"
+fi
+
+# ── tmux-session-list ─────────────────────────────────────────────────────────
+
+section "tmux-session-list"
+
+# No tmux server → exit 0 and no error output
+"$BIN/tmux-session-list" "" 2>/dev/null; code=$?
+if [ $code -eq 0 ]; then
+  pass "tmux-session-list exits 0 with no server"
+else
+  fail "tmux-session-list exited $code with no server"
+fi
+
+# Output is empty or valid tmux format (no stderr bleed)
+output=$("$BIN/tmux-session-list" "" 2>/dev/null)
+if [ -z "$output" ] || printf '%s' "$output" | grep -q "#\["; then
+  pass "tmux-session-list output clean (empty or tmux format)"
+else
+  fail "tmux-session-list unexpected output: '$output'"
+fi
+
+# ── tmux-tile-session ─────────────────────────────────────────────────────────
+
+section "tmux-tile-session"
+
+# Bad action → non-zero exit (fails early: either bad-action or no server)
+if "$BIN/tmux-tile-session" __invalid__ 2>/dev/null; then
+  fail "tmux-tile-session bad action unexpectedly exited 0"
+else
+  pass "tmux-tile-session bad action exits non-zero"
+fi
+
+# ── tmux-kill-teammate-pane ───────────────────────────────────────────────────
+
+section "tmux-kill-teammate-pane"
+if has_zsh; then
+  # Without $TMUX set → guard exits 0 immediately (use subshell to avoid unbound var)
+  _kt_out=$( (unset TMUX; "$ZSH" "$BIN/tmux-kill-teammate-pane") 2>/dev/null ) || true
+  _kt_rc=$?
+  if [ $_kt_rc -eq 0 ] && [ -z "$_kt_out" ]; then
+    pass "tmux-kill-teammate-pane: no TMUX → exit 0 silently"
+  else
+    fail "tmux-kill-teammate-pane: no TMUX guard failed (exit=$_kt_rc, out='$_kt_out')"
+  fi
+else
+  skip "tmux-kill-teammate-pane no-TMUX guard (zsh not in PATH)"
+fi
+
+# ── tmux-claude-session ───────────────────────────────────────────────────────
+
+section "tmux-claude-session"
+if has_zsh; then
+  # No args → exit 0
+  "$ZSH" "$BIN/tmux-claude-session" 2>/dev/null; code=$?
+  if [ $code -eq 0 ]; then
+    pass "tmux-claude-session no args → exit 0"
+  else
+    fail "tmux-claude-session no args exited $code"
+  fi
+
+  # Bogus TTY → exit 0, no output
+  out=$("$ZSH" "$BIN/tmux-claude-session" /dev/ttys999 2>/dev/null); code=$?
+  if [ $code -eq 0 ] && [ -z "$out" ]; then
+    pass "tmux-claude-session bogus TTY → exit 0, no output"
+  else
+    fail "tmux-claude-session bogus TTY: exit=$code, out='$out'"
+  fi
+else
+  skip "tmux-claude-session no-arg guard (zsh not in PATH)"
+  skip "tmux-claude-session bogus-TTY guard (zsh not in PATH)"
+fi
+
+# ── tmux-short-path ───────────────────────────────────────────────────────────
+
+section "tmux-short-path"
+if has_zsh; then
+  # Short path (≤3 components) → preserved
+  HOME_TMP="$HOME"
+  result=$("$ZSH" "$BIN/tmux-short-path" "$HOME_TMP/dev" 2>/dev/null)
+  if printf '%s' "$result" | grep -q "~/dev"; then
+    pass "tmux-short-path short home path preserved"
+  else
+    fail "tmux-short-path short home path: expected ~/dev, got '$result'"
+  fi
+
+  # Deep home path → ~/…/parent/leaf
+  result=$("$ZSH" "$BIN/tmux-short-path" "$HOME_TMP/a/b/c/d" 2>/dev/null)
+  if printf '%s' "$result" | grep -q "~/…/c/d"; then
+    pass "tmux-short-path deep home path → ~/…/c/d"
+  else
+    fail "tmux-short-path deep home path: expected ~/…/c/d, got '$result'"
+  fi
+
+  # Worktree path → wt:name
+  result=$("$ZSH" "$BIN/tmux-short-path" "$HOME_TMP/.worktrees/my-feature" 2>/dev/null)
+  if printf '%s' "$result" | grep -q "wt:my-feature"; then
+    pass "tmux-short-path worktree → wt:my-feature"
+  else
+    fail "tmux-short-path worktree: expected wt:my-feature, got '$result'"
+  fi
+
+  # Hard cap at 30 chars
+  long="$HOME_TMP/$(printf '%0.s=a=' {1..20})"
+  result=$("$ZSH" "$BIN/tmux-short-path" "$long" 2>/dev/null)
+  len=${#result}
+  if [ "$len" -le 30 ]; then
+    pass "tmux-short-path hard cap 30 chars (got $len)"
+  else
+    fail "tmux-short-path hard cap exceeded: $len chars"
+  fi
+else
+  skip "tmux-short-path short path (zsh not in PATH)"
+  skip "tmux-short-path deep home path (zsh not in PATH)"
+  skip "tmux-short-path worktree path (zsh not in PATH)"
+  skip "tmux-short-path hard-cap 30 chars (zsh not in PATH)"
+fi
+
+# ── tmux-git-info ─────────────────────────────────────────────────────────────
+
+section "tmux-git-info"
+if has_zsh; then
+  # Non-git dir → empty output
+  result=$("$ZSH" "$BIN/tmux-git-info" /tmp 2>/dev/null)
+  if [ -z "$result" ]; then
+    pass "tmux-git-info /tmp → empty"
+  else
+    fail "tmux-git-info /tmp expected empty, got '$result'"
+  fi
+
+  # Git repo → non-empty
+  result=$("$ZSH" "$BIN/tmux-git-info" "$REPO_ROOT" 2>/dev/null)
+  if [ -n "$result" ]; then
+    pass "tmux-git-info repo → non-empty"
+  else
+    fail "tmux-git-info repo → empty (expected branch name)"
+  fi
+
+  # Git repo → starts with space + branch separator
+  if printf '%s' "$result" | grep -qE '^ '; then
+    pass "tmux-git-info output starts with space (status-bar format)"
+  else
+    fail "tmux-git-info output format unexpected: '$result'"
+  fi
+else
+  skip "tmux-git-info non-git empty (zsh not in PATH)"
+  skip "tmux-git-info repo non-empty (zsh not in PATH)"
+  skip "tmux-git-info output format (zsh not in PATH)"
+fi
+
+# ── statusline-command.sh ─────────────────────────────────────────────────────
+
+section "statusline-command.sh"
+STATUSLINE="$REPO_ROOT/claude/statusline-command.sh"
+if has_jq; then
+  # Helper to call statusline with a JSON payload
+  statusline() { printf '%s' "$1" | bash "$STATUSLINE" 2>/dev/null; }
+
+  BASE='{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"claude-opus"},"context_window":{"used_percentage":30},"session_name":"mytest"}'
+
+  result=$(statusline "$BASE")
+  if printf '%s' "$result" | grep -qE '[a-z]+@[a-z]'; then
+    pass "statusline: user@host present"
+  else
+    fail "statusline: user@host missing (output: '$result')"
+  fi
+
+  if printf '%s' "$result" | grep -q "claude-opus"; then
+    pass "statusline: model name present"
+  else
+    fail "statusline: model name missing"
+  fi
+
+  if printf '%s' "$result" | grep -q "/tmp\|~"; then
+    pass "statusline: cwd present"
+  else
+    fail "statusline: cwd missing"
+  fi
+
+  if printf '%s' "$result" | grep -q "mytest"; then
+    pass "statusline: session_name present"
+  else
+    fail "statusline: session_name missing"
+  fi
+
+  # ctx% traffic-light: <50 → green (32m)
+  result30=$(statusline '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"x"},"context_window":{"used_percentage":30}}')
+  if printf '%s' "$result30" | grep -q "ctx:30%"; then
+    pass "statusline: ctx 30% shown"
+  else
+    fail "statusline: ctx 30% not in output"
+  fi
+
+  # ctx% traffic-light: 50-79 → yellow (33m)
+  result60=$(statusline '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"x"},"context_window":{"used_percentage":60}}')
+  if printf '%s' "$result60" | grep -q "ctx:60%"; then
+    pass "statusline: ctx 60% shown"
+  else
+    fail "statusline: ctx 60% not in output"
+  fi
+
+  # ctx% traffic-light: ≥80 → red (31m)
+  result85=$(statusline '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"x"},"context_window":{"used_percentage":85}}')
+  if printf '%s' "$result85" | grep -q "ctx:85%"; then
+    pass "statusline: ctx 85% shown"
+  else
+    fail "statusline: ctx 85% not in output"
+  fi
+
+  # Missing ctx field → no ctx segment in output
+  result_noctx=$(statusline '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"x"}}')
+  if ! printf '%s' "$result_noctx" | grep -q "ctx:"; then
+    pass "statusline: no ctx field → no ctx segment"
+  else
+    fail "statusline: no ctx field but ctx segment appeared"
+  fi
+else
+  skip "statusline user@host (jq not in PATH)"
+  skip "statusline model name (jq not in PATH)"
+  skip "statusline cwd (jq not in PATH)"
+  skip "statusline session_name (jq not in PATH)"
+  skip "statusline ctx 30% (jq not in PATH)"
+  skip "statusline ctx 60% (jq not in PATH)"
+  skip "statusline ctx 85% (jq not in PATH)"
+  skip "statusline no-ctx field (jq not in PATH)"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
+printf '\n── Test summary ───────────────────────────────────\n'
+printf '  PASS  %d\n' "$PASS"
+printf '  FAIL  %d\n' "$FAIL"
+printf '  SKIP  %d\n' "$SKIP"
+printf '────────────────────────────────────────────────────\n'
+
+[ "$FAIL" -eq 0 ]
