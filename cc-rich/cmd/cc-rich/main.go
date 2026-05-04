@@ -63,7 +63,11 @@ func runPane(paneID string) {
 		return
 	}
 	msgs := tr.Lineage(last.UUID)
-	p := tea.NewProgram(view.NewConversation(msgs), tea.WithAltScreen())
+	p := tea.NewProgram(
+		view.NewConversation(msgs),
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+	)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
