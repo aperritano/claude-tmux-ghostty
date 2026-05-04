@@ -127,6 +127,58 @@ func TestConversationRendersAllContentBlocks(t *testing.T) {
 	}
 }
 
+// Body text should render in terminal green (ANSI 10) and bold/strong
+// in magenta (ANSI 13) so emphasis pops against the body. We assert via
+// the SGR escape sequences Glamour emits — checking for the literal
+// color codes is brittle but the alternative (rendering with a fake
+// terminfo) is heavier and not worth it.
+func TestConversationStyleColors(t *testing.T) {
+	msgs := []*sessiontree.Message{{
+		UUID:      "a-c",
+		Role:      "assistant",
+		Timestamp: time.Now(),
+		Content:   []sessiontree.Block{{Type: "text", Text: "plain body, then **emphasis**."}},
+	}}
+	m := NewConversation(msgs)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
+	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
+	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
+	got := readOutput(t, tm)
+
+	// Termenv may emit either the 16-color SGR ([92m / [95m) or the 256
+	// form ([38;5;10m / [38;5;13m). Bold may add ";1" before the trailing
+	// 'm' (e.g. [95;1m). Match the prefix forms so either encoding works.
+	if !strings.Contains(got, "[92") && !strings.Contains(got, "38;5;10") {
+		t.Errorf("body text not rendered in green (no ANSI 10 escape):\n%s", got)
+	}
+	if !strings.Contains(got, "[95") && !strings.Contains(got, "38;5;13") {
+		t.Errorf("strong/bold not rendered in magenta (no ANSI 13 escape):\n%s", got)
+	}
+}
+
+// Markdown links should come out as OSC 8 hyperlink escapes so that
+// terminals that understand them (Ghostty, iTerm2, WezTerm) make them
+// clickable. The escape format is \x1b]8;;<URL>\x1b\\<TEXT>\x1b]8;;\x1b\\.
+func TestConversationWrapsLinksInOSC8(t *testing.T) {
+	msgs := []*sessiontree.Message{{
+		UUID:      "a-l",
+		Role:      "assistant",
+		Timestamp: time.Now(),
+		Content:   []sessiontree.Block{{Type: "text", Text: "see https://anthropic.com for details"}},
+	}}
+	m := NewConversation(msgs)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
+	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
+	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
+	got := readOutput(t, tm)
+
+	// Look for the OSC 8 opener that wrapHyperlinks emits.
+	osc8 := "\x1b]8;;https://anthropic.com"
+	if !strings.Contains(got, osc8) {
+		t.Errorf("URL not wrapped in OSC 8 hyperlink escape:\n%s", got)
+	}
+}
+
 func TestBranchListShowsSiblings(t *testing.T) {
 	tr, err := sessiontree.LoadDir("../sessiontree/testdata")
 	if err != nil {

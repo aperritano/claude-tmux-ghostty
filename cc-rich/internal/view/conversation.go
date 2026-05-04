@@ -3,14 +3,56 @@ package view
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/ansi"
+	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/aperritano/cc-rich/internal/sessiontree"
 )
+
+// urlRegex matches plain http(s) URLs in already-rendered text. We use
+// it to wrap them in OSC 8 hyperlink escapes after Glamour rendering.
+// The character class is permissive — common URL chars only, stops at
+// whitespace/closing-paren/closing-bracket so we don't capture trailing
+// punctuation in markdown-rendered prose.
+var urlRegex = regexp.MustCompile(`https?://[^\s)\]]+`)
+
+// wrapHyperlinks rewrites plain URLs in s as OSC 8 hyperlink escapes so
+// terminals that understand them (Ghostty, iTerm2, WezTerm, modern
+// Konsole) make them clickable. Terminals without OSC 8 just see the
+// URL text unchanged. tmux passes OSC 8 through with default config in
+// recent versions.
+//
+//	OSC 8 format: \x1b]8;;<URL>\x1b\\<TEXT>\x1b]8;;\x1b\\
+func wrapHyperlinks(s string) string {
+	return urlRegex.ReplaceAllStringFunc(s, func(u string) string {
+		return "\x1b]8;;" + u + "\x1b\\" + u + "\x1b]8;;\x1b\\"
+	})
+}
+
+// styleConfig builds the Glamour style: dark base, with body text set
+// to terminal green and bold/strong set to the same magenta accent
+// already used for active borders. Other categories inherit from dark.
+func styleConfig() ansi.StyleConfig {
+	cfg := styles.DarkStyleConfig
+	green := "10"   // ANSI bright green — "terminal" body text
+	magenta := "13" // ANSI bright magenta — matches ColorAccent
+	yes := true
+
+	cfg.Document.Color = &green
+	cfg.Strong.Color = &magenta
+	cfg.Strong.Bold = &yes
+	// Drop the literal ** prefix/suffix the dark style adds around bold —
+	// the color change carries the emphasis on its own.
+	cfg.Strong.BlockPrefix = ""
+	cfg.Strong.BlockSuffix = ""
+	return cfg
+}
 
 // ConversationModel renders a list of messages as a scrollable column.
 type ConversationModel struct {
@@ -61,12 +103,11 @@ func (m *ConversationModel) renderMarkdown(md string) string {
 		wrap = 80 // pre-WindowSizeMsg or absurdly narrow pane
 	}
 	if m.md == nil || m.mdW != wrap {
-		// "dark" forces ANSI styling regardless of TTY detection — tmux
-		// always supports colors, and forcing the style makes test output
-		// match production behavior. WithAutoStyle would fall back to
-		// "notty" under non-TTY harnesses (teatest) and skip the styling.
+		// Custom dark-derived style: green body, magenta bold. WithStyles
+		// (vs WithStandardStyle) forces ANSI escapes regardless of TTY
+		// detection, so test and production output match.
 		r, err := glamour.NewTermRenderer(
-			glamour.WithStandardStyle("dark"),
+			glamour.WithStyles(styleConfig()),
 			glamour.WithWordWrap(wrap),
 		)
 		if err != nil {
@@ -79,7 +120,7 @@ func (m *ConversationModel) renderMarkdown(md string) string {
 	if err != nil {
 		return md
 	}
-	return strings.TrimRight(out, "\n")
+	return wrapHyperlinks(strings.TrimRight(out, "\n"))
 }
 
 func (m ConversationModel) View() string {
