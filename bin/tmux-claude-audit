@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+# Audit the claude-tmux-ghostty dotfiles for correctness and completeness.
+# Each check prints PASS:, WARN:, FAIL:, or SKIP:.
+# Exit 0 on PASS/WARN/SKIP; exit 1 only when any FAIL is recorded.
+# Bash 3.2+ compatible: no mapfile, no declare -A, no ${var,,}.
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+BIN_DIR="$REPO_DIR/bin"
+TMUX_CONF="$REPO_DIR/tmux/tmux.conf"
+CLAUDE_SETTINGS="$REPO_DIR/claude/settings.json"
+README="$REPO_DIR/README.md"
+GHOSTTY_CONF="$REPO_DIR/ghostty/config"
+INSTALL_SH="$REPO_DIR/install.sh"
+CLAUDE_MD="$REPO_DIR/claude/CLAUDE.md"
+STATUSLINE="$REPO_DIR/claude/statusline-command.sh"
+DEP="$REPO_DIR/claude/rules/deterministic-execution-protocol.md"
+
+PASS=0; WARN=0; FAIL=0; SKIP=0
+
+pass() { printf 'PASS: %s\n' "$1"; PASS=$((PASS + 1)); }
+warn() { printf 'WARN: %s\n' "$1"; WARN=$((WARN + 1)); }
+fail() { printf 'FAIL: %s\n' "$1"; FAIL=$((FAIL + 1)); }
+skip() { printf 'SKIP: %s\n' "$1"; SKIP=$((SKIP + 1)); }
+
+HAS_ZSH=0; command -v zsh >/dev/null 2>&1 && HAS_ZSH=1
+HAS_TMUX=0; tmux info >/dev/null 2>&1 && HAS_TMUX=1
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+file_exists() {
+  if [ -f "$1" ]; then pass "$2 exists"; else fail "$2 missing"; fi
+}
+
+file_exec() {
+  if [ -x "$1" ]; then pass "$2 is executable"; else fail "$2 not executable"; fi
+}
+
+has_content() {
+  if grep -qF "$2" "$1" 2>/dev/null; then pass "$3"; else fail "$3"; fi
+}
+
+has_content_re() {
+  if grep -qE "$2" "$1" 2>/dev/null; then pass "$3"; else fail "$3"; fi
+}
+
+readme_mentions() {
+  if grep -qF "$1" "$README" 2>/dev/null
+  then pass "README mentions $1"
+  else warn "README does not mention $1"
+  fi
+}
+
+syntax_check() {
+  local f="$1" label="$2"
+  local shebang
+  shebang=$(head -1 "$f" 2>/dev/null)
+  case "$shebang" in
+    *zsh*)
+      if [ "$HAS_ZSH" -eq 1 ]; then
+        if zsh -n "$f" 2>/dev/null; then
+          pass "$label passes zsh -n"
+        else
+          fail "$label fails zsh -n"
+        fi
+      else
+        skip "$label zsh -n (no zsh)"
+      fi
+      ;;
+    *bash*|*/sh*)
+      if bash -n "$f" 2>/dev/null; then
+        pass "$label passes bash -n"
+      else
+        fail "$label fails bash -n"
+      fi
+      ;;
+    *)
+      skip "$label syntax check (unknown interpreter)"
+      ;;
+  esac
+}
+
+# ── Section 1: bin/ scripts — existence, executability, shebang, syntax ──────
+printf '\n── bin/ scripts ──\n'
+
+BIN_SCRIPTS="claude-dev setup-github-ssh tmux-claude-session tmux-git-info
+  tmux-kill-teammate-pane tmux-pane-label tmux-session-list tmux-short-path
+  tmux-tile-session tmux-tutorial"
+
+for script in $BIN_SCRIPTS; do
+  f="$BIN_DIR/$script"
+  if [ -f "$f" ]; then
+    pass "bin/$script exists"
+  else
+    fail "bin/$script missing"
+    continue
+  fi
+  file_exec "$f" "bin/$script"
+  shebang=$(head -1 "$f" 2>/dev/null)
+  if printf '%s' "$shebang" | grep -qE '^#!'; then
+    pass "bin/$script has shebang"
+  else
+    fail "bin/$script missing shebang"
+  fi
+  syntax_check "$f" "bin/$script"
+done
+
+# ── Section 2: tmux/tmux.conf ─────────────────────────────────────────────────
+printf '\n── tmux/tmux.conf ──\n'
+
+file_exists "$TMUX_CONF" "tmux/tmux.conf"
+
+# Core settings
+has_content "$TMUX_CONF" "prefix C-a"              "tmux.conf sets prefix C-a"
+has_content "$TMUX_CONF" "set -g mouse on"          "tmux.conf enables mouse"
+has_content "$TMUX_CONF" "tmux-256color"            "tmux.conf sets tmux-256color terminal"
+has_content "$TMUX_CONF" "allow-passthrough on"     "tmux.conf enables allow-passthrough"
+has_content "$TMUX_CONF" "escape-time 0"            "tmux.conf sets escape-time 0"
+has_content "$TMUX_CONF" "renumber-windows on"      "tmux.conf sets renumber-windows on"
+has_content "$TMUX_CONF" "base-index 1"             "tmux.conf sets base-index 1"
+has_content "$TMUX_CONF" "history-limit 100000"     "tmux.conf sets history-limit 100000"
+has_content "$TMUX_CONF" "status-position bottom"   "tmux.conf places status bar at bottom"
+has_content "$TMUX_CONF" "set-clipboard on"         "tmux.conf enables clipboard"
+has_content "$TMUX_CONF" "pane-base-index 1"        "tmux.conf sets pane-base-index 1"
+has_content "$TMUX_CONF" "automatic-rename-format"  "tmux.conf sets automatic-rename-format"
+
+# Key bindings
+has_content "$TMUX_CONF" "bind j split-window -h"  "tmux.conf bind j (split right)"
+has_content "$TMUX_CONF" "bind i split-window -v"  "tmux.conf bind i (split down)"
+has_content "$TMUX_CONF" "bind c split-window"     "tmux.conf bind c (new Claude pane)"
+has_content "$TMUX_CONF" "bind s split-window"     "tmux.conf bind s (new shell pane)"
+has_content "$TMUX_CONF" "bind C new-window"       "tmux.conf bind C (Claude dev layout)"
+has_content "$TMUX_CONF" "bind g display-popup"    "tmux.conf bind g (session manager popup)"
+has_content "$TMUX_CONF" "bind y run-shell"        "tmux.conf bind y (copy session ID)"
+has_content "$TMUX_CONF" "bind p run-shell"        "tmux.conf bind p (copy pane path)"
+has_content "$TMUX_CONF" "bind E run-shell"        "tmux.conf bind E (tile toggle)"
+has_content "$TMUX_CONF" "bind X confirm-before"   "tmux.conf bind X (kill orphaned panes)"
+has_content "$TMUX_CONF" "bind R command-prompt"   "tmux.conf bind R (rename session)"
+has_content "$TMUX_CONF" "bind r source-file"      "tmux.conf bind r (reload config)"
+has_content "$TMUX_CONF" 'bind ? display-popup'    "tmux.conf bind ? (cheat sheet)"
+has_content "$TMUX_CONF" "bind Tab switch-client"  "tmux.conf bind Tab (next session)"
+has_content "$TMUX_CONF" "bind = select-layout"    "tmux.conf bind = (equalize panes)"
+has_content "$TMUX_CONF" "bind z resize-pane -Z"   "tmux.conf bind z (zoom pane)"
+has_content "$TMUX_CONF" "bind m set -g mouse"     "tmux.conf bind m (toggle mouse)"
+
+# Script references in status bar / bindings
+has_content "$TMUX_CONF" "tmux-short-path"         "tmux.conf references tmux-short-path"
+has_content "$TMUX_CONF" "tmux-git-info"           "tmux.conf references tmux-git-info"
+has_content "$TMUX_CONF" "tmux-claude-session"     "tmux.conf references tmux-claude-session"
+has_content "$TMUX_CONF" "tmux-tile-session"       "tmux.conf references tmux-tile-session"
+
+# Context menus
+has_content "$TMUX_CONF" "MouseDown3StatusLeft"    "tmux.conf has right-click session menu"
+has_content "$TMUX_CONF" "MouseDown3Status"        "tmux.conf has right-click window menu"
+has_content "$TMUX_CONF" "MouseDown1Status"        "tmux.conf has left-click session switch"
+
+# Pane styling
+has_content "$TMUX_CONF" "pane-border-lines heavy" "tmux.conf sets heavy pane borders"
+has_content "$TMUX_CONF" "copy-pipe-and-cancel"    "tmux.conf wires copy-mode to clipboard"
+
+# Doc/impl skew detection (documented but not wired)
+if grep -qF "tmux-pane-label" "$TMUX_CONF" 2>/dev/null; then
+  pass "tmux-pane-label wired in tmux.conf"
+else
+  warn "tmux-pane-label not wired in tmux.conf (README claims pane border labels — open question)"
+fi
+
+if grep -qF '"hooks"' "$CLAUDE_SETTINGS" 2>/dev/null; then
+  pass "claude/settings.json has hooks (tmux-kill-teammate-pane wired)"
+else
+  warn "tmux-kill-teammate-pane not wired via hooks (README claims SubagentStop auto-clean — open question)"
+fi
+
+# ── Section 3: ghostty/ ───────────────────────────────────────────────────────
+printf '\n── ghostty/ ──\n'
+
+file_exists "$GHOSTTY_CONF" "ghostty/config"
+has_content "$GHOSTTY_CONF" "shell-integration"    "ghostty/config enables shell-integration"
+has_content "$GHOSTTY_CONF" "scrollback-limit"     "ghostty/config sets scrollback-limit"
+has_content "$GHOSTTY_CONF" "window-vsync"         "ghostty/config sets window-vsync"
+has_content "$GHOSTTY_CONF" "cursor-style"         "ghostty/config sets cursor-style"
+
+if [ -d "$REPO_DIR/ghostty/themes" ]; then
+  pass "ghostty/themes directory exists"
+else
+  warn "ghostty/themes directory missing"
+fi
+
+# ── Section 4: install.sh ────────────────────────────────────────────────────
+printf '\n── install.sh ──\n'
+
+file_exists "$INSTALL_SH" "install.sh"
+file_exec  "$INSTALL_SH" "install.sh"
+if bash -n "$INSTALL_SH" 2>/dev/null; then
+  pass "install.sh passes bash -n"
+else
+  fail "install.sh fails bash -n"
+fi
+
+# ── Section 5: claude/ ───────────────────────────────────────────────────────
+printf '\n── claude/ ──\n'
+
+file_exists "$CLAUDE_SETTINGS" "claude/settings.json"
+file_exists "$CLAUDE_MD"        "claude/CLAUDE.md"
+file_exists "$STATUSLINE"      "claude/statusline-command.sh"
+file_exec  "$STATUSLINE"        "claude/statusline-command.sh"
+if bash -n "$STATUSLINE" 2>/dev/null; then
+  pass "claude/statusline-command.sh passes bash -n"
+else
+  fail "claude/statusline-command.sh fails bash -n"
+fi
+file_exists "$DEP" "claude/rules/deterministic-execution-protocol.md"
+
+if [ -d "$REPO_DIR/claude/commands" ]; then
+  pass "claude/commands directory exists"
+else
+  warn "claude/commands directory missing"
+fi
+if [ -d "$REPO_DIR/claude/rules" ]; then
+  pass "claude/rules directory exists"
+else
+  warn "claude/rules directory missing"
+fi
+
+has_content "$CLAUDE_SETTINGS" "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS" \
+  "claude/settings.json enables agent teams env var"
+has_content "$CLAUDE_SETTINGS" '"teammateMode"'   "claude/settings.json sets teammateMode"
+has_content "$CLAUDE_SETTINGS" '"tmux"'           "claude/settings.json sets tmux teammate mode"
+has_content "$CLAUDE_SETTINGS" '"model"'          "claude/settings.json sets model"
+
+has_content "$CLAUDE_MD" "Deterministic Execution Protocol"  "CLAUDE.md references DEP"
+has_content "$CLAUDE_MD" "TeamCreate"                        "CLAUDE.md documents TeamCreate pattern"
+has_content "$CLAUDE_MD" "SendMessage"                       "CLAUDE.md documents SendMessage pattern"
+has_content "$CLAUDE_MD" "tmux pane"                         "CLAUDE.md references tmux pane layout"
+
+# ── Section 6: supporting files ──────────────────────────────────────────────
+printf '\n── supporting files ──\n'
+
+file_exists "$REPO_DIR/Brewfile"              "Brewfile"
+file_exists "$REPO_DIR/.env.template"        ".env.template"
+file_exists "$REPO_DIR/.gitignore"           ".gitignore"
+file_exists "$REPO_DIR/zsh/zshrc"            "zsh/zshrc"
+file_exists "$REPO_DIR/vim/vimrc"            "vim/vimrc"
+file_exists "$REPO_DIR/git/gitconfig"        "git/gitconfig"
+file_exists "$REPO_DIR/git/gitignore_global" "git/gitignore_global"
+file_exists "$REPO_DIR/macos/defaults.sh"   "macos/defaults.sh"
+
+# ── Section 7: README completeness ───────────────────────────────────────────
+printf '\n── README completeness ──\n'
+for script in $BIN_SCRIPTS; do
+  readme_mentions "$script"
+done
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+printf '\nAudit complete: %s PASS / %s WARN / %s FAIL / %s SKIP\n' \
+  "$PASS" "$WARN" "$FAIL" "$SKIP"
+
+[ "$FAIL" -gt 0 ] && exit 1 || exit 0
