@@ -275,6 +275,36 @@ func TestConversationCursorFollowsViewport(t *testing.T) {
 	}
 }
 
+// The footer pins scroll orientation: "Nlines/Mlines · Pmsg/Qmsg".
+// Without it, scrolling a long transcript is disorienting — there's
+// no other indicator of where you are in the buffer.
+func TestConversationFooterShowsScrollPosition(t *testing.T) {
+	msgs := make([]*sessiontree.Message, 5)
+	for i := range msgs {
+		msgs[i] = &sessiontree.Message{
+			UUID:      fmt.Sprintf("u-%02d", i),
+			Role:      "user",
+			Timestamp: time.Now(),
+			Content:   []sessiontree.Block{{Type: "text", Text: fmt.Sprintf("body %02d", i)}},
+		}
+	}
+	m := NewConversation(msgs)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 20))
+	tm.Send(tea.WindowSizeMsg{Width: 80, Height: 20})
+	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
+	got := readOutput(t, tm)
+
+	// Footer format: "<n>/<m> lines · <p>/5 messages" — we don't
+	// pin exact line counts (depend on Glamour wrapping), but the
+	// "/5 messages" tail is stable.
+	if !strings.Contains(got, "/5 messages") {
+		t.Errorf("footer missing message-position counter:\n%s", got)
+	}
+	if !strings.Contains(got, "lines") {
+		t.Errorf("footer missing line-position counter:\n%s", got)
+	}
+}
+
 func TestBranchListShowsSiblings(t *testing.T) {
 	tr, err := sessiontree.LoadDir("../sessiontree/testdata")
 	if err != nil {

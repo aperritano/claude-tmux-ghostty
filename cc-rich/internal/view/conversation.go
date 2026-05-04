@@ -85,12 +85,16 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = t.Width
 		m.height = t.Height
+		vpHeight := t.Height - 1 // reserve one row for footer
+		if vpHeight < 1 {
+			vpHeight = 1
+		}
 		if !m.ready {
-			m.vp = viewport.New(t.Width, t.Height)
+			m.vp = viewport.New(t.Width, vpHeight)
 			m.ready = true
 		} else {
 			m.vp.Width = t.Width
-			m.vp.Height = t.Height
+			m.vp.Height = vpHeight
 		}
 		// Width changed → Glamour wrap recomputes → cached renderer
 		// invalidates on its own (handled inside renderMarkdown). We
@@ -168,6 +172,32 @@ func (m *ConversationModel) renderMarkdown(md string) string {
 		return md
 	}
 	return wrapHyperlinks(strings.TrimRight(out, "\n"))
+}
+
+// footer renders a one-line scroll-position indicator. Format:
+//
+//	42/418 lines · 12/45 messages
+//
+// Muted color; no leading icon. Shown below the viewport content in
+// View().
+func (m ConversationModel) footer() string {
+	if !m.ready {
+		return ""
+	}
+	totalLines := strings.Count(m.buildContent(), "\n") + 1
+	curLine := m.vp.YOffset + 1
+	if curLine > totalLines {
+		curLine = totalLines
+	}
+	totalMsgs := len(m.msgs)
+	curMsg := m.cursor + 1
+	if totalMsgs == 0 {
+		curMsg = 0
+	}
+	return StyleMuted.Render(fmt.Sprintf(
+		"%d/%d lines · %d/%d messages",
+		curLine, totalLines, curMsg, totalMsgs,
+	))
 }
 
 // ensureCursorVisible scrolls the viewport so that the row decorated
@@ -269,5 +299,8 @@ func (m ConversationModel) View() string {
 		// sees something for the first frame).
 		return m.buildContent()
 	}
-	return m.vp.View()
+	// Reserve the bottom row for the footer; viewport already sized
+	// itself to Height-1 in Update, so we just stack the viewport +
+	// footer with lipgloss.
+	return lipgloss.JoinVertical(lipgloss.Left, m.vp.View(), m.footer())
 }
