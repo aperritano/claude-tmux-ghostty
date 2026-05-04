@@ -2,6 +2,7 @@ package view
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -157,6 +158,46 @@ func TestConversationStyleColors(t *testing.T) {
 	}
 	if !strings.Contains(got, "[95") && !strings.Contains(got, "38;5;13") {
 		t.Errorf("strong/bold not rendered in magenta (no ANSI 13 escape):\n%s", got)
+	}
+}
+
+// PR-N and issue-N references must turn into OSC 8 hyperlinks pointing
+// at the right GitHub URL when the message's cwd is a git repo with a
+// GitHub origin. Refs in messages whose cwd isn't a GitHub repo stay
+// as plain text (no hallucinated link).
+func TestConversationLinksGitHubRefs(t *testing.T) {
+	// Initialize a real git repo in a temp dir with a github remote so
+	// the model's repoSlug() lookup succeeds. Avoids mocking exec.
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"remote", "add", "origin", "https://github.com/aperritano/test-repo.git"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+
+	msgs := []*sessiontree.Message{{
+		UUID:      "a-pr",
+		Role:      "assistant",
+		Timestamp: time.Now(),
+		Cwd:       dir,
+		Content:   []sessiontree.Block{{Type: "text", Text: "Working on PR-828 and issue-429."}},
+	}}
+	m := NewConversation(msgs)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
+	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
+	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
+	got := readOutput(t, tm)
+
+	if !strings.Contains(got, "\x1b]8;;https://github.com/aperritano/test-repo/pull/828") {
+		t.Errorf("PR-828 not wrapped in OSC 8 to /pull/828:\n%s", got)
+	}
+	if !strings.Contains(got, "\x1b]8;;https://github.com/aperritano/test-repo/issues/429") {
+		t.Errorf("issue-429 not wrapped in OSC 8 to /issues/429:\n%s", got)
 	}
 }
 

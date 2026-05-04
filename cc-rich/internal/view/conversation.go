@@ -3,6 +3,7 @@ package view
 
 import (
 	"fmt"
+	"os/exec"
 	"regexp"
 	"strings"
 
@@ -23,17 +24,104 @@ import (
 // punctuation in markdown-rendered prose.
 var urlRegex = regexp.MustCompile(`https?://[^\s)\]]+`)
 
+// prRefRegex matches GitHub-style references like "PR-828", "issue-429",
+// "pr_42". Requires an explicit separator so plain digits like "PR828"
+// don't accidentally match. Word boundaries on both ends keep us out
+// of substrings ("PR-828abc" stays unmatched). Skips bare "#N" — too
+// ambiguous (HTML anchors, hex colors) without surrounding-context
+// detection that Go's regexp can't easily express.
+var prRefRegex = regexp.MustCompile(`(?i)\b(PR|issue)[-_](\d+)\b`)
+
+// osc8Wrap returns the OSC 8 hyperlink escape wrapping `text` with
+// `url`. Terminals that don't understand OSC 8 see only the text.
+//
+//	format: \x1b]8;;<URL>\x1b\\<TEXT>\x1b]8;;\x1b\\
+func osc8Wrap(url, text string) string {
+	return "\x1b]8;;" + url + "\x1b\\" + text + "\x1b]8;;\x1b\\"
+}
+
 // wrapHyperlinks rewrites plain URLs in s as OSC 8 hyperlink escapes so
 // terminals that understand them (Ghostty, iTerm2, WezTerm, modern
-// Konsole) make them clickable. Terminals without OSC 8 just see the
-// URL text unchanged. tmux passes OSC 8 through with default config in
-// recent versions.
-//
-//	OSC 8 format: \x1b]8;;<URL>\x1b\\<TEXT>\x1b]8;;\x1b\\
+// Konsole) make them clickable. tmux passes OSC 8 through with default
+// config in recent versions.
 func wrapHyperlinks(s string) string {
 	return urlRegex.ReplaceAllStringFunc(s, func(u string) string {
-		return "\x1b]8;;" + u + "\x1b\\" + u + "\x1b]8;;\x1b\\"
+		return osc8Wrap(u, u)
 	})
+}
+
+// parseGithubSlug extracts "owner/repo" from a GitHub remote URL.
+// Returns "" for non-GitHub remotes or unparseable input.
+func parseGithubSlug(remote string) string {
+	var s string
+	switch {
+	case strings.HasPrefix(remote, "https://github.com/"):
+		s = strings.TrimPrefix(remote, "https://github.com/")
+	case strings.HasPrefix(remote, "git@github.com:"):
+		s = strings.TrimPrefix(remote, "git@github.com:")
+	default:
+		return ""
+	}
+	s = strings.TrimSuffix(s, ".git")
+	s = strings.TrimSuffix(s, "/")
+	return s
+}
+
+// repoSlug returns "owner/repo" for cwd's git origin (cached per cwd).
+// Returns "" if cwd is empty, isn't a git repo, or its origin isn't
+// GitHub. Caching matters because a typical session has thousands of
+// messages from a small handful of cwds.
+func (m *ConversationModel) repoSlug(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	if m.repoSlugCache == nil {
+		m.repoSlugCache = map[string]string{}
+	}
+	if slug, ok := m.repoSlugCache[cwd]; ok {
+		return slug
+	}
+	out, err := exec.Command("git", "-C", cwd, "remote", "get-url", "origin").Output()
+	if err != nil {
+		m.repoSlugCache[cwd] = ""
+		return ""
+	}
+	slug := parseGithubSlug(strings.TrimSpace(string(out)))
+	m.repoSlugCache[cwd] = slug
+	return slug
+}
+
+// wrapPRRefs links GitHub-style PR/issue references (PR-N, issue-N) to
+// the matching pull/issue page. Requires a repo slug from the message's
+// cwd; refs in messages without a GitHub remote are left as plain text.
+func (m *ConversationModel) wrapPRRefs(s, cwd string) string {
+	slug := m.repoSlug(cwd)
+	if slug == "" {
+		return s
+	}
+	return prRefRegex.ReplaceAllStringFunc(s, func(match string) string {
+		parts := prRefRegex.FindStringSubmatch(match)
+		if len(parts) < 3 {
+			return match
+		}
+		kind := strings.ToLower(parts[1])
+		num := parts[2]
+		path := "pull"
+		if kind == "issue" {
+			path = "issues"
+		}
+		url := fmt.Sprintf("https://github.com/%s/%s/%s", slug, path, num)
+		return osc8Wrap(url, match)
+	})
+}
+
+// linkify wraps every link-like token in s with OSC 8 escapes so the
+// terminal makes them clickable. Order matters: full URLs first (most
+// specific), then PR/issue refs (which depend on cwd's git remote).
+func (m *ConversationModel) linkify(s, cwd string) string {
+	s = wrapHyperlinks(s)
+	s = m.wrapPRRefs(s, cwd)
+	return s
 }
 
 // styleConfig builds the Glamour style: dark base, with body text set
@@ -90,6 +178,10 @@ type ConversationModel struct {
 	// rowCache memoizes per-message rendered rows keyed by msg UUID.
 	// Cleared when width changes (markdown wrap is width-dependent).
 	rowCache map[string]string
+	// repoSlugCache memoizes "owner/repo" per cwd. A session has
+	// thousands of messages from a small set of cwds; spawning git for
+	// each render would dominate cold-start time.
+	repoSlugCache map[string]string
 	// msgLineStart[i] is the line number where m.msgs[i]'s rendered
 	// row begins in the assembled content. Computed once in
 	// buildContent. j/k cursor navigation uses this for O(1)
@@ -207,7 +299,7 @@ func (m *ConversationModel) renderMarkdown(md string) string {
 	if err != nil {
 		return md
 	}
-	return wrapHyperlinks(strings.TrimRight(out, "\n"))
+	return strings.TrimRight(out, "\n")
 }
 
 // footer renders a one-line scroll-position indicator. Format:
@@ -259,9 +351,9 @@ func (m *ConversationModel) renderRow(msg *sessiontree.Message) string {
 	for _, b := range msg.Content {
 		switch b.Type {
 		case "text":
-			bodyParts = append(bodyParts, m.renderMarkdown(b.Text))
+			bodyParts = append(bodyParts, m.linkify(m.renderMarkdown(b.Text), msg.Cwd))
 		case "thinking":
-			bodyParts = append(bodyParts, StyleMuted.Render("· thinking ·\n"+m.renderMarkdown(b.Text)))
+			bodyParts = append(bodyParts, StyleMuted.Render("· thinking ·\n"+m.linkify(m.renderMarkdown(b.Text), msg.Cwd)))
 		case "tool_use":
 			bodyParts = append(bodyParts, StyleMuted.Render("⚙ tool_use "+b.Text))
 		case "tool_result":
