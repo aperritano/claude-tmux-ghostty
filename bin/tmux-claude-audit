@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# Audit the tmux + Claude Code + Ghostty dotfiles repo.
+# Exit 0 when there are no FAILs (WARNs are tolerated).
+# Some checks require a live tmux server — those print SKIP when tmux is absent.
+set -o pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+BIN_DIR="$REPO_DIR/bin"
+TMUX_CONF="$REPO_DIR/tmux/tmux.conf"
+README="$REPO_DIR/README.md"
+
+pass=0; warn=0; fail=0; skip=0
+
+ok()   { pass=$((pass+1));  printf 'PASS  %s\n' "$1"; }
+warn() { warn=$((warn+1));  printf 'WARN  %s\n' "$1"; }
+fail() { fail=$((fail+1));  printf 'FAIL  %s\n' "$1"; }
+skip() { skip=$((skip+1));  printf 'SKIP  %s\n' "$1"; }
+
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+echo "── Scripts: existence & permissions ────────────────────────────────────"
+for script in \
+    claude-dev \
+    setup-github-ssh \
+    tmux-claude-session \
+    tmux-git-info \
+    tmux-kill-teammate-pane \
+    tmux-pane-label \
+    tmux-session-list \
+    tmux-short-path \
+    tmux-tile-session \
+    tmux-tutorial; do
+  path="$BIN_DIR/$script"
+  if [ ! -f "$path" ]; then
+    fail "$script: file missing"
+  elif [ ! -x "$path" ]; then
+    fail "$script: not executable (run: chmod +x bin/$script)"
+  else
+    ok "$script: exists and executable"
+  fi
+done
+
+echo ""
+echo "── Scripts: shebang ────────────────────────────────────────────────────"
+for script in "$BIN_DIR"/tmux-* "$BIN_DIR"/claude-dev "$BIN_DIR"/setup-github-ssh; do
+  [ -f "$script" ] || continue
+  name=$(basename "$script")
+  first=$(head -1 "$script" 2>/dev/null)
+  case "$first" in
+    '#!/'*) ok "$name: shebang present ($first)" ;;
+    *)      fail "$name: missing shebang" ;;
+  esac
+done
+
+echo ""
+echo "── Scripts: syntax ─────────────────────────────────────────────────────"
+for script in "$BIN_DIR"/tmux-* "$BIN_DIR"/claude-dev "$BIN_DIR"/setup-github-ssh; do
+  [ -f "$script" ] || continue
+  name=$(basename "$script")
+  first=$(head -1 "$script" 2>/dev/null)
+  if echo "$first" | grep -q 'zsh'; then
+    if has_cmd zsh; then
+      if zsh -n "$script" 2>/dev/null; then
+        ok "$name: zsh syntax valid"
+      else
+        fail "$name: zsh syntax error"
+      fi
+    else
+      skip "$name: zsh not available for syntax check"
+    fi
+  elif echo "$first" | grep -q 'bash'; then
+    if bash -n "$script" 2>/dev/null; then
+      ok "$name: bash syntax valid"
+    else
+      fail "$name: bash syntax error"
+    fi
+  else
+    warn "$name: unknown interpreter in shebang — skipping syntax check"
+  fi
+done
+
+echo ""
+echo "── tmux.conf: file exists ───────────────────────────────────────────────"
+if [ ! -f "$TMUX_CONF" ]; then
+  fail "tmux/tmux.conf: file missing"
+else
+  ok "tmux/tmux.conf: exists"
+fi
+
+echo ""
+echo "── tmux.conf: ~/bin/ script references ─────────────────────────────────"
+if [ -f "$TMUX_CONF" ]; then
+  refs=$(grep -oh '~/bin/[a-z_-]*' "$TMUX_CONF" 2>/dev/null | sort -u)
+  for ref in $refs; do
+    name="${ref##*/}"
+    if [ -f "$BIN_DIR/$name" ]; then
+      ok "tmux.conf refs $name (exists in bin/)"
+    else
+      fail "tmux.conf refs $name (MISSING from bin/)"
+    fi
+  done
+fi
+
+echo ""
+echo "── tmux.conf: key bindings for Claude Code workflow ────────────────────"
+if [ -f "$TMUX_CONF" ]; then
+  for binding in "bind c " "bind s " "bind C " "bind g " "bind y " "bind p " "bind E " "bind X "; do
+    if grep -qF "$binding" "$TMUX_CONF"; then
+      ok "tmux.conf: binding '$(echo "$binding" | tr -d ' ')' present"
+    else
+      fail "tmux.conf: binding '$(echo "$binding" | tr -d ' ')' missing"
+    fi
+  done
+
+  # Prefix sanity
+  if grep -q 'set -g prefix C-a' "$TMUX_CONF"; then
+    ok "tmux.conf: prefix is C-a"
+  else
+    warn "tmux.conf: expected 'set -g prefix C-a' not found"
+  fi
+
+  # Mouse enabled
+  if grep -q 'set -g mouse on' "$TMUX_CONF"; then
+    ok "tmux.conf: mouse enabled"
+  else
+    warn "tmux.conf: 'set -g mouse on' not found"
+  fi
+
+  # Passthrough for Claude Code
+  if grep -q 'allow-passthrough on' "$TMUX_CONF"; then
+    ok "tmux.conf: allow-passthrough on (required for Claude Code)"
+  else
+    fail "tmux.conf: allow-passthrough missing (Claude Code needs this)"
+  fi
+
+  # escape-time 0 for vim/Claude Code
+  if grep -q 'escape-time 0' "$TMUX_CONF"; then
+    ok "tmux.conf: escape-time 0 (no delay for vim/Claude Code)"
+  else
+    warn "tmux.conf: escape-time 0 not set — may cause lag in vim/Claude Code"
+  fi
+fi
+
+echo ""
+echo "── README: script mentions ──────────────────────────────────────────────"
+if [ -f "$README" ]; then
+  for script in \
+      setup-github-ssh \
+      claude-dev \
+      tmux-claude-session \
+      tmux-git-info \
+      tmux-kill-teammate-pane \
+      tmux-pane-label \
+      tmux-session-list \
+      tmux-short-path \
+      tmux-tile-session \
+      tmux-tutorial; do
+    if grep -q "$script" "$README"; then
+      ok "README.md mentions $script"
+    else
+      warn "README.md does not mention $script"
+    fi
+  done
+else
+  warn "README.md not found"
+fi
+
+echo ""
+echo "── tmux server (live checks) ────────────────────────────────────────────"
+if [ -z "$TMUX" ]; then
+  skip "not inside tmux — skipping live server checks"
+else
+  if tmux display-message -p '#{session_name}' >/dev/null 2>&1; then
+    ok "tmux server: responding"
+  else
+    fail "tmux server: not responding inside TMUX session"
+  fi
+fi
+
+echo ""
+printf '── Summary: %d PASS / %d WARN / %d FAIL / %d SKIP ──────────────────────────\n' \
+    "$pass" "$warn" "$fail" "$skip"
+
+[ "$fail" -eq 0 ]
