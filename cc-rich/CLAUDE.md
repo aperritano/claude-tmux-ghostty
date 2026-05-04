@@ -67,6 +67,7 @@ If a change starts crossing these lines, stop and reconsider.
 - **TDD per task.** Write the failing test, run to confirm fail, implement, run to confirm pass, commit. Every task in the plan follows this; new work should too.
 - **One commit per task** with conventional-commit prefixes: `feat(cc-rich/<pkg>):`, `fix(cc-rich):`, `test(cc-rich/<pkg>):`, `docs(cc-rich):`, `refactor(cc-rich/<pkg>):`.
 - **`go vet` before commit.** Catches the things `go build` doesn't.
+- **Conversation scrolling lives in `bubbles/viewport`, not in the model.** `ConversationModel` builds the full content string via `buildContent()` and hands it to `viewport.Model.SetContent`. The viewport owns `YOffset` and slices visible lines per frame. Cursor decoration stays inside the rendered content; `ensureCursorVisible` adjusts viewport offset on `j`/`k` so the highlighted row stays on screen. **Don't try to manage scroll state in `ConversationModel` directly** — viewport already does it correctly with mouse, PgUp/PgDn, and bounds-clamping.
 
 ## Gotchas (learned the hard way; do not relearn)
 
@@ -78,6 +79,7 @@ If a change starts crossing these lines, stop and reconsider.
 - **Tmux key bindings:** `Ctrl-a R` (pane), `Ctrl-a B` (browse), `Ctrl-a M` (merge). **Not `Ctrl-a Ctrl-r`** — that belongs to tmux-resurrect's restore (load-bearing in the save/restore stack). Conflict-fix commit `29d4fe0`.
 - **Per-pane caching.** The `tmux-pane-header` script caches at `/tmp/tmux-pane-header-$UID/` (per-pane keyed by id+cwd). 4s TTL. Never bypass — git+ps probes per pane per refresh add up fast.
 - **lipgloss is a transitive pre-release** (pulled in by glamour). `go.mod` will show `v1.1.1-0.<date>-...`. Don't pin to a stable lipgloss release; it'll fight glamour.
+- **AltScreen + viewport is the right combo; don't tear out AltScreen.** Naive instinct on "I can't scroll the cc-rich pane with `prefix + [`" is to drop `tea.WithAltScreen()` so tmux's copy-mode can target the buffer. **Don't.** That pollutes the host pane's scrollback with cc-rich redraws, ruins the clean enter/exit transition, and still doesn't give per-message navigation. The viewport-inside-AltScreen pattern (this codebase, since `feat(cc-rich/view): embed viewport.Model`) gives proper in-app scrolling AND a clean exit. See `internal/view/conversation.go` `Update()` for the cursor-follow logic.
 
 ## When you'd surface a question to the human
 
