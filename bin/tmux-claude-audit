@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# Audit the claude-tmux-ghostty repo for completeness and correctness.
+# Every check emits [PASS], [WARN], or [FAIL].  Exit 0 iff no FAILures.
+# Bash 3.2-compatible (macOS floor).
+
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+PASS=0; WARN=0; FAIL=0
+
+_pass() { PASS=$((PASS+1)); printf '[PASS] %s\n' "$1"; }
+_warn() { WARN=$((WARN+1)); printf '[WARN] %s\n' "$1"; }
+_fail() { FAIL=$((FAIL+1)); printf '[FAIL] %s\n' "$1"; }
+
+check_file() {
+  if [ -f "$2" ]; then _pass "$1 exists"
+  else                  _fail "$1 missing: $2"
+  fi
+}
+
+check_contains() {
+  if grep -qF "$3" "$2" 2>/dev/null; then _pass "$1"
+  else _fail "$1 — not found in $(basename "$2"): $3"
+  fi
+}
+
+check_contains_re() {
+  if grep -qE "$3" "$2" 2>/dev/null; then _pass "$1"
+  else _fail "$1 — pattern not in $(basename "$2"): $3"
+  fi
+}
+
+check_warn_contains() {
+  if grep -qF "$3" "$2" 2>/dev/null; then _pass "$1"
+  else _warn "$1 — $4"
+  fi
+}
+
+check_warn_re() {
+  if grep -qE "$3" "$2" 2>/dev/null; then _pass "$1"
+  else _warn "$1 — $4"
+  fi
+}
+
+printf '=== claude-tmux-ghostty audit ===\n'
+
+# ── Repo structure ─────────────────────────────────────────────────────────
+
+printf '\n── structure\n'
+check_file "README.md"                                      "$REPO/README.md"
+check_file "install.sh"                                     "$REPO/install.sh"
+check_file "Brewfile"                                       "$REPO/Brewfile"
+check_file "tmux/tmux.conf"                                 "$REPO/tmux/tmux.conf"
+check_file "ghostty/config"                                 "$REPO/ghostty/config"
+check_file "zsh/zshrc"                                      "$REPO/zsh/zshrc"
+check_file "git/gitconfig"                                  "$REPO/git/gitconfig"
+check_file "claude/CLAUDE.md"                               "$REPO/claude/CLAUDE.md"
+check_file "claude/statusline-command.sh"                   "$REPO/claude/statusline-command.sh"
+check_file "claude/rules/deterministic-execution-protocol.md" \
+           "$REPO/claude/rules/deterministic-execution-protocol.md"
+
+# ── bin/ scripts: executable + shebang ────────────────────────────────────
+
+printf '\n── bin/ scripts\n'
+BIN_NAMES="claude-dev setup-github-ssh tmux-claude-audit tmux-claude-session tmux-claude-test tmux-git-info tmux-kill-teammate-pane tmux-pane-label tmux-session-list tmux-short-path tmux-tile-session tmux-tutorial"
+
+for name in $BIN_NAMES; do
+  script="$REPO/bin/$name"
+  if [ ! -f "$script" ]; then
+    _fail "bin/$name: file missing"
+    continue
+  fi
+  if [ -x "$script" ]; then _pass "bin/$name: executable"
+  else                       _fail "bin/$name: not executable (+x)"
+  fi
+  first_line=$(head -1 "$script")
+  case "$first_line" in
+    \#!*) _pass "bin/$name: has shebang" ;;
+    *)    _fail "bin/$name: missing shebang" ;;
+  esac
+done
+
+# ── README coverage ────────────────────────────────────────────────────────
+
+printf '\n── README coverage\n'
+for name in $BIN_NAMES; do
+  if grep -q "$name" "$REPO/README.md" 2>/dev/null; then
+    _pass "README.md mentions $name"
+  else
+    _warn "README.md does not mention $name"
+  fi
+done
+
+# ── install.sh wiring ─────────────────────────────────────────────────────
+
+printf '\n── install.sh wiring\n'
+INSTALL="$REPO/install.sh"
+check_contains    "install.sh: symlinks tmux.conf"         "$INSTALL" "tmux/tmux.conf"
+check_contains    "install.sh: symlinks ghostty/config"    "$INSTALL" "ghostty/config"
+check_contains    "install.sh: symlinks zsh/zshrc"         "$INSTALL" "zsh/zshrc"
+check_contains    "install.sh: symlinks CLAUDE.md"         "$INSTALL" "CLAUDE.md"
+check_contains    "install.sh: symlinks bin/* (glob)"      "$INSTALL" 'bin/*'
+check_contains    "install.sh: symlinks DEP rules"         "$INSTALL" "deterministic-execution-protocol.md"
+
+# ── tmux.conf: required settings ──────────────────────────────────────────
+
+printf '\n── tmux.conf: settings\n'
+TMUX_CONF="$REPO/tmux/tmux.conf"
+check_contains    "tmux.conf: allow-passthrough on"        "$TMUX_CONF" "allow-passthrough on"
+check_contains    "tmux.conf: escape-time 0"               "$TMUX_CONF" "escape-time 0"
+check_contains    "tmux.conf: history-limit"               "$TMUX_CONF" "history-limit"
+check_contains    "tmux.conf: base-index 1"                "$TMUX_CONF" "base-index 1"
+check_contains    "tmux.conf: pane-base-index 1"           "$TMUX_CONF" "pane-base-index 1"
+check_contains    "tmux.conf: renumber-windows on"         "$TMUX_CONF" "renumber-windows on"
+check_contains    "tmux.conf: mouse on"                    "$TMUX_CONF" "mouse on"
+check_contains    "tmux.conf: set-clipboard on"            "$TMUX_CONF" "set-clipboard on"
+check_contains    "tmux.conf: status-interval"             "$TMUX_CONF" "status-interval"
+check_contains    "tmux.conf: status-position bottom"      "$TMUX_CONF" "status-position bottom"
+check_contains    "tmux.conf: pane-border-lines heavy"     "$TMUX_CONF" "pane-border-lines heavy"
+check_contains    "tmux.conf: prefix C-a"                  "$TMUX_CONF" "set -g prefix C-a"
+check_contains    "tmux.conf: pbcopy for copy-mode"        "$TMUX_CONF" "pbcopy"
+
+# ── tmux.conf: script wiring ───────────────────────────────────────────────
+
+printf '\n── tmux.conf: script references\n'
+for name in tmux-short-path tmux-git-info tmux-claude-session tmux-tile-session; do
+  if grep -qF "$name" "$TMUX_CONF" 2>/dev/null; then
+    _pass "tmux.conf: references $name"
+  else
+    _fail "tmux.conf: does not reference $name"
+  fi
+done
+
+# Open question: kill-teammate-pane is documented as auto-wired but hook absent
+check_warn_contains "tmux.conf: wires tmux-kill-teammate-pane" "$TMUX_CONF" \
+  "tmux-kill-teammate-pane" \
+  "not wired (README claims auto-clean on SubagentStop — open question)"
+
+# ── tmux.conf: documented key bindings ────────────────────────────────────
+
+printf '\n── tmux.conf: bindings\n'
+check_contains_re  "tmux.conf: split right j"              "$TMUX_CONF" "bind j split-window"
+check_contains_re  "tmux.conf: split down i"               "$TMUX_CONF" "bind i split-window"
+check_contains     "tmux.conf: vim nav C-h"                "$TMUX_CONF" "bind -n C-h select-pane -L"
+check_contains     "tmux.conf: vim nav C-j"                "$TMUX_CONF" "bind -n C-j select-pane -D"
+check_contains     "tmux.conf: vim nav C-k"                "$TMUX_CONF" "bind -n C-k select-pane -U"
+check_contains     "tmux.conf: vim nav C-l"                "$TMUX_CONF" "bind -n C-l select-pane -R"
+check_contains_re  "tmux.conf: resize H"                   "$TMUX_CONF" "bind -r H resize-pane"
+check_contains_re  "tmux.conf: resize J"                   "$TMUX_CONF" "bind -r J resize-pane"
+check_contains_re  "tmux.conf: resize K"                   "$TMUX_CONF" "bind -r K resize-pane"
+check_contains_re  "tmux.conf: resize L"                   "$TMUX_CONF" "bind -r L resize-pane"
+check_contains_re  "tmux.conf: zoom z"                     "$TMUX_CONF" "bind z resize-pane -Z"
+check_contains_re  "tmux.conf: equalize ="                 "$TMUX_CONF" "bind = select-layout"
+check_contains_re  "tmux.conf: mouse toggle m"             "$TMUX_CONF" "bind m set.*mouse"
+check_contains_re  "tmux.conf: rename session R"           "$TMUX_CONF" "bind R command-prompt"
+check_contains_re  "tmux.conf: next session Tab"           "$TMUX_CONF" "bind Tab switch-client"
+check_contains_re  "tmux.conf: new shell s"                "$TMUX_CONF" "bind s split-window"
+check_contains_re  "tmux.conf: new claude c"               "$TMUX_CONF" "bind c split-window.*claude"
+check_contains_re  "tmux.conf: claude dev layout C"        "$TMUX_CONF" "bind C new-window"
+check_contains_re  "tmux.conf: session manager g"          "$TMUX_CONF" "bind g display-popup.*claude-tmux"
+check_contains_re  "tmux.conf: copy session ID y"          "$TMUX_CONF" "bind y run-shell"
+check_contains_re  "tmux.conf: copy pane path p"           "$TMUX_CONF" "bind p run-shell"
+check_contains_re  "tmux.conf: tile toggle E"              "$TMUX_CONF" "bind E run-shell.*tmux-tile-session"
+check_contains_re  "tmux.conf: kill panes X"               "$TMUX_CONF" "bind X confirm-before.*kill-pane"
+check_contains_re  "tmux.conf: reload config r"            "$TMUX_CONF" "bind r source-file"
+check_contains     "tmux.conf: help popup ?"               "$TMUX_CONF" "bind ? display-popup"
+check_contains     "tmux.conf: right-click status menu"    "$TMUX_CONF" "bind -n MouseDown3Status"
+
+# ── ghostty/config ────────────────────────────────────────────────────────
+
+printf '\n── ghostty/config\n'
+GHOSTTY="$REPO/ghostty/config"
+check_contains     "ghostty: NotoMono Nerd Font"           "$GHOSTTY" "NotoMono Nerd Font"
+check_contains     "ghostty: shell-integration"            "$GHOSTTY" "shell-integration"
+check_contains     "ghostty: window-save-state"            "$GHOSTTY" "window-save-state"
+check_contains     "ghostty: cursor-style bar"             "$GHOSTTY" "cursor-style = bar"
+check_contains     "ghostty: claude-code theme"            "$GHOSTTY" "claude-code"
+
+# ── zsh/zshrc ─────────────────────────────────────────────────────────────
+
+printf '\n── zsh/zshrc\n'
+ZSHRC="$REPO/zsh/zshrc"
+check_contains     "zshrc: auto-attach tmux"               "$ZSHRC" "tmux new-session -A"
+check_contains_re  "zshrc: cc() function"                  "$ZSHRC" "^cc\(\)"
+check_contains     "zshrc: nvm"                            "$ZSHRC" "nvm"
+check_contains     "zshrc: Powerlevel10k theme"            "$ZSHRC" "powerlevel10k"
+
+# ── git/gitconfig ─────────────────────────────────────────────────────────
+
+printf '\n── git/gitconfig\n'
+GITCONF="$REPO/git/gitconfig"
+check_contains     "gitconfig: delta pager"                "$GITCONF" "delta"
+check_contains     "gitconfig: rerere"                     "$GITCONF" "rerere"
+check_contains     "gitconfig: rebase on pull"             "$GITCONF" "rebase"
+check_contains     "gitconfig: histogram diff"             "$GITCONF" "histogram"
+
+# ── Brewfile ──────────────────────────────────────────────────────────────
+
+printf '\n── Brewfile\n'
+BREWFILE="$REPO/Brewfile"
+for pkg in tmux fzf jq gh; do
+  if grep -qF "\"$pkg\"" "$BREWFILE" 2>/dev/null; then
+    _pass "Brewfile: includes $pkg"
+  else
+    _warn "Brewfile: does not include $pkg"
+  fi
+done
+
+# ── Summary ───────────────────────────────────────────────────────────────
+
+printf '\n%d PASS / %d WARN / %d FAIL\n' "$PASS" "$WARN" "$FAIL"
+[ "$FAIL" -eq 0 ]
