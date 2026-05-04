@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# Unit tests for bin/ scripts.
+# Tests that need a live tmux server or zsh are skipped when unavailable.
+# Bash 3.2-compatible (macOS floor).
+
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+PASS=0; FAIL=0; SKIP=0
+
+ok()   { PASS=$((PASS+1)); printf '[PASS] %s\n' "$1"; }
+fail() { FAIL=$((FAIL+1)); printf '[FAIL] %s\n' "$1"; }
+skip() { SKIP=$((SKIP+1)); printf '[SKIP] %s\n' "$1"; }
+
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [ "$expected" = "$actual" ]; then
+    ok "$desc"
+  else
+    fail "$desc"
+    printf '    expected: [%s]\n' "$expected"
+    printf '    actual:   [%s]\n' "$actual"
+  fi
+}
+
+assert_exit() {
+  local desc="$1" expected_code="$2"
+  shift 2
+  local code
+  set +e
+  "$@" >/dev/null 2>&1
+  code=$?
+  set -e
+  if [ "$code" -eq "$expected_code" ]; then
+    ok "$desc"
+  else
+    fail "$desc — expected exit $expected_code, got $code"
+  fi
+}
+
+assert_output_contains() {
+  local desc="$1" pattern="$2"
+  shift 2
+  local out code
+  set +e
+  out=$("$@" 2>&1)
+  code=$?
+  set -e
+  if printf '%s' "$out" | grep -qF "$pattern"; then
+    ok "$desc"
+  else
+    fail "$desc — output did not contain: $pattern"
+    printf '    output: [%s]\n' "$out"
+  fi
+}
+
+assert_output_empty() {
+  local desc="$1"
+  shift 1
+  local out code
+  set +e
+  out=$("$@" 2>&1)
+  code=$?
+  set -e
+  if [ -z "$out" ]; then
+    ok "$desc"
+  else
+    fail "$desc — expected empty output, got: [$out]"
+  fi
+}
+
+# ── Setup: temp dir + test git repo ───────────────────────────────────────
+
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+
+TESTREPO="$WORK/testrepo"
+mkdir -p "$TESTREPO"
+git -C "$TESTREPO" init -q 2>/dev/null
+TESTREPO_BRANCH=$(git -C "$TESTREPO" branch --show-current 2>/dev/null)
+
+NONDIR="$WORK/notgit"
+mkdir -p "$NONDIR"
+
+ZSH=$(command -v zsh 2>/dev/null || true)
+
+printf '=== tmux-claude-test ===\n'
+
+# ── tmux-short-path ───────────────────────────────────────────────────────
+
+printf '\n── tmux-short-path\n'
+if [ -n "$ZSH" ]; then
+  run_sp() { "$ZSH" "$REPO/bin/tmux-short-path" "$1"; }
+
+  assert_eq "home dir → ~" \
+    "~" "$(run_sp "$HOME")"
+  assert_eq "one component stays" \
+    "~/foo" "$(run_sp "$HOME/foo")"
+  assert_eq "two components stay (≤3 parts)" \
+    "~/a/b" "$(run_sp "$HOME/a/b")"
+  assert_eq "three components get abbreviated" \
+    "~/…/b/c" "$(run_sp "$HOME/a/b/c")"
+  assert_eq "four components abbreviated" \
+    "~/…/c/d" "$(run_sp "$HOME/a/b/c/d")"
+  assert_eq "worktree path → wt:name" \
+    "wt:feature" "$(run_sp "$HOME/.worktrees/feature")"
+
+  # Long worktree name (>18 chars) truncated to 15 + ellipsis
+  LWT="averylongfeaturebranchname"   # 26 chars
+  assert_eq "long worktree name truncated" \
+    "wt:averylongfeatur…" "$(run_sp "$HOME/.worktrees/$LWT")"
+
+  # Nested worktree path
+  assert_eq "nested worktree path → wt:inner" \
+    "wt:inner" "$(run_sp "$HOME/projects/.worktrees/inner")"
+
+  # Result >30 chars: 2-part path that is long but not abbreviated
+  LSEG="segment-that-is-definitely-long"   # 31 chars
+  FULL="~/$LSEG"                           # 33 chars, >30
+  EXPECTED="${FULL:0:27}…"
+  assert_eq "long result (>30 chars) truncated" \
+    "$EXPECTED" "$(run_sp "$HOME/$LSEG")"
+else
+  skip "tmux-short-path: zsh not available (9 tests skipped)"
+fi
+
+# ── tmux-git-info ─────────────────────────────────────────────────────────
+# Run before tmux-pane-label which checks out a different branch in TESTREPO.
+
+printf '\n── tmux-git-info\n'
+
+# Non-git directory → empty output, exit 0
+assert_output_empty "non-git dir → empty output" \
+  bash "$REPO/bin/tmux-git-info" "$NONDIR"
+assert_exit "non-git dir → exit 0" 0 \
+  bash "$REPO/bin/tmux-git-info" "$NONDIR"
+
+# Git repo → output contains branch name (dirty indicator OK: no HEAD in fresh repo)
+assert_output_contains "git repo → shows branch name" \
+  "$TESTREPO_BRANCH" bash "$REPO/bin/tmux-git-info" "$TESTREPO"
+
+# ── tmux-pane-label ───────────────────────────────────────────────────────
+
+printf '\n── tmux-pane-label\n'
+
+# Non-git directory → just the basename
+assert_eq "non-git dir → basename" \
+  "notgit" "$(bash "$REPO/bin/tmux-pane-label" "$NONDIR")"
+
+# Git repo → reponame + two spaces + branch
+REPO_NAME=$(basename "$TESTREPO")
+assert_eq "git repo → label + branch" \
+  "${REPO_NAME}  ${TESTREPO_BRANCH}" \
+  "$(bash "$REPO/bin/tmux-pane-label" "$TESTREPO")"
+
+# Long branch name (>35 chars) → truncated to 32 + "..."
+LONG_BRANCH="feature/this-is-a-very-long-branch-name-exceeds-35ch"
+git -C "$TESTREPO" checkout -q -b "$LONG_BRANCH" 2>/dev/null
+EXPECTED_TRUNC="${REPO_NAME}  ${LONG_BRANCH:0:32}..."
+assert_eq "long branch → truncated" \
+  "$EXPECTED_TRUNC" \
+  "$(bash "$REPO/bin/tmux-pane-label" "$TESTREPO")"
+
+# ── tmux-kill-teammate-pane ───────────────────────────────────────────────
+
+printf '\n── tmux-kill-teammate-pane\n'
+
+# Without $TMUX set → exit 0 immediately
+assert_exit "no TMUX env → exit 0" 0 \
+  bash "$REPO/bin/tmux-kill-teammate-pane"
+
+# ── tmux-claude-session ───────────────────────────────────────────────────
+
+printf '\n── tmux-claude-session\n'
+
+# No tty argument → empty output, exit 0
+assert_output_empty "no tty arg → empty output" \
+  bash "$REPO/bin/tmux-claude-session"
+assert_exit "no tty arg → exit 0" 0 \
+  bash "$REPO/bin/tmux-claude-session"
+
+# ── setup-github-ssh ──────────────────────────────────────────────────────
+
+printf '\n── setup-github-ssh\n'
+
+# No gh CLI in PATH → exits 1
+assert_exit "no gh CLI → exit 1" 1 \
+  env PATH="/usr/bin:/bin:/usr/sbin:/sbin" bash "$REPO/bin/setup-github-ssh"
+
+# No gh CLI → output mentions "gh"
+assert_output_contains "no gh CLI → output mentions gh" "gh" \
+  env PATH="/usr/bin:/bin:/usr/sbin:/sbin" bash "$REPO/bin/setup-github-ssh"
+
+# ── tmux-session-list ─────────────────────────────────────────────────────
+
+printf '\n── tmux-session-list\n'
+
+# No tmux server → empty output, exit 0
+assert_output_empty "no tmux server → empty output" \
+  bash "$REPO/bin/tmux-session-list" ""
+assert_exit "no tmux server → exit 0" 0 \
+  bash "$REPO/bin/tmux-session-list" ""
+
+# ── tmux-tile-session ────────────────────────────────────────────────────
+
+printf '\n── tmux-tile-session\n'
+
+# Bad argument → exits non-zero (set -e fires on tmux call OR reaches usage case)
+assert_exit "bad argument → exit non-zero" 1 \
+  bash "$REPO/bin/tmux-tile-session" "badarg"
+
+# ── bin/ scripts: executable ─────────────────────────────────────────────
+
+printf '\n── bin/ scripts: executable\n'
+BIN_NAMES="claude-dev setup-github-ssh tmux-claude-audit tmux-claude-session tmux-claude-test tmux-git-info tmux-kill-teammate-pane tmux-pane-label tmux-session-list tmux-short-path tmux-tile-session tmux-tutorial"
+for name in $BIN_NAMES; do
+  if [ -x "$REPO/bin/$name" ]; then
+    ok "bin/$name is executable"
+  else
+    fail "bin/$name is not executable"
+  fi
+done
+
+# ── Summary ───────────────────────────────────────────────────────────────
+
+printf '\n%d PASS / %d FAIL / %d SKIP\n' "$PASS" "$FAIL" "$SKIP"
+[ "$FAIL" -eq 0 ]
