@@ -74,7 +74,6 @@ dotfiles/
 │   ├── tmux-git-info           # Branch + dirty indicator (worktree-aware)
 │   ├── tmux-kill-teammate-pane # Auto-close teammate panes when agents finish
 │   ├── tmux-pane-label         # Pane border label — repo, branch, ahead/behind
-│   ├── tmux-session-list       # Multi-session status-left renderer
 │   ├── tmux-short-path         # Abbreviated path display (worktree-aware)
 │   ├── tmux-tile-session       # Toggle all windows into tiled panes and back
 │   └── tmux-tutorial           # Interactive walkthrough of the full setup
