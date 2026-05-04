@@ -52,17 +52,16 @@ func runPane(paneID string) {
 		fmt.Fprintf(os.Stderr, "load %s: %v\n", path, err)
 		os.Exit(1)
 	}
-	var last *sessiontree.Message
-	for _, m := range tr.ByUUID {
-		if last == nil || m.Timestamp.After(last.Timestamp) {
-			last = m
-		}
-	}
-	if last == nil {
+	// Show every message in the transcript, ordered chronologically.
+	// AllByTime (vs Lineage) includes parallel sub-agent branches —
+	// in multi-agent sessions a 4000-message transcript can have
+	// only ~50 messages on the latest turn's lineage. The user wants
+	// to scroll the whole thing.
+	msgs := tr.AllByTime()
+	if len(msgs) == 0 {
 		fmt.Println("(empty session)")
 		return
 	}
-	msgs := tr.Lineage(last.UUID)
 	p := tea.NewProgram(
 		view.NewConversation(msgs),
 		tea.WithAltScreen(),

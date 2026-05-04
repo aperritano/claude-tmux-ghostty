@@ -70,6 +70,19 @@ type ConversationModel struct {
 
 	vp    viewport.Model // owns scroll position; we feed it content
 	ready bool           // becomes true after first WindowSizeMsg
+
+	// rowCache memoizes per-message rendered rows keyed by msg UUID.
+	// Cleared when width changes (markdown wrap is width-dependent).
+	rowCache map[string]string
+	// msgLineStart[i] is the line number where m.msgs[i]'s rendered
+	// row begins in the assembled content. Computed once in
+	// buildContent. j/k cursor navigation uses this for O(1)
+	// scroll-to-message instead of re-rendering content.
+	msgLineStart []int
+	// contentBuilt is true after buildContent has run at least once.
+	// We avoid rebuilding on cursor moves — content doesn't change,
+	// only the viewport offset does.
+	contentBuilt bool
 }
 
 func NewConversation(msgs []*sessiontree.Message) ConversationModel {
@@ -83,6 +96,14 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch t := msg.(type) {
 	case tea.WindowSizeMsg:
+		// Width change invalidates per-message render cache + line
+		// offsets (Glamour wrap and lipgloss border are width-tuned).
+		// Height change does not.
+		widthChanged := t.Width != m.width
+		if widthChanged {
+			m.rowCache = nil
+			m.contentBuilt = false
+		}
 		m.width = t.Width
 		m.height = t.Height
 		vpHeight := t.Height - 1 // reserve one row for footer
@@ -96,11 +117,10 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vp.Width = t.Width
 			m.vp.Height = vpHeight
 		}
-		// Width changed → Glamour wrap recomputes → cached renderer
-		// invalidates on its own (handled inside renderMarkdown). We
-		// must always re-set viewport content because line wrapping
-		// changes with width.
-		m.vp.SetContent(m.buildContent())
+		if !m.contentBuilt {
+			m.vp.SetContent(m.buildContent())
+			m.contentBuilt = true
+		}
 
 	case tea.KeyMsg:
 		switch t.String() {
@@ -116,19 +136,19 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.vp.GotoBottom()
 			}
 		case "j", "down":
+			// Advance cursor + scroll viewport to it. No content
+			// rebuild — just an offset change.
 			if m.cursor < len(m.msgs)-1 {
 				m.cursor++
-				if m.ready {
-					m.vp.SetContent(m.buildContent())
-					(&m).ensureCursorVisible()
+				if m.ready && m.cursor < len(m.msgLineStart) {
+					m.vp.SetYOffset(m.msgLineStart[m.cursor])
 				}
 			}
 		case "k", "up":
 			if m.cursor > 0 {
 				m.cursor--
-				if m.ready {
-					m.vp.SetContent(m.buildContent())
-					(&m).ensureCursorVisible()
+				if m.ready && m.cursor < len(m.msgLineStart) {
+					m.vp.SetYOffset(m.msgLineStart[m.cursor])
 				}
 			}
 		}
@@ -200,45 +220,7 @@ func (m ConversationModel) footer() string {
 	))
 }
 
-// ensureCursorVisible scrolls the viewport so that the row decorated
-// with the cursor border stays on screen. We don't have direct line
-// numbers per cursor index — buildContent assembles each msg as N
-// rendered lines + a 2-line gap — so we count lines up to the cursor's
-// row in the rendered content and call vp.SetYOffset to put that line
-// in the viewport's middle (or as close as bounds allow).
-func (m *ConversationModel) ensureCursorVisible() {
-	if !m.ready || len(m.msgs) == 0 {
-		return
-	}
-	// Walk the full content one msg at a time; sum line counts to
-	// find the cursor row's line number.
-	full := m.buildContent()
-	// Approximate cursor line: each msg block in buildContent ends
-	// with "\n\n" — split the joined content on the same boundary
-	// and sum line counts up through m.cursor.
-	blocks := strings.Split(full, "\n\n")
-	cursorLine := 0
-	for i := 0; i < m.cursor && i < len(blocks); i++ {
-		cursorLine += strings.Count(blocks[i], "\n") + 2 // +2 for the joining \n\n
-	}
-
-	top := m.vp.YOffset
-	bottom := top + m.vp.Height - 1
-	switch {
-	case cursorLine < top:
-		m.vp.SetYOffset(cursorLine)
-	case cursorLine > bottom:
-		// Put cursor row near the bottom of the viewport, with a
-		// little space below. Clamp via Bubbles' built-in bounds.
-		newOffset := cursorLine - m.vp.Height + 3
-		if newOffset < 0 {
-			newOffset = 0
-		}
-		m.vp.SetYOffset(newOffset)
-	}
-}
-
-// buildContent renders all messages into a single string, with the
+// buildContent renders all messages into a single string and
 // cursor row decorated by a magenta rounded border. Returned string is
 // what gets fed to the viewport in subsequent versions of this model.
 //
@@ -246,48 +228,59 @@ func (m *ConversationModel) ensureCursorVisible() {
 // can call buildContent() on cursor / width / msg-list changes and pass
 // the result to viewport.SetContent — instead of rebuilding from inside
 // View() (which Bubble Tea calls every frame, where work is wasteful).
-func (m ConversationModel) buildContent() string {
+// renderRow renders header + body + buttons for one msg WITHOUT the
+// cursor border. The result is safe to cache because nothing in it
+// depends on m.cursor — only on the message and current width.
+func (m *ConversationModel) renderRow(msg *sessiontree.Message) string {
+	header := fmt.Sprintf("%-9s  %s", msg.Role, msg.UUID)
+	if msg.Role == "assistant" {
+		header = StyleAsst.Render(header)
+	} else {
+		header = StyleUser.Render(header)
+	}
+
+	var bodyParts []string
+	for _, b := range msg.Content {
+		switch b.Type {
+		case "text":
+			bodyParts = append(bodyParts, m.renderMarkdown(b.Text))
+		case "thinking":
+			bodyParts = append(bodyParts, StyleMuted.Render("· thinking ·\n"+m.renderMarkdown(b.Text)))
+		case "tool_use":
+			bodyParts = append(bodyParts, StyleMuted.Render("⚙ tool_use "+b.Text))
+		case "tool_result":
+			bodyParts = append(bodyParts, StyleMuted.Render("↩ tool_result "+b.Text))
+		default:
+			if b.Text != "" {
+				bodyParts = append(bodyParts, b.Text)
+			}
+		}
+	}
+	body := strings.Join(bodyParts, "\n")
+	buttons := StyleMuted.Render("[1] resume+branch  [2] replay  [4] quote  [m] merge")
+	return lipgloss.JoinVertical(lipgloss.Left, header, body, buttons)
+}
+
+func (m *ConversationModel) buildContent() string {
 	if len(m.msgs) == 0 {
 		return StyleMuted.Render("(empty session)")
 	}
+	if m.rowCache == nil {
+		m.rowCache = make(map[string]string, len(m.msgs))
+	}
+	m.msgLineStart = make([]int, len(m.msgs))
 	var sb strings.Builder
+	line := 0
 	for i, msg := range m.msgs {
-		header := fmt.Sprintf("%-9s  %s", msg.Role, msg.UUID)
-		if msg.Role == "assistant" {
-			header = StyleAsst.Render(header)
-		} else {
-			header = StyleUser.Render(header)
-		}
-
-		// Render every content block, not just [0]. Text and thinking go
-		// through Glamour; tool_use shows as a muted, non-markdown line so
-		// JSON payloads don't get mangled by the markdown parser.
-		var bodyParts []string
-		for _, b := range msg.Content {
-			switch b.Type {
-			case "text":
-				bodyParts = append(bodyParts, (&m).renderMarkdown(b.Text))
-			case "thinking":
-				bodyParts = append(bodyParts, StyleMuted.Render("· thinking ·\n"+(&m).renderMarkdown(b.Text)))
-			case "tool_use":
-				bodyParts = append(bodyParts, StyleMuted.Render("⚙ tool_use "+b.Text))
-			case "tool_result":
-				bodyParts = append(bodyParts, StyleMuted.Render("↩ tool_result "+b.Text))
-			default:
-				if b.Text != "" {
-					bodyParts = append(bodyParts, b.Text)
-				}
-			}
-		}
-		body := strings.Join(bodyParts, "\n")
-
-		buttons := StyleMuted.Render("[1] resume+branch  [2] replay  [4] quote  [m] merge")
-		row := lipgloss.JoinVertical(lipgloss.Left, header, body, buttons)
-		if i == m.cursor {
-			row = lipgloss.NewStyle().BorderStyle(lipgloss.RoundedBorder()).BorderForeground(ColorAccent).Render(row)
+		m.msgLineStart[i] = line
+		row, ok := m.rowCache[msg.UUID]
+		if !ok {
+			row = m.renderRow(msg)
+			m.rowCache[msg.UUID] = row
 		}
 		sb.WriteString(row)
 		sb.WriteString("\n\n")
+		line += strings.Count(row, "\n") + 2
 	}
 	return sb.String()
 }

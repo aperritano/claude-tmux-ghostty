@@ -184,6 +184,25 @@ func (t *Tree) BranchPoints() []string {
 	return out
 }
 
+// AllByTime returns every message in the tree sorted by ascending
+// timestamp. Used by the conversation view to show the full
+// transcript including sibling branches (sub-agent dispatches,
+// parallel tool turns) that aren't on any single Lineage chain.
+//
+// Compare to Lineage(uuid) which walks one branch back from a target —
+// useful for "show what led to THIS turn" but misses concurrent
+// branches in multi-agent sessions.
+func (t *Tree) AllByTime() []*Message {
+	out := make([]*Message, 0, len(t.ByUUID))
+	for _, m := range t.ByUUID {
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Timestamp.Before(out[j].Timestamp)
+	})
+	return out
+}
+
 // Lineage returns the chain of messages from the earliest ancestor down to
 // targetUUID, inclusive. Empty slice if targetUUID is not in the tree.
 //

@@ -73,6 +73,26 @@ func TestLoadTruncated(t *testing.T) {
 	}
 }
 
+// AllByTime must return every chat message ordered chronologically,
+// regardless of branching. Multi-agent sessions write parallel branches
+// (each agent's reply has the same parent as the next user turn),
+// which Lineage skips because it only walks one branch.
+func TestAllByTimeIncludesAllBranches(t *testing.T) {
+	tr, err := Load("testdata/multi-branch.jsonl")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := tr.AllByTime()
+	if len(got) != len(tr.ByUUID) {
+		t.Errorf("AllByTime len = %d, want %d (every message)", len(got), len(tr.ByUUID))
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i].Timestamp.Before(got[i-1].Timestamp) {
+			t.Errorf("AllByTime not sorted: [%d] %s before [%d] %s", i, got[i].Timestamp, i-1, got[i-1].Timestamp)
+		}
+	}
+}
+
 // Real Claude transcripts interleave chat messages with attachment /
 // metadata records that have parentUuids forming part of the chain
 // but no Message.Role (so Load filters them out of ByUUID). Lineage
