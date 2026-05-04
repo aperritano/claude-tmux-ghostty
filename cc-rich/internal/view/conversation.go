@@ -116,6 +116,7 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 				if m.ready {
 					m.vp.SetContent(m.buildContent())
+					(&m).ensureCursorVisible()
 				}
 			}
 		case "k", "up":
@@ -123,6 +124,7 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 				if m.ready {
 					m.vp.SetContent(m.buildContent())
+					(&m).ensureCursorVisible()
 				}
 			}
 		}
@@ -166,6 +168,44 @@ func (m *ConversationModel) renderMarkdown(md string) string {
 		return md
 	}
 	return wrapHyperlinks(strings.TrimRight(out, "\n"))
+}
+
+// ensureCursorVisible scrolls the viewport so that the row decorated
+// with the cursor border stays on screen. We don't have direct line
+// numbers per cursor index — buildContent assembles each msg as N
+// rendered lines + a 2-line gap — so we count lines up to the cursor's
+// row in the rendered content and call vp.SetYOffset to put that line
+// in the viewport's middle (or as close as bounds allow).
+func (m *ConversationModel) ensureCursorVisible() {
+	if !m.ready || len(m.msgs) == 0 {
+		return
+	}
+	// Walk the full content one msg at a time; sum line counts to
+	// find the cursor row's line number.
+	full := m.buildContent()
+	// Approximate cursor line: each msg block in buildContent ends
+	// with "\n\n" — split the joined content on the same boundary
+	// and sum line counts up through m.cursor.
+	blocks := strings.Split(full, "\n\n")
+	cursorLine := 0
+	for i := 0; i < m.cursor && i < len(blocks); i++ {
+		cursorLine += strings.Count(blocks[i], "\n") + 2 // +2 for the joining \n\n
+	}
+
+	top := m.vp.YOffset
+	bottom := top + m.vp.Height - 1
+	switch {
+	case cursorLine < top:
+		m.vp.SetYOffset(cursorLine)
+	case cursorLine > bottom:
+		// Put cursor row near the bottom of the viewport, with a
+		// little space below. Clamp via Bubbles' built-in bounds.
+		newOffset := cursorLine - m.vp.Height + 3
+		if newOffset < 0 {
+			newOffset = 0
+		}
+		m.vp.SetYOffset(newOffset)
+	}
 }
 
 // buildContent renders all messages into a single string, with the

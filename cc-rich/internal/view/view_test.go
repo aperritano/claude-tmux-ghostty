@@ -243,6 +243,38 @@ func TestConversationGotoTopAndBottom(t *testing.T) {
 	}
 }
 
+// When j moves the cursor past the visible window, the viewport must
+// scroll to bring the cursor back into view. Otherwise the magenta
+// border decorates a row that's been clipped — invisible state, very
+// confusing UX.
+func TestConversationCursorFollowsViewport(t *testing.T) {
+	msgs := make([]*sessiontree.Message, 30)
+	for i := range msgs {
+		msgs[i] = &sessiontree.Message{
+			UUID:      fmt.Sprintf("u-%02d", i),
+			Role:      "user",
+			Timestamp: time.Now(),
+			Content:   []sessiontree.Block{{Type: "text", Text: fmt.Sprintf("body-%02d", i)}},
+		}
+	}
+	m := NewConversation(msgs)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 10))
+	tm.Send(tea.WindowSizeMsg{Width: 80, Height: 10})
+	// Press j 25 times — cursor goes to msg index 25, well past the
+	// initial 10-row visible window.
+	for i := 0; i < 25; i++ {
+		tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	}
+	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
+	got := readOutput(t, tm)
+
+	// The cursor is now at msg-25, so the viewport should have
+	// scrolled to a window that contains body-25.
+	if !strings.Contains(got, "body-25") {
+		t.Errorf("viewport did not follow cursor — body-25 not visible:\n%s", got)
+	}
+}
+
 func TestBranchListShowsSiblings(t *testing.T) {
 	tr, err := sessiontree.LoadDir("../sessiontree/testdata")
 	if err != nil {
