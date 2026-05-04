@@ -35,6 +35,7 @@ type Message struct {
 	Model      string
 	Usage      Usage
 	SourceFile string // absolute path of the JSONL this came from
+	Cwd        string // working directory when the turn was issued
 }
 
 // Tree is the loaded shape of one or more transcripts: a flat index plus
@@ -78,6 +79,7 @@ type rawTurn struct {
 	UUID       string `json:"uuid"`
 	ParentUUID string `json:"parentUuid"`
 	Timestamp  string `json:"timestamp"`
+	Cwd        string `json:"cwd,omitempty"`
 	Message    struct {
 		Role    string     `json:"role"`
 		Model   string     `json:"model"`
@@ -161,6 +163,7 @@ func Load(path string) (*Tree, error) {
 			Model:      rt.Message.Model,
 			Usage:      usage,
 			SourceFile: path,
+			Cwd:        rt.Cwd,
 		}
 		tr.ByUUID[m.UUID] = m
 	}
