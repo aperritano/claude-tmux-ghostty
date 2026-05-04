@@ -1,0 +1,304 @@
+#!/usr/bin/env bash
+# tmux-claude-audit — living spec for the claude-tmux-ghostty dotfiles.
+# Usage: bash bin/tmux-claude-audit
+# Exits 0 if no FAILs; exits 1 on any FAIL.
+# Output: one PASS/WARN/FAIL/SKIP line per check; section headers with ==>.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN_DIR="$REPO_ROOT/bin"
+PASS=0; WARN=0; FAIL=0; SKIP=0
+
+pass() { PASS=$((PASS+1)); printf 'PASS  %s\n' "$1"; }
+warn() { WARN=$((WARN+1)); printf 'WARN  %s\n' "$1"; }
+fail() { FAIL=$((FAIL+1)); printf 'FAIL  %s\n' "$1"; }
+skip() { SKIP=$((SKIP+1)); printf 'SKIP  %s\n' "$1"; }
+section() { printf '\n==> %s\n' "$1"; }
+
+ZSH=$(command -v zsh 2>/dev/null || true)
+
+# ── bin/ scripts ──────────────────────────────────────────────────────────────
+
+section "bin/ scripts — existence"
+for name in \
+  claude-dev setup-github-ssh tmux-claude-audit tmux-claude-session \
+  tmux-claude-test tmux-git-info tmux-kill-teammate-pane tmux-pane-label \
+  tmux-session-list tmux-short-path tmux-tile-session tmux-tutorial
+do
+  if [ -f "$BIN_DIR/$name" ]; then
+    pass "bin/$name exists"
+  else
+    fail "bin/$name missing"
+  fi
+done
+
+section "bin/ scripts — executable bit"
+for name in \
+  claude-dev setup-github-ssh tmux-claude-audit tmux-claude-session \
+  tmux-claude-test tmux-git-info tmux-kill-teammate-pane tmux-pane-label \
+  tmux-session-list tmux-short-path tmux-tile-session tmux-tutorial
+do
+  if [ -x "$BIN_DIR/$name" ]; then
+    pass "bin/$name is executable"
+  else
+    fail "bin/$name not executable"
+  fi
+done
+
+section "bin/ scripts — shebang"
+for name in \
+  claude-dev setup-github-ssh tmux-claude-audit tmux-claude-session \
+  tmux-claude-test tmux-git-info tmux-kill-teammate-pane tmux-pane-label \
+  tmux-session-list tmux-short-path tmux-tile-session tmux-tutorial
+do
+  first=$(head -1 "$BIN_DIR/$name" 2>/dev/null)
+  case "$first" in
+    '#!'*) pass "bin/$name has shebang" ;;
+    *)     fail "bin/$name missing shebang" ;;
+  esac
+done
+
+section "bin/ scripts — syntax"
+for name in \
+  setup-github-ssh tmux-claude-audit tmux-claude-test \
+  tmux-pane-label tmux-session-list tmux-tile-session
+do
+  if bash -n "$BIN_DIR/$name" 2>/dev/null; then
+    pass "bash -n bin/$name"
+  else
+    fail "bash -n bin/$name (syntax error)"
+  fi
+done
+for name in \
+  claude-dev tmux-claude-session tmux-git-info \
+  tmux-kill-teammate-pane tmux-short-path tmux-tutorial
+do
+  if [ -n "$ZSH" ]; then
+    if "$ZSH" -n "$BIN_DIR/$name" 2>/dev/null; then
+      pass "zsh -n bin/$name"
+    else
+      fail "zsh -n bin/$name (syntax error)"
+    fi
+  else
+    skip "zsh -n bin/$name (zsh not in PATH)"
+  fi
+done
+
+# ── Bash 3.2 portability ──────────────────────────────────────────────────────
+
+section "Bash 3.2 portability (bash-shebang scripts)"
+BASH_SCRIPTS="setup-github-ssh tmux-claude-audit tmux-claude-test tmux-pane-label tmux-session-list tmux-tile-session"
+for name in $BASH_SCRIPTS; do
+  f="$BIN_DIR/$name"
+  [ -f "$f" ] || continue
+  # Exclude the audit/test scripts themselves (they contain these strings in grep calls)
+  case "$name" in tmux-claude-audit|tmux-claude-test) continue ;; esac
+  if grep -qE 'mapfile|readarray' "$f" 2>/dev/null; then
+    fail "bin/$name uses mapfile/readarray (bash 3.2 incompatible)"
+  else
+    pass "bin/$name no mapfile/readarray"
+  fi
+  if grep -qE 'declare -[Aa]' "$f" 2>/dev/null; then
+    fail "bin/$name uses declare -A (bash 3.2 incompatible)"
+  else
+    pass "bin/$name no declare -A"
+  fi
+done
+
+# ── tmux.conf settings ────────────────────────────────────────────────────────
+
+TMUX_CONF="$REPO_ROOT/tmux/tmux.conf"
+section "tmux.conf — file"
+if [ -f "$TMUX_CONF" ]; then
+  pass "tmux/tmux.conf exists"
+else
+  fail "tmux/tmux.conf missing"
+fi
+
+section "tmux.conf — core settings"
+check_tmux() {
+  local label="$1"; local pattern="$2"
+  if grep -q "$pattern" "$TMUX_CONF" 2>/dev/null; then
+    pass "tmux.conf: $label"
+  else
+    fail "tmux.conf: $label (pattern: $pattern)"
+  fi
+}
+check_tmux "prefix C-a"             "set.*prefix.*C-a"
+check_tmux "escape-time 0"          "escape-time 0"
+check_tmux "mouse on"               "set.*mouse on"
+check_tmux "allow-passthrough on"   "allow-passthrough on"
+check_tmux "history-limit"          "history-limit"
+check_tmux "base-index 1"           "base-index 1"
+check_tmux "renumber-windows on"    "renumber-windows on"
+check_tmux "status-interval"        "status-interval"
+check_tmux "copy-mode pbcopy"       "pbcopy"
+check_tmux "session rename bind R"  "bind R.*rename-session"
+
+section "tmux.conf — pane navigation (no prefix)"
+check_tmux "C-h select-pane -L"  "bind -n C-h select-pane -L"
+check_tmux "C-j select-pane -D"  "bind -n C-j select-pane -D"
+check_tmux "C-k select-pane -U"  "bind -n C-k select-pane -U"
+check_tmux "C-l select-pane -R"  "bind -n C-l select-pane -R"
+
+section "tmux.conf — Claude Code bindings"
+check_tmux "bind c (new Claude pane)"        "bind c "
+check_tmux "bind s (new shell pane)"         "bind s "
+check_tmux "bind C (Claude dev layout)"      "bind C "
+check_tmux "bind g (session manager popup)"  "bind g "
+check_tmux "bind y (copy session ID)"        "bind y "
+check_tmux "bind p (copy pane path)"         "bind p "
+check_tmux "bind E (tile toggle)"            "bind E "
+check_tmux "bind X (kill agent panes)"       "bind X "
+
+section "tmux.conf — script wiring"
+check_tmux "tmux-git-info referenced"      "tmux-git-info"
+check_tmux "tmux-short-path referenced"    "tmux-short-path"
+check_tmux "tmux-claude-session ref'd"     "tmux-claude-session"
+check_tmux "tmux-tile-session referenced"  "tmux-tile-session"
+check_tmux "tmux-pane-label referenced"    "tmux-pane-label"
+
+section "tmux.conf — pane-border-format wiring"
+check_tmux "pane-border-status top"               "pane-border-status top"
+check_tmux "pane-border-format calls pane-label"  "pane-border-format.*tmux-pane-label"
+
+# ── Config files ──────────────────────────────────────────────────────────────
+
+section "Config files"
+for f in \
+  "ghostty/config" \
+  "install.sh" \
+  "Brewfile" \
+  "claude/CLAUDE.md" \
+  "claude/settings.json" \
+  "claude/statusline-command.sh" \
+  "claude/rules/deterministic-execution-protocol.md" \
+  "zsh/zshrc" \
+  "git/gitconfig" \
+  "vim/vimrc"
+do
+  if [ -f "$REPO_ROOT/$f" ]; then
+    pass "$f exists"
+  else
+    fail "$f missing"
+  fi
+done
+
+section "Config dirs"
+for d in "ghostty/themes" "claude/rules" "claude/commands" "macos"; do
+  if [ -d "$REPO_ROOT/$d" ]; then
+    pass "$d/ dir exists"
+  else
+    fail "$d/ dir missing"
+  fi
+done
+
+section "Executable bits"
+for f in "install.sh" "macos/defaults.sh"; do
+  if [ -x "$REPO_ROOT/$f" ]; then
+    pass "$f is executable"
+  else
+    fail "$f not executable"
+  fi
+done
+
+# ── Ghostty config ────────────────────────────────────────────────────────────
+
+GHOSTTY_CONF="$REPO_ROOT/ghostty/config"
+section "ghostty/config"
+if grep -q "theme" "$GHOSTTY_CONF" 2>/dev/null; then
+  pass "ghostty/config: theme set"
+else
+  fail "ghostty/config: no theme setting"
+fi
+if grep -qE "font-family|font " "$GHOSTTY_CONF" 2>/dev/null; then
+  pass "ghostty/config: font set"
+else
+  fail "ghostty/config: no font setting"
+fi
+
+# ── Claude settings ───────────────────────────────────────────────────────────
+
+SETTINGS="$REPO_ROOT/claude/settings.json"
+section "claude/settings.json"
+if grep -q '"teammateMode".*"tmux"' "$SETTINGS" 2>/dev/null; then
+  pass "settings.json: teammateMode tmux"
+else
+  fail "settings.json: teammateMode tmux not set"
+fi
+if grep -q '"model"' "$SETTINGS" 2>/dev/null; then
+  pass "settings.json: model field present"
+else
+  fail "settings.json: model field missing"
+fi
+
+# ── install.sh coverage ───────────────────────────────────────────────────────
+
+INSTALL="$REPO_ROOT/install.sh"
+section "install.sh"
+if grep -q "tmux.conf" "$INSTALL" 2>/dev/null; then
+  pass "install.sh symlinks tmux.conf"
+else
+  fail "install.sh missing tmux.conf symlink"
+fi
+if grep -q "ghostty" "$INSTALL" 2>/dev/null; then
+  pass "install.sh symlinks ghostty config"
+else
+  fail "install.sh missing ghostty config symlink"
+fi
+if grep -q "CLAUDE.md\|claude" "$INSTALL" 2>/dev/null; then
+  pass "install.sh symlinks claude config"
+else
+  fail "install.sh missing claude config symlink"
+fi
+
+# ── README coverage ───────────────────────────────────────────────────────────
+
+README="$REPO_ROOT/README.md"
+section "README.md mentions each bin/ script"
+for name in \
+  claude-dev setup-github-ssh tmux-claude-session tmux-git-info \
+  tmux-kill-teammate-pane tmux-pane-label tmux-session-list \
+  tmux-short-path tmux-tile-session tmux-tutorial
+do
+  if grep -q "$name" "$README" 2>/dev/null; then
+    pass "README mentions $name"
+  else
+    warn "README does not mention $name"
+  fi
+done
+
+# ── Known open questions (persistent WARNs) ───────────────────────────────────
+
+section "Known open questions"
+if grep -q "SubagentStop\|TeammateIdle" "$REPO_ROOT/claude/settings.json" 2>/dev/null; then
+  pass "settings.json: tmux-kill-teammate-pane hook wired"
+else
+  warn "tmux-kill-teammate-pane not wired as SubagentStop/TeammateIdle hook in settings.json (README claims auto-clean — decision pending)"
+fi
+if grep -q "tmux-session-list" "$TMUX_CONF" 2>/dev/null; then
+  pass "tmux.conf references tmux-session-list"
+else
+  warn "tmux-session-list not referenced in tmux.conf — possible dead code (status-left uses native #{S:...} format)"
+fi
+
+# ── Live tmux server checks (skip in CI) ─────────────────────────────────────
+
+section "Live tmux server"
+if [ -n "${TMUX:-}" ]; then
+  pass "Running inside tmux — live checks possible"
+else
+  skip "Not in tmux session — live server checks skipped"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
+printf '\n── Audit summary ──────────────────────────────────\n'
+printf '  PASS  %d\n' "$PASS"
+printf '  WARN  %d\n' "$WARN"
+printf '  FAIL  %d\n' "$FAIL"
+printf '  SKIP  %d\n' "$SKIP"
+printf '────────────────────────────────────────────────────\n'
+
+[ "$FAIL" -eq 0 ]
