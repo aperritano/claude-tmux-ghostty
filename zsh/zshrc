@@ -313,9 +313,9 @@ cc-help() {
     "Ctrl-a g|tmux: claude-tmux popup|fzf session picker in 90% width popup"
     "Ctrl-a a|tmux: cc-jump popup|fzf-jump to any RUNNING Claude pane"
     "Ctrl-a h|tmux: cc-status popup|system health dashboard in 70% popup"
-    "Ctrl-a R|tmux: cc-rich sidebar|rich sidebar (35% right split) for active pane's session — toggle (R again closes)"
-    "Ctrl-a B|tmux: cc-rich browse|browse all known sessions in sidebar (toggle)"
-    "Ctrl-a M|tmux: cc-rich merge|merge composer for active pane's session (sidebar, toggle)"
+    "Ctrl-a R|tmux: cc-rich sidebar|rich sidebar — toggle (R again closes); inside: j/k/g/G/PgUp/PgDn/wheel scroll, q closes"
+    "Ctrl-a B|tmux: cc-rich browse|browse all known sessions in sidebar (toggle); j/k navigate, q closes"
+    "Ctrl-a M|tmux: cc-rich merge|merge composer for active pane's session (sidebar, toggle); j/k navigate, q closes"
     "Ctrl-a P|tmux: toggle pane header|toggle pane-border-status (top header) on/off"
     "Ctrl-a c|tmux: new claude pane|split current window, run claude"
     "Ctrl-a C|tmux: claude dev layout|new window: claude (65%) + shell (35%)"
@@ -640,3 +640,10 @@ export PATH="/Applications/Ghostty.app/Contents/MacOS:$PATH"
 # Local scripts
 export PATH="$HOME/bin:$PATH"
 
+
+# bun completions
+[ -s "/Users/anthony.j.perritano/.bun/_bun" ] && source "/Users/anthony.j.perritano/.bun/_bun"
+
+# bun
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"

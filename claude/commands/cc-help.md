@@ -89,6 +89,18 @@ shipped via `~/dev/dotfiles/`. Run `cc-doctor` to verify all are wired.
 | `Ctrl-a P` | toggle the per-pane top header (role + ⚠ + locks + cwd) |
 | `Ctrl-a ?` | full tmux cheat sheet |
 
+**Inside the cc-rich sidebar:**
+
+| Key | Action |
+|---|---|
+| `j` / `↓` | next message (viewport follows) |
+| `k` / `↑` | previous message |
+| `g` | jump to top |
+| `G` | jump to bottom |
+| `PgUp` / `PgDn` | half-page scroll |
+| mouse wheel | scroll |
+| `q` / `Esc` | close sidebar |
+
 ## Audio cues (default; mute via `cc-mute`)
 
 | Event | Sound |
