@@ -3,7 +3,9 @@ package view
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -115,12 +117,77 @@ func (m *ConversationModel) wrapPRRefs(s, cwd string) string {
 	})
 }
 
+// filePathRegex matches relative-or-absolute file path tokens with at
+// least one slash and a 1-8 char extension. Skips bare filenames
+// (e.g., "Makefile", "README") because matching every word risks too
+// many false positives. Existence-check in wrapFilePaths filters the
+// rest.
+var filePathRegex = regexp.MustCompile(`[\w./~-]+/[\w./-]*[\w]+\.[a-zA-Z][a-zA-Z0-9]{0,8}(?:[:](\d+))?\b`)
+
+// resolvePath turns a possibly-relative path into an absolute path
+// using cwd as the anchor and expanding ~/. Returns "" if the input
+// can't reasonably be turned into a path (no cwd, etc.).
+func resolvePath(p, cwd string) string {
+	if strings.HasPrefix(p, "~/") {
+		if home := os.Getenv("HOME"); home != "" {
+			return filepath.Join(home, p[2:])
+		}
+		return ""
+	}
+	if filepath.IsAbs(p) {
+		return p
+	}
+	if cwd == "" {
+		return ""
+	}
+	return filepath.Join(cwd, p)
+}
+
+// wrapFilePaths links file path tokens to vscode://file/<abs-path> so
+// clicking opens them in VS Code. The path must (a) match the regex,
+// (b) resolve to a path that exists on disk relative to msg.cwd. False
+// positives (e.g. "github.com/foo/bar.go" inside an already-wrapped
+// URL OSC 8) self-eliminate via the existence check.
+//
+// Captures :N line-number suffix when present; passes through to
+// vscode://file/abs:N which jumps to that line.
+func (m *ConversationModel) wrapFilePaths(s, cwd string) string {
+	if cwd == "" {
+		return s
+	}
+	return filePathRegex.ReplaceAllStringFunc(s, func(match string) string {
+		// Strip optional :N suffix for path resolution; preserve it
+		// in the URL so VS Code jumps to the line.
+		path := match
+		lineSuffix := ""
+		if idx := strings.LastIndex(match, ":"); idx > 0 {
+			tail := match[idx+1:]
+			if _, err := fmt.Sscanf(tail, "%d", new(int)); err == nil {
+				path = match[:idx]
+				lineSuffix = match[idx:]
+			}
+		}
+		abs := resolvePath(path, cwd)
+		if abs == "" {
+			return match
+		}
+		info, err := os.Stat(abs)
+		if err != nil || info.IsDir() {
+			return match
+		}
+		url := "vscode://file" + abs + lineSuffix
+		return osc8Wrap(url, match)
+	})
+}
+
 // linkify wraps every link-like token in s with OSC 8 escapes so the
 // terminal makes them clickable. Order matters: full URLs first (most
-// specific), then PR/issue refs (which depend on cwd's git remote).
+// specific), then PR/issue refs (cwd-dependent), then local file
+// paths (existence-checked, opens in VS Code).
 func (m *ConversationModel) linkify(s, cwd string) string {
 	s = wrapHyperlinks(s)
 	s = m.wrapPRRefs(s, cwd)
+	s = m.wrapFilePaths(s, cwd)
 	return s
 }
 

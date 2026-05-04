@@ -2,7 +2,9 @@ package view
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -158,6 +160,47 @@ func TestConversationStyleColors(t *testing.T) {
 	}
 	if !strings.Contains(got, "[95") && !strings.Contains(got, "38;5;13") {
 		t.Errorf("strong/bold not rendered in magenta (no ANSI 13 escape):\n%s", got)
+	}
+}
+
+// File paths that exist relative to msg.cwd should turn into OSC 8
+// hyperlinks with vscode://file/<abs> so a click opens them in VS Code.
+// Paths that DON'T exist on disk stay plain text (no hallucinated link).
+func TestConversationLinksFilePathsToVSCode(t *testing.T) {
+	dir := t.TempDir()
+	// Create the file the message will reference.
+	subdir := filepath.Join(dir, "docs")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realPath := filepath.Join(subdir, "ADR-001.md")
+	if err := os.WriteFile(realPath, []byte("# ADR"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := []*sessiontree.Message{{
+		UUID:      "a-fp",
+		Role:      "assistant",
+		Timestamp: time.Now(),
+		Cwd:       dir,
+		Content: []sessiontree.Block{{
+			Type: "text",
+			Text: "See docs/ADR-001.md and nonexistent/missing.md.",
+		}},
+	}}
+	m := NewConversation(msgs)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
+	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
+	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
+	got := readOutput(t, tm)
+
+	wantURL := "\x1b]8;;vscode://file" + realPath
+	if !strings.Contains(got, wantURL) {
+		t.Errorf("docs/ADR-001.md not wrapped in vscode:// OSC 8:\n%s", got)
+	}
+	// Bogus path stays as plain text — stat() would fail.
+	if strings.Contains(got, "vscode://file"+filepath.Join(dir, "nonexistent")) {
+		t.Errorf("nonexistent path got wrapped (should self-eliminate via existence check):\n%s", got)
 	}
 }
 
