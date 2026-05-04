@@ -29,13 +29,33 @@ esac
 # the source pane. Override with CC_RICH_SIDEBAR_PCT in env if needed.
 pct="${CC_RICH_SIDEBAR_PCT:-35}"
 
-# Toggle: if a pane in this window is already tagged @cc-rich-sidebar, kill
-# it and exit (the user's second keypress means "close the sidebar").
-existing=$(tmux list-panes -F '#{pane_id} #{pane_title}' 2>/dev/null \
-             | awk '$2=="@cc-rich-sidebar" {print $1; exit}')
-if [[ -n "$existing" ]]; then
-  tmux kill-pane -t "$existing"
-  exit 0
+# Pane title format: @cc-rich-sidebar:<mode>:<src>
+# - Same mode+src as existing → toggle off (kill).
+# - Different mode/src → replace (kill old, fall through to spawn new).
+# This makes R "show cc-rich for the focused pane" — pressing R from a
+# different pane swaps the sidebar over to that pane's session instead
+# of just closing it.
+want_tag="@cc-rich-sidebar:${mode}:${src}"
+existing_line=$(tmux list-panes -F '#{pane_id} #{pane_title}' 2>/dev/null \
+                  | awk '$2 ~ /^@cc-rich-sidebar:/ {print $1, $2; exit}')
+if [[ -n "$existing_line" ]]; then
+  existing_pane=${existing_line%% *}
+  existing_tag=${existing_line#* }
+  # If the user pressed R/B/M from inside the sidebar pane itself, do
+  # nothing — otherwise we'd kill the pane while it's focused and tmux
+  # would land them on a sibling unexpectedly.
+  current_pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
+  if [[ "$current_pane" == "$existing_pane" ]]; then
+    tmux kill-pane -t "$existing_pane"
+    exit 0
+  fi
+  if [[ "$existing_tag" == "$want_tag" ]]; then
+    # Same mode + same source pane → toggle off.
+    tmux kill-pane -t "$existing_pane"
+    exit 0
+  fi
+  # Different source — replace.
+  tmux kill-pane -t "$existing_pane"
 fi
 
 # Build the cc-rich invocation. Always full path — like the prior popup
@@ -66,5 +86,5 @@ esac
 # tag its title for toggle detection on the next invocation.
 new_pane=$(tmux split-window -h -l "${pct}%" -P -F '#{pane_id}' "$cmd")
 if [[ -n "$new_pane" ]]; then
-  tmux select-pane -t "$new_pane" -T '@cc-rich-sidebar'
+  tmux select-pane -t "$new_pane" -T "$want_tag"
 fi

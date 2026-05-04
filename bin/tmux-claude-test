@@ -732,15 +732,19 @@ if [[ -x "$HOME/bin/cc-rich" ]]; then
     else
       test_pass "cc-rich-sidebar bad-arg exits non-zero"
     fi
-    # Toggle invariant — only when a tmux server is attached
+    # Toggle invariant — only when a tmux server is attached.
+    # Pane title format is now @cc-rich-sidebar:<mode>:<src> so the
+    # helper can swap the sidebar between source panes (R from a
+    # different pane = "show me cc-rich for THIS pane") instead of
+    # only toggling on/off.
     if tmux info >/dev/null 2>&1; then
       tw=$(tmux new-window -d -P -F '#{window_id}' -n 'cc-sb-test' 'sleep 30' 2>/dev/null)
       if [[ -n "$tw" ]]; then
         sp=$(tmux list-panes -t "$tw" -F '#{pane_id}' | head -1)
         np=$(tmux split-window -t "$sp" -h -l '35%' -P -F '#{pane_id}' 'sleep 30' 2>/dev/null)
-        tmux select-pane -t "$np" -T '@cc-rich-sidebar' 2>/dev/null
+        tmux select-pane -t "$np" -T "@cc-rich-sidebar:pane:$sp" 2>/dev/null
         found=$(tmux list-panes -t "$tw" -F '#{pane_id} #{pane_title}' \
-                  | awk '$2=="@cc-rich-sidebar" {print $1; exit}')
+                  | awk '$2 ~ /^@cc-rich-sidebar:/ {print $1; exit}')
         if [[ "$found" == "$np" ]]; then
           test_pass "cc-rich-sidebar toggle: title-tag detection works"
         else
