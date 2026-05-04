@@ -43,13 +43,19 @@ type Tree struct {
 	ByUUID   map[string]*Message
 	Children map[string][]string // parent UUID -> list of child UUIDs (insertion order)
 	Roots    []string            // UUIDs with no in-tree parent
+	// ParentLinks records uuid -> parentUuid for EVERY parsed line in
+	// the JSONL, including attachments and metadata that were filtered
+	// out of ByUUID (no Message.Role). Lineage uses this to walk past
+	// non-chat ancestors so the chain doesn't break at filtered nodes.
+	ParentLinks map[string]string
 }
 
 // New returns an empty Tree.
 func New() *Tree {
 	return &Tree{
-		ByUUID:   make(map[string]*Message),
-		Children: make(map[string][]string),
+		ByUUID:      make(map[string]*Message),
+		Children:    make(map[string][]string),
+		ParentLinks: make(map[string]string),
 	}
 }
 
@@ -116,6 +122,15 @@ func Load(path string) (*Tree, error) {
 		if err := json.Unmarshal(line, &rt); err != nil {
 			continue // skip unparseable line
 		}
+		// Track parent links for ALL UUIDs (even filtered metadata) so
+		// Lineage can walk past attachment/metadata ancestors. Real
+		// transcripts intersperse user/assistant turns with attachment
+		// records — without this, the chain breaks at the first
+		// filtered ancestor and Lineage returns a 2-4 message slice of
+		// a 4000-message conversation.
+		if rt.UUID != "" {
+			tr.ParentLinks[rt.UUID] = rt.ParentUUID
+		}
 		if rt.UUID == "" || rt.Message.Role == "" {
 			continue // skip metadata lines (last-prompt, permission-mode, etc.)
 		}
@@ -171,12 +186,23 @@ func (t *Tree) BranchPoints() []string {
 
 // Lineage returns the chain of messages from the earliest ancestor down to
 // targetUUID, inclusive. Empty slice if targetUUID is not in the tree.
+//
+// Walks t.ParentLinks (which records parents for ALL parsed UUIDs, not
+// just chat messages) so the chain can step past attachment / metadata
+// ancestors that Load filtered out of ByUUID. Only nodes present in
+// ByUUID are emitted into the returned chain.
 func (t *Tree) Lineage(targetUUID string) []*Message {
 	var chain []*Message
-	cur := t.ByUUID[targetUUID]
-	for cur != nil {
-		chain = append([]*Message{cur}, chain...)
-		cur = t.ByUUID[cur.ParentUUID]
+	uuid := targetUUID
+	for uuid != "" {
+		if m := t.ByUUID[uuid]; m != nil {
+			chain = append([]*Message{m}, chain...)
+		}
+		next, ok := t.ParentLinks[uuid]
+		if !ok {
+			break // reached a UUID we don't have any record of
+		}
+		uuid = next
 	}
 	return chain
 }

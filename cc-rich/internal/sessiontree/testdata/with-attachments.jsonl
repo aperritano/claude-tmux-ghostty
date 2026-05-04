@@ -1,0 +1,6 @@
+{"uuid":"u-1","parentUuid":null,"timestamp":"2026-05-01T10:00:00.000Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}
+{"uuid":"a-1","parentUuid":"u-1","timestamp":"2026-05-01T10:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}
+{"uuid":"att-1","parentUuid":"a-1","timestamp":"2026-05-01T10:00:02.000Z","type":"attachment"}
+{"uuid":"att-2","parentUuid":"att-1","timestamp":"2026-05-01T10:00:03.000Z","type":"attachment"}
+{"uuid":"u-2","parentUuid":"att-2","timestamp":"2026-05-01T10:00:04.000Z","message":{"role":"user","content":[{"type":"text","text":"second turn"}]}}
+{"uuid":"a-2","parentUuid":"u-2","timestamp":"2026-05-01T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"text","text":"second response"}]}}

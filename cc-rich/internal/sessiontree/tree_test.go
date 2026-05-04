@@ -73,6 +73,31 @@ func TestLoadTruncated(t *testing.T) {
 	}
 }
 
+// Real Claude transcripts interleave chat messages with attachment /
+// metadata records that have parentUuids forming part of the chain
+// but no Message.Role (so Load filters them out of ByUUID). Lineage
+// must walk THROUGH these gaps — the latest user turn often has an
+// attachment as its direct parent, with the previous chat turn 2-3
+// hops up. Bug history: real 4174-message transcript was returning
+// only 4-message lineage because the chain broke at the first
+// filtered ancestor.
+func TestLineageWalksThroughAttachments(t *testing.T) {
+	tr, err := Load("testdata/with-attachments.jsonl")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := tr.Lineage("a-2")
+	want := []string{"u-1", "a-1", "u-2", "a-2"}
+	if len(got) != len(want) {
+		t.Fatalf("Lineage len = %d, want %d (chain broke at attachment)", len(got), len(want))
+	}
+	for i, m := range got {
+		if m.UUID != want[i] {
+			t.Errorf("Lineage[%d].UUID = %q, want %q", i, m.UUID, want[i])
+		}
+	}
+}
+
 func TestLoadDir(t *testing.T) {
 	tr, err := LoadDir("testdata")
 	if err != nil {
