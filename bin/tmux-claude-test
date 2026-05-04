@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+# tmux-claude-test — regression tests for bin/ scripts
+# Tests run without a live tmux session; tests requiring zsh are skipped when unavailable.
+# Usage: bash bin/tmux-claude-test
+# Exit 0 if all tests pass (SKIPs are not failures).
+
+PASS=0; FAIL=0; SKIP=0
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+
+pass() { PASS=$((PASS+1)); printf "PASS  %s\n" "$1"; }
+fail() { FAIL=$((FAIL+1)); printf "FAIL  %s\n" "$1"; }
+skip() { SKIP=$((SKIP+1)); printf "SKIP  %s\n" "$1 (requires: $2)"; }
+
+has_zsh() { command -v zsh >/dev/null 2>&1; }
+has_jq()  { command -v jq  >/dev/null 2>&1; }
+
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [ "$expected" = "$actual" ]; then
+    pass "$desc"
+  else
+    fail "$desc — expected '$expected', got '$actual'"
+  fi
+}
+
+assert_contains() {
+  local desc="$1" needle="$2" actual="$3"
+  if printf '%s' "$actual" | grep -qF "$needle"; then
+    pass "$desc"
+  else
+    fail "$desc — expected to contain '$needle', got '$actual'"
+  fi
+}
+
+assert_empty() {
+  local desc="$1" actual="$2"
+  if [ -z "$actual" ]; then
+    pass "$desc"
+  else
+    fail "$desc — expected empty, got '$actual'"
+  fi
+}
+
+# ── tmux-short-path ───────────────────────────────────────────────────────────
+
+if has_zsh; then
+  S="$REPO/bin/tmux-short-path"
+
+  assert_eq "short-path: home dir collapses to ~" \
+    "~" "$(zsh "$S" "$HOME")"
+
+  assert_eq "short-path: two-level path kept as-is" \
+    "~/foo/bar" "$(zsh "$S" "$HOME/foo/bar")"
+
+  result="$(zsh "$S" "$HOME/a/b/c/baz/qux")"
+  if printf '%s' "$result" | grep -q '…'; then
+    pass "short-path: deep path contains ellipsis"
+  else
+    fail "short-path: deep path missing ellipsis, got '$result'"
+  fi
+  assert_contains "short-path: deep path ends with last two segments" "baz/qux" "$result"
+
+  wt_result="$(zsh "$S" "$HOME/.worktrees/my-feature/src")"
+  assert_contains "short-path: worktree path has wt: prefix" "wt:" "$wt_result"
+
+  long="$HOME/a/b/c/d/e/f/g/h/long-directory-name-here"
+  result="$(zsh "$S" "$long")"
+  if [ "${#result}" -le 30 ]; then
+    pass "short-path: long path capped at 30 chars (${#result})"
+  else
+    fail "short-path: long path exceeds 30 chars (${#result}: $result)"
+  fi
+
+  result="$(zsh "$S" "" 2>/dev/null)"; rc=$?
+  assert_eq "short-path: empty arg exits 0" "0" "$rc"
+else
+  for t in "home dir" "two-level path" "deep path ellipsis" "deep path segments" \
+            "worktree prefix" "long path cap" "empty arg"; do
+    skip "short-path: $t" "zsh"
+  done
+fi
+
+# ── tmux-git-info ─────────────────────────────────────────────────────────────
+
+if has_zsh; then
+  S="$REPO/bin/tmux-git-info"
+
+  result="$(zsh "$S" "$REPO")"
+  if [ -n "$result" ]; then
+    pass "git-info: non-empty output in git repo"
+  else
+    fail "git-info: empty output in git repo"
+  fi
+
+  result="$(zsh "$S" /tmp 2>/dev/null)"
+  assert_empty "git-info: empty output in non-git directory" "$result"
+else
+  skip "git-info: non-empty in git repo" "zsh"
+  skip "git-info: empty in non-git dir"  "zsh"
+fi
+
+# ── tmux-pane-label ───────────────────────────────────────────────────────────
+
+S="$REPO/bin/tmux-pane-label"
+
+result="$(bash "$S" "$REPO")"
+if [ -n "$result" ]; then
+  pass "pane-label: non-empty in git repo"
+else
+  fail "pane-label: empty in git repo"
+fi
+
+branch="$(git -C "$REPO" branch --show-current 2>/dev/null)"
+if [ -n "$branch" ]; then
+  assert_contains "pane-label: output contains current branch" "$branch" "$result"
+else
+  skip "pane-label: branch name check" "a current branch (detached HEAD?)"
+fi
+
+assert_eq "pane-label: non-git path shows basename" \
+  "tmp" "$(bash "$S" /tmp)"
+
+# ── tmux-session-list ─────────────────────────────────────────────────────────
+
+S="$REPO/bin/tmux-session-list"
+
+# Without a live tmux server, tmux list-sessions returns empty — that's fine.
+bash "$S" "main" >/dev/null 2>&1; rc=$?
+assert_eq "session-list: exits 0 with no live tmux server" "0" "$rc"
+
+# ── tmux-kill-teammate-pane ───────────────────────────────────────────────────
+
+if has_zsh; then
+  S="$REPO/bin/tmux-kill-teammate-pane"
+  unset TMUX 2>/dev/null || true
+
+  result="$(zsh "$S" 2>/dev/null)"; rc=$?
+  assert_eq "kill-teammate-pane: exits 0 outside tmux" "0" "$rc"
+  assert_empty "kill-teammate-pane: no output outside tmux" "$result"
+else
+  skip "kill-teammate-pane: exits 0 outside tmux" "zsh"
+  skip "kill-teammate-pane: no output outside tmux"  "zsh"
+fi
+
+# ── tmux-tile-session ─────────────────────────────────────────────────────────
+
+S="$REPO/bin/tmux-tile-session"
+
+bash -n "$S" 2>/dev/null && pass "tile-session: bash -n syntax OK" \
+  || fail "tile-session: bash syntax error"
+
+# Outside tmux, set -euo pipefail causes early exit when tmux command fails.
+# Any non-zero exit is acceptable; we just confirm it doesn't hang.
+bash "$S" bogus >/dev/null 2>&1; rc=$?
+if [ "$rc" -ne 0 ]; then
+  pass "tile-session: bogus action exits non-zero"
+else
+  fail "tile-session: bogus action should exit non-zero"
+fi
+
+# ── tmux-claude-session ───────────────────────────────────────────────────────
+
+if has_zsh; then
+  S="$REPO/bin/tmux-claude-session"
+
+  result="$(zsh "$S" 2>/dev/null)"; rc=$?
+  assert_eq "claude-session: exits 0 with no arg" "0" "$rc"
+  assert_empty "claude-session: no output with no arg" "$result"
+
+  result="$(zsh "$S" /dev/pts/9999 2>/dev/null)"; rc=$?
+  assert_eq "claude-session: exits 0 with unknown tty" "0" "$rc"
+  assert_empty "claude-session: no output with unknown tty" "$result"
+else
+  skip "claude-session: exits 0 with no arg"      "zsh"
+  skip "claude-session: no output with no arg"    "zsh"
+  skip "claude-session: exits 0 with unknown tty" "zsh"
+  skip "claude-session: no output with unknown tty" "zsh"
+fi
+
+# ── statusline-command.sh ─────────────────────────────────────────────────────
+
+S="$REPO/claude/statusline-command.sh"
+
+if has_jq; then
+  json='{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"claude-sonnet"},"context_window":{"used_percentage":42}}'
+  result="$(printf '%s' "$json" | sh "$S" 2>/dev/null)"; rc=$?
+  assert_eq "statusline: exits 0 with valid JSON" "0" "$rc"
+
+  if [ -n "$result" ]; then
+    pass "statusline: produces non-empty output"
+  else
+    fail "statusline: empty output with valid JSON"
+  fi
+
+  assert_contains "statusline: output contains directory"   "/tmp"          "$result"
+  assert_contains "statusline: output contains model name"  "claude-sonnet" "$result"
+  assert_contains "statusline: output contains ctx%"        "ctx:"          "$result"
+
+  json_sess='{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"claude-sonnet"},"context_window":{"used_percentage":42},"session_name":"myproj"}'
+  result="$(printf '%s' "$json_sess" | sh "$S" 2>/dev/null)"
+  assert_contains "statusline: output contains session name" "myproj" "$result"
+
+  result="$(printf '{}' | sh "$S" 2>/dev/null)"; rc=$?
+  assert_eq "statusline: exits 0 with empty JSON" "0" "$rc"
+else
+  for t in "exits 0" "non-empty output" "directory" "model" "ctx%" "session name" "empty JSON"; do
+    skip "statusline: $t" "jq"
+  done
+fi
+
+# ── claude-dev (syntax check) ─────────────────────────────────────────────────
+
+if has_zsh; then
+  zsh -n "$REPO/bin/claude-dev" 2>/dev/null \
+    && pass "claude-dev: zsh -n syntax OK" \
+    || fail "claude-dev: zsh syntax error"
+else
+  skip "claude-dev: syntax check" "zsh"
+fi
+
+# ── setup-github-ssh (syntax check) ───────────────────────────────────────────
+
+bash -n "$REPO/bin/setup-github-ssh" 2>/dev/null \
+  && pass "setup-github-ssh: bash -n syntax OK" \
+  || fail "setup-github-ssh: bash syntax error"
+
+# ── tmux-tutorial (syntax check) ──────────────────────────────────────────────
+
+if has_zsh; then
+  zsh -n "$REPO/bin/tmux-tutorial" 2>/dev/null \
+    && pass "tmux-tutorial: zsh -n syntax OK" \
+    || fail "tmux-tutorial: zsh syntax error"
+else
+  skip "tmux-tutorial: syntax check" "zsh"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
+printf '\n── Tests complete: %d PASS / %d SKIP / %d FAIL ──\n' "$PASS" "$SKIP" "$FAIL"
+[ "$FAIL" -gt 0 ] && exit 1
+exit 0
