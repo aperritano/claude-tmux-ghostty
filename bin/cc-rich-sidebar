@@ -30,32 +30,53 @@ esac
 pct="${CC_RICH_SIDEBAR_PCT:-35}"
 
 # Pane title format: @cc-rich-sidebar:<mode>:<src>
-# - Same mode+src as existing → toggle off (kill).
-# - Different mode/src → replace (kill old, fall through to spawn new).
-# This makes R "show cc-rich for the focused pane" — pressing R from a
-# different pane swaps the sidebar over to that pane's session instead
-# of just closing it.
+# Search ALL windows (-a) — a sidebar in another tmux window must
+# still be detected and reaped/moved when R is pressed from the
+# current window. Without -a the helper would silently spawn a second
+# sidebar each time the user switched windows.
+#
+# Decision matrix (with the existing sidebar's window vs current window):
+#   - none anywhere               → spawn new (fall through)
+#   - current focus IS the sidebar → close (toggle off via guard below)
+#   - same window, same tag        → close (user wants to dismiss)
+#   - same window, different tag   → replace (different source pane)
+#   - different window             → bring sidebar HERE (kill old, spawn new)
 want_tag="@cc-rich-sidebar:${mode}:${src}"
-existing_line=$(tmux list-panes -F '#{pane_id} #{pane_title}' 2>/dev/null \
-                  | awk '$2 ~ /^@cc-rich-sidebar:/ {print $1, $2; exit}')
-if [[ -n "$existing_line" ]]; then
-  existing_pane=${existing_line%% *}
-  existing_tag=${existing_line#* }
-  # If the user pressed R/B/M from inside the sidebar pane itself, do
-  # nothing — otherwise we'd kill the pane while it's focused and tmux
-  # would land them on a sibling unexpectedly.
-  current_pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
-  if [[ "$current_pane" == "$existing_pane" ]]; then
-    tmux kill-pane -t "$existing_pane"
+
+# Collect EVERY tagged sidebar pane across all windows. Old buggy
+# versions could leave orphans behind; matching with prefix
+# /^@cc-rich-sidebar/ also catches pre-2026-05-04 untagged-source
+# titles ("@cc-rich-sidebar" with no suffix).
+all_existing=$(tmux list-panes -a -F '#{window_id} #{pane_id} #{pane_title}' 2>/dev/null \
+                  | awk '$3 ~ /^@cc-rich-sidebar/ {print $1 ":" $2 ":" $3}')
+
+current_window=$(tmux display-message -p '#{window_id}' 2>/dev/null)
+current_pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
+
+if [[ -n "$all_existing" ]]; then
+  # Decide toggle vs replace based on the FIRST entry — but kill
+  # every entry we find, so orphans get reaped on every keypress.
+  first=$(echo "$all_existing" | head -1)
+  first_window=$(echo "$first" | awk -F: '{print $1}')
+  first_pane=$(echo "$first" | awk -F: '{print $2}')
+  first_tag=$(echo "$first" | cut -d: -f3-)
+
+  toggle_off=0
+  if [[ "$current_pane" == "$first_pane" ]]; then
+    toggle_off=1  # user pressed R from inside the sidebar
+  elif [[ "$first_window" == "$current_window" && "$first_tag" == "$want_tag" ]]; then
+    toggle_off=1  # same window + same source = "close it"
+  fi
+
+  # Kill every tagged sidebar (handles multi-window orphan cleanup).
+  echo "$all_existing" | while IFS=: read -r _ pid _; do
+    tmux kill-pane -t "$pid" 2>/dev/null
+  done
+
+  if [[ "$toggle_off" -eq 1 ]]; then
     exit 0
   fi
-  if [[ "$existing_tag" == "$want_tag" ]]; then
-    # Same mode + same source pane → toggle off.
-    tmux kill-pane -t "$existing_pane"
-    exit 0
-  fi
-  # Different source — replace.
-  tmux kill-pane -t "$existing_pane"
+  # Otherwise fall through: spawn a fresh sidebar for THIS pane.
 fi
 
 # Build the cc-rich invocation. Always full path — like the prior popup
