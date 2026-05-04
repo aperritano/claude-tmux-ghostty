@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+# tmux-claude-audit — verify all shipped components are present and correctly wired
+# Usage: bash bin/tmux-claude-audit
+# Exit 0 if no FAILs, exit 1 on any FAIL.
+# This file is the living spec: every shipped tool must have a passing check here.
+
+set -euo pipefail
+
+PASS=0; WARN=0; FAIL=0
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+
+pass() { PASS=$((PASS+1)); printf "PASS  %s\n" "$1"; }
+warn() { WARN=$((WARN+1)); printf "WARN  %s\n" "$1"; }
+fail() { FAIL=$((FAIL+1)); printf "FAIL  %s\n" "$1"; }
+
+has_zsh() { command -v zsh >/dev/null 2>&1; }
+
+# ── bin scripts: exist and executable ────────────────────────────────────────
+
+BIN_SCRIPTS="claude-dev setup-github-ssh tmux-claude-audit tmux-claude-session \
+             tmux-claude-test tmux-git-info tmux-kill-teammate-pane tmux-pane-label \
+             tmux-session-list tmux-short-path tmux-tile-session tmux-tutorial"
+
+for script in $BIN_SCRIPTS; do
+  f="$REPO/bin/$script"
+  if [ ! -f "$f" ]; then
+    fail "bin/$script: file missing"
+  elif [ ! -x "$f" ]; then
+    fail "bin/$script: not executable"
+  else
+    pass "bin/$script: exists and executable"
+  fi
+done
+
+# ── shebangs ─────────────────────────────────────────────────────────────────
+
+check_shebang() {
+  local script="$1" expected="$2"
+  local line
+  line=$(head -1 "$REPO/bin/$script" 2>/dev/null)
+  if printf '%s' "$line" | grep -qF "$expected"; then
+    pass "bin/$script: shebang contains '$expected'"
+  else
+    fail "bin/$script: shebang expected '$expected', got '$line'"
+  fi
+}
+
+check_shebang "setup-github-ssh"        "bash"
+check_shebang "tmux-claude-audit"       "bash"
+check_shebang "tmux-claude-test"        "bash"
+check_shebang "tmux-pane-label"         "bash"
+check_shebang "tmux-session-list"       "bash"
+check_shebang "tmux-tile-session"       "bash"
+check_shebang "tmux-claude-session"     "zsh"
+check_shebang "tmux-git-info"           "zsh"
+check_shebang "tmux-short-path"         "zsh"
+check_shebang "tmux-kill-teammate-pane" "zsh"
+check_shebang "claude-dev"              "zsh"
+check_shebang "tmux-tutorial"           "zsh"
+
+# ── syntax checks ────────────────────────────────────────────────────────────
+
+BASH_SCRIPTS="setup-github-ssh tmux-claude-audit tmux-claude-test tmux-pane-label tmux-session-list tmux-tile-session"
+for script in $BASH_SCRIPTS; do
+  if bash -n "$REPO/bin/$script" 2>/dev/null; then
+    pass "bin/$script: bash -n syntax OK"
+  else
+    fail "bin/$script: bash syntax error"
+  fi
+done
+
+ZSH_SCRIPTS="tmux-claude-session tmux-git-info tmux-short-path tmux-kill-teammate-pane claude-dev tmux-tutorial"
+if has_zsh; then
+  for script in $ZSH_SCRIPTS; do
+    if zsh -n "$REPO/bin/$script" 2>/dev/null; then
+      pass "bin/$script: zsh -n syntax OK"
+    else
+      fail "bin/$script: zsh syntax error"
+    fi
+  done
+else
+  for script in $ZSH_SCRIPTS; do
+    warn "bin/$script: zsh not available — skipping syntax check"
+  done
+fi
+
+# ── statusline-command.sh ────────────────────────────────────────────────────
+
+STATUS="$REPO/claude/statusline-command.sh"
+if [ -f "$STATUS" ]; then
+  pass "claude/statusline-command.sh: exists"
+  if bash -n "$STATUS" 2>/dev/null; then
+    pass "claude/statusline-command.sh: bash -n syntax OK"
+  else
+    fail "claude/statusline-command.sh: syntax error"
+  fi
+else
+  fail "claude/statusline-command.sh: missing"
+fi
+
+# ── claude config files ───────────────────────────────────────────────────────
+
+for f in "claude/CLAUDE.md" "claude/settings.json"; do
+  if [ -f "$REPO/$f" ]; then
+    pass "$f: exists"
+  else
+    fail "$f: missing"
+  fi
+done
+
+# ── ghostty config ────────────────────────────────────────────────────────────
+
+if [ -f "$REPO/ghostty/config" ]; then
+  pass "ghostty/config: exists"
+else
+  fail "ghostty/config: missing"
+fi
+
+# ── tmux.conf: file and key settings ─────────────────────────────────────────
+
+TMUX_CONF="$REPO/tmux/tmux.conf"
+if [ -f "$TMUX_CONF" ]; then
+  pass "tmux/tmux.conf: exists"
+else
+  fail "tmux/tmux.conf: missing"
+fi
+
+check_conf() {
+  local desc="$1" pattern="$2"
+  if grep -qF "$pattern" "$TMUX_CONF" 2>/dev/null; then
+    pass "tmux.conf: $desc"
+  else
+    fail "tmux.conf: $desc (pattern missing: $pattern)"
+  fi
+}
+
+check_conf "prefix is C-a"                     "set -g prefix C-a"
+check_conf "mouse enabled"                     "set -g mouse on"
+check_conf "vim pane nav C-h"                  "bind -n C-h select-pane -L"
+check_conf "vim pane nav C-j"                  "bind -n C-j select-pane -D"
+check_conf "vim pane nav C-k"                  "bind -n C-k select-pane -U"
+check_conf "vim pane nav C-l"                  "bind -n C-l select-pane -R"
+check_conf "passthrough enabled"               "allow-passthrough on"
+check_conf "escape-time 0"                     "escape-time 0"
+check_conf "history-limit set"                 "history-limit"
+check_conf "renumber-windows on"               "renumber-windows on"
+check_conf "pane base-index 1"                 "pane-base-index 1"
+check_conf "claude new-pane binding (c)"       "bind c split-window"
+check_conf "claude dev-layout binding (C)"     "bind C new-window"
+check_conf "shell-pane binding (s)"            "bind s split-window"
+check_conf "tile-toggle binding (E)"           "bind E run-shell"
+check_conf "kill-orphan-panes binding (X)"     "bind X confirm-before"
+check_conf "session-popup binding (g)"         "bind g display-popup"
+check_conf "rename-session binding (R)"        "bind R command-prompt"
+check_conf "reload-config binding (r)"         "bind r source-file"
+check_conf "zoom binding (z)"                  "bind z resize-pane -Z"
+check_conf "equalize binding (=)"              "bind = select-layout tiled"
+check_conf "tmux-short-path wired in status"   "tmux-short-path"
+check_conf "tmux-git-info wired in status"     "tmux-git-info"
+check_conf "tmux-claude-session wired in status" "tmux-claude-session"
+check_conf "tmux-tile-session wired"           "tmux-tile-session"
+check_conf "pane-border-lines heavy"           "pane-border-lines heavy"
+check_conf "status-position bottom"            "status-position bottom"
+check_conf "status-interval set"               "status-interval"
+
+# ── open-question WARNs ───────────────────────────────────────────────────────
+
+# Doc/impl skew: README claims tmux-kill-teammate-pane auto-cleans on SubagentStop,
+# but no hook wires it. The X binding calls kill-pane -a (not this script).
+# Owner has not decided to wire it or drop the README claim.
+if grep -qF "tmux-kill-teammate-pane" "$TMUX_CONF" 2>/dev/null; then
+  pass "tmux.conf: tmux-kill-teammate-pane wired"
+else
+  warn "tmux.conf: tmux-kill-teammate-pane NOT wired — README claims SubagentStop auto-cleans but hook is absent (open question: wire it or update README?)"
+fi
+
+# tmux-session-list provides an 'agents' session color not in built-in format
+if grep -qF "tmux-session-list" "$TMUX_CONF" 2>/dev/null; then
+  pass "tmux.conf: tmux-session-list wired in status"
+else
+  warn "tmux.conf: tmux-session-list not referenced — status-left uses built-in #{S:} format; script's 'agents' session styling is inactive (dead code or future integration?)"
+fi
+
+# ── README documents each bin script ─────────────────────────────────────────
+
+README="$REPO/README.md"
+for script in $BIN_SCRIPTS; do
+  if grep -qF "$script" "$README" 2>/dev/null; then
+    pass "README.md: documents $script"
+  else
+    warn "README.md: does not mention $script"
+  fi
+done
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
+printf '\n── Audit complete: %d PASS / %d WARN / %d FAIL ──\n' "$PASS" "$WARN" "$FAIL"
+[ "$FAIL" -gt 0 ] && exit 1
+exit 0
