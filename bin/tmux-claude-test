@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# Unit tests for bin/ scripts that do not require a live tmux server.
+# Tests that need zsh are skipped when zsh is absent.
+set -o pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+BIN_DIR="$REPO_DIR/bin"
+
+pass=0; fail=0; skip=0
+
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [ "$actual" = "$expected" ]; then
+    pass=$((pass+1)); printf 'PASS  %s\n' "$desc"
+  else
+    fail=$((fail+1))
+    printf 'FAIL  %s\n  expected: %s\n  actual:   %s\n' "$desc" "$expected" "$actual"
+  fi
+}
+
+assert_contains() {
+  local desc="$1" pattern="$2" actual="$3"
+  if echo "$actual" | grep -qF "$pattern"; then
+    pass=$((pass+1)); printf 'PASS  %s\n' "$desc"
+  else
+    fail=$((fail+1))
+    printf 'FAIL  %s\n  pattern: %s\n  actual:  %s\n' "$desc" "$pattern" "$actual"
+  fi
+}
+
+assert_empty() {
+  local desc="$1" actual="$2"
+  if [ -z "$actual" ]; then
+    pass=$((pass+1)); printf 'PASS  %s\n' "$desc"
+  else
+    fail=$((fail+1)); printf 'FAIL  %s (expected empty, got: %s)\n' "$desc" "$actual"
+  fi
+}
+
+assert_max_len() {
+  local desc="$1" maxlen="$2" actual="$3"
+  local len=${#actual}
+  if [ "$len" -le "$maxlen" ]; then
+    pass=$((pass+1)); printf 'PASS  %s (len=%d)\n' "$desc" "$len"
+  else
+    fail=$((fail+1)); printf 'FAIL  %s (len=%d > %d: %s)\n' "$desc" "$len" "$maxlen" "$actual"
+  fi
+}
+
+# ── tmux-short-path ─────────────────────────────────────────────────────────
+echo "── tmux-short-path ──────────────────────────────────────────────────────"
+SHORT="$BIN_DIR/tmux-short-path"
+if ! has_cmd zsh; then
+  skip=$((skip+8))
+  printf 'SKIP  tmux-short-path tests (zsh not available)\n'
+else
+  assert_eq   "short-path: home dir itself"          "~"                    "$(zsh "$SHORT" "$HOME")"
+  assert_eq   "short-path: one level under home"     "~/dev"                "$(zsh "$SHORT" "$HOME/dev")"
+  assert_eq   "short-path: two levels under home"    "~/dev/foo"            "$(zsh "$SHORT" "$HOME/dev/foo")"
+  assert_contains "short-path: deep home path (>3 levels) uses ~/…" "~/…"  "$(zsh "$SHORT" "$HOME/dev/projects/alpha/src")"
+  assert_contains "short-path: deep non-home path uses /…"  "/…"           "$(zsh "$SHORT" "/usr/local/share/some/deep")"
+  # Confirm non-home deep path does NOT start with ~/…
+  result=$(zsh "$SHORT" "/usr/local/share/some/deep")
+  case "$result" in
+    "~/…"*) fail=$((fail+1)); printf 'FAIL  short-path: non-home path must not start with ~/… (got: %s)\n' "$result" ;;
+    *)      pass=$((pass+1)); printf 'PASS  short-path: non-home deep path does not use ~/… prefix\n' ;;
+  esac
+  assert_eq   "short-path: worktree path"            "wt:feature-x"        "$(zsh "$SHORT" "$HOME/dev/repo/.worktrees/feature-x")"
+  # Hard cap: a path whose abbreviation exceeds 30 chars must be capped
+  long_out=$(zsh "$SHORT" "/aaa/bbb/averylongdirectorynamehere/anotherverylongname")
+  assert_max_len "short-path: hard cap at 30 chars" 30 "$long_out"
+fi
+
+# ── tmux-pane-label ─────────────────────────────────────────────────────────
+echo ""
+echo "── tmux-pane-label ──────────────────────────────────────────────────────"
+LABEL="$BIN_DIR/tmux-pane-label"
+tmpdir=$(mktemp -d)
+assert_eq "pane-label: non-git dir shows basename" "$(basename "$tmpdir")" "$(bash "$LABEL" "$tmpdir")"
+rm -rf "$tmpdir"
+
+# git repo: should show repo name and branch
+if has_cmd git; then
+  tmpdir=$(mktemp -d)
+  git init "$tmpdir" >/dev/null 2>&1
+  git -C "$tmpdir" config user.email "t@t.com"
+  git -C "$tmpdir" config user.name "T"
+  echo x > "$tmpdir/x"
+  git -C "$tmpdir" add . >/dev/null 2>&1
+  git -C "$tmpdir" commit -m "init" >/dev/null 2>&1
+  result=$(bash "$LABEL" "$tmpdir")
+  assert_contains "pane-label: git repo shows branch" "$(git -C "$tmpdir" branch --show-current 2>/dev/null)" "$result"
+  rm -rf "$tmpdir"
+fi
+
+# ── tmux-git-info ────────────────────────────────────────────────────────────
+echo ""
+echo "── tmux-git-info ────────────────────────────────────────────────────────"
+GIT_INFO="$BIN_DIR/tmux-git-info"
+if ! has_cmd zsh; then
+  skip=$((skip+2))
+  printf 'SKIP  tmux-git-info tests (zsh not available)\n'
+else
+  tmpdir=$(mktemp -d)
+  assert_empty "git-info: non-git dir produces no output" "$(zsh "$GIT_INFO" "$tmpdir")"
+  rm -rf "$tmpdir"
+
+  if has_cmd git; then
+    tmpdir=$(mktemp -d)
+    git init "$tmpdir" >/dev/null 2>&1
+    git -C "$tmpdir" config user.email "t@t.com"
+    git -C "$tmpdir" config user.name "T"
+    echo x > "$tmpdir/x"
+    git -C "$tmpdir" add . >/dev/null 2>&1
+    git -C "$tmpdir" commit -m "init" >/dev/null 2>&1
+    branch=$(git -C "$tmpdir" branch --show-current 2>/dev/null)
+    assert_contains "git-info: shows branch for valid git repo" "$branch" "$(zsh "$GIT_INFO" "$tmpdir")"
+    rm -rf "$tmpdir"
+  else
+    skip=$((skip+1))
+    printf 'SKIP  git-info: git branch test (git not available)\n'
+  fi
+fi
+
+# ── tmux-kill-teammate-pane ─────────────────────────────────────────────────
+echo ""
+echo "── tmux-kill-teammate-pane ──────────────────────────────────────────────"
+KILL="$BIN_DIR/tmux-kill-teammate-pane"
+if ! has_cmd zsh; then
+  skip=$((skip+1))
+  printf 'SKIP  tmux-kill-teammate-pane tests (zsh not available)\n'
+else
+  assert_empty "kill-teammate: no TMUX env → exits silently" "$(TMUX="" zsh "$KILL" 2>&1)"
+fi
+
+# ── tmux-session-list ───────────────────────────────────────────────────────
+echo ""
+echo "── tmux-session-list ────────────────────────────────────────────────────"
+SESSION_LIST="$BIN_DIR/tmux-session-list"
+assert_empty "session-list: no tmux server → empty output" "$(TMUX="" bash "$SESSION_LIST" "main" 2>/dev/null)"
+
+# ── tmux-tile-session (syntax only, logic needs live tmux) ──────────────────
+echo ""
+echo "── tmux-tile-session ────────────────────────────────────────────────────"
+TILE="$BIN_DIR/tmux-tile-session"
+if bash -n "$TILE" 2>/dev/null; then
+  pass=$((pass+1)); printf 'PASS  tmux-tile-session: bash syntax valid\n'
+else
+  fail=$((fail+1)); printf 'FAIL  tmux-tile-session: bash syntax error\n'
+fi
+# Verify usage message for unknown action — requires live tmux (script calls tmux before case)
+if [ -n "$TMUX" ]; then
+  result=$(bash "$TILE" bad-action 2>&1 || true)
+  assert_contains "tile-session: unknown action prints usage" "Usage:" "$result"
+else
+  skip=$((skip+1))
+  printf 'SKIP  tile-session: unknown action test requires live tmux\n'
+fi
+
+# ── claude-dev (syntax + offline behavior) ──────────────────────────────────
+echo ""
+echo "── claude-dev ───────────────────────────────────────────────────────────"
+DEV="$BIN_DIR/claude-dev"
+if ! has_cmd zsh; then
+  skip=$((skip+1))
+  printf 'SKIP  claude-dev tests (zsh not available)\n'
+else
+  if zsh -n "$DEV" 2>/dev/null; then
+    pass=$((pass+1)); printf 'PASS  claude-dev: zsh syntax valid\n'
+  else
+    fail=$((fail+1)); printf 'FAIL  claude-dev: zsh syntax error\n'
+  fi
+fi
+
+echo ""
+printf '── Summary: %d PASS / %d FAIL / %d SKIP ─────────────────────────────────\n' \
+    "$pass" "$fail" "$skip"
+
+[ "$fail" -eq 0 ]
