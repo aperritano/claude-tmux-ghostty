@@ -103,6 +103,14 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc", "q":
 			m.done = true
 			return m, tea.Quit
+		case "g":
+			if m.ready {
+				m.vp.GotoTop()
+			}
+		case "G":
+			if m.ready {
+				m.vp.GotoBottom()
+			}
 		case "j", "down":
 			if m.cursor < len(m.msgs)-1 {
 				m.cursor++

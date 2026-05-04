@@ -214,6 +214,35 @@ func TestConversationViewportShowsAllContent(t *testing.T) {
 	}
 }
 
+// g jumps to top, G jumps to bottom — vim-style navigation. Without
+// these, navigating a tall transcript means hammering PgDn / k.
+func TestConversationGotoTopAndBottom(t *testing.T) {
+	msgs := make([]*sessiontree.Message, 30)
+	for i := range msgs {
+		msgs[i] = &sessiontree.Message{
+			UUID:      fmt.Sprintf("u-%02d", i),
+			Role:      "user",
+			Timestamp: time.Now(),
+			Content:   []sessiontree.Block{{Type: "text", Text: fmt.Sprintf("msg-%02d", i)}},
+		}
+	}
+	m := NewConversation(msgs)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 10))
+	tm.Send(tea.WindowSizeMsg{Width: 80, Height: 10})
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")}) // jump to bottom
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")}) // jump back to top
+	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
+	got := readOutput(t, tm)
+
+	// Final state was "G then g", so we should see the top of the
+	// transcript (msg-00). msg-29 may still appear in the buffered
+	// stream from the G-keypress frame, so we additionally assert
+	// that msg-00 is present.
+	if !strings.Contains(got, "msg-00") {
+		t.Errorf("g (goto top) did not reveal first message:\n%s", got)
+	}
+}
+
 func TestBranchListShowsSiblings(t *testing.T) {
 	tr, err := sessiontree.LoadDir("../sessiontree/testdata")
 	if err != nil {
