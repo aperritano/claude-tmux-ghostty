@@ -52,6 +52,22 @@ func styleConfig() ansi.StyleConfig {
 	// the color change carries the emphasis on its own.
 	cfg.Strong.BlockPrefix = ""
 	cfg.Strong.BlockSuffix = ""
+	// Drop the literal "# ", "## ", … prefixes too. Dark theme keeps
+	// them as a visual cue, but in the sidebar the color + bold
+	// already mark the heading; the leading hashes just look like
+	// unrendered markdown to the reader.
+	cfg.H1.Prefix = ""
+	cfg.H1.Suffix = ""
+	cfg.H2.Prefix = ""
+	cfg.H2.Suffix = ""
+	cfg.H3.Prefix = ""
+	cfg.H3.Suffix = ""
+	cfg.H4.Prefix = ""
+	cfg.H4.Suffix = ""
+	cfg.H5.Prefix = ""
+	cfg.H5.Suffix = ""
+	cfg.H6.Prefix = ""
+	cfg.H6.Suffix = ""
 	return cfg
 }
 

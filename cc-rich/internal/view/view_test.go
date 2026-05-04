@@ -86,7 +86,10 @@ func TestConversationRendersMarkdown(t *testing.T) {
 	got := readOutput(t, tm)
 
 	// The literal markdown markers should be gone — Glamour transforms them.
-	for _, marker := range []string{"**bold**", "# Heading"} {
+	// "# Heading" must render as styled text only ("Heading"); the literal
+	// "## " / "# " prefix is cosmetic in the dark base style and we strip
+	// it in styleConfig() because it looks like unrendered markdown.
+	for _, marker := range []string{"**bold**", "# Heading", "## "} {
 		if strings.Contains(got, marker) {
 			t.Errorf("raw markdown marker %q leaked through (Glamour not rendering)\n--\n%s",
 				marker, got)
