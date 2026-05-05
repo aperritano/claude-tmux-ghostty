@@ -44,11 +44,22 @@ dotfiles/
 ├── install.sh                  # Full bootstrap script
 ├── .env.template               # API key template -> ~/.env
 ├── ghostty/
-│   ├── config                  # Alien Blood theme, NotoMono Nerd Font, tmux passthrough
+│   ├── config                  # claude-code dark/light auto-switch, NotoMono Nerd Font
 │   └── themes/
-│       └── Green CRT           # Custom CRT phosphor theme (alternate)
+│       ├── claude-code         # Dark theme (used by default)
+│       ├── claude-code-light   # Light theme (auto-selected in light mode)
+│       ├── claude-quiet        # Low-contrast theme for long sessions
+│       └── Green CRT           # Legacy CRT phosphor theme (alternate)
+├── iterm/
+│   ├── apple-classic.itermcolors    # Apple Classic color preset
+│   ├── claude-classic.itermcolors  # Claude Classic color preset
+│   ├── claude-quiet.itermcolors    # Claude Quiet color preset
+│   └── dynamic-profiles/
+│       ├── apple-classic.json   # iTerm2 dynamic profile — Apple Classic
+│       ├── claude-classic.json  # iTerm2 dynamic profile — Claude Classic
+│       └── claude-quiet.json    # iTerm2 dynamic profile — Claude Quiet
 ├── tmux/
-│   ├── tmux.conf               # Alien Blood status bar, vim nav, Claude Code bindings
+│   ├── tmux.conf               # ANSI-palette status bar, vim nav, Claude Code bindings
 │   └── tile-toggle.conf        # Standalone tile/untile snippet
 ├── zsh/
 │   ├── zshrc                   # Oh My Zsh + Powerlevel10k, tmux auto-attach, lazy nvm/pyenv
@@ -63,8 +74,11 @@ dotfiles/
 │   ├── settings.json           # Plugins, permissions, agent teams, opus model
 │   ├── settings.local.json     # Local permission overrides
 │   ├── statusline-command.sh   # Status line — dir, git, model, context % with traffic-light
-│   └── rules/
-│       └── deterministic-execution-protocol.md   # 11-section verified execution protocol
+│   ├── rules/
+│   │   └── deterministic-execution-protocol.md   # 11-section verified execution protocol
+│   └── commands/
+│       ├── pre-commit.md       # /pre-commit — lint, clean, and commit staged files
+│       └── tmux-help.md        # /tmux-help — show tmux key bindings for agent teams
 ├── macos/
 │   └── defaults.sh             # System preferences (keyboard, Dock, Finder, screenshots)
 ├── bin/
@@ -140,6 +154,29 @@ Prefix is `Ctrl-a`.
 | `Ctrl-a ?` | Cheat sheet |
 
 Right-click session names or window tabs in the status bar for context menus.
+
+## iTerm2 Support
+
+The `iterm/` directory contains color presets and dynamic profiles for users who prefer or need iTerm2 alongside Ghostty. `install.sh` installs them automatically.
+
+**Color presets** (`iterm/*.itermcolors`) — import via iTerm2 → Preferences → Profiles → Colors → Color Presets:
+
+| Preset | Description |
+|---|---|
+| `apple-classic` | Clean Apple system palette |
+| `claude-classic` | Warm purple/violet tones matching the Claude Code interface |
+| `claude-quiet` | Low-contrast variant for long sessions |
+
+**Dynamic profiles** (`iterm/dynamic-profiles/*.json`) — automatically loaded by iTerm2 from `~/Library/Application Support/iTerm2/DynamicProfiles/`. Each profile pairs font, spacing, and color preset to match the corresponding Ghostty theme.
+
+## Claude Code Slash Commands
+
+The `claude/commands/` directory ships two slash commands usable in any Claude Code session:
+
+| Command | Description |
+|---|---|
+| `/pre-commit` | Lint, clean, and commit staged files with language-aware tooling |
+| `/tmux-help` | Show tmux key bindings for this setup (useful for agent team members) |
 
 ## macOS Defaults
 
