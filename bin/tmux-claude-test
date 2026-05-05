@@ -176,6 +176,11 @@ else
     FAIL=$((FAIL+1))
     printf '\033[31m[FAIL]\033[0m tmux-short-path: result exceeds 30 chars (got %d: %s)\n' "$_len" "$_out"
   fi
+
+  # 6. REGRESSION — non-HOME path must NOT use ~/… prefix
+  #    Before the fix, /var/folders/abc/def/ghi showed ~/…/def/ghi (misleading)
+  _out=$(zsh "$_SP" "/var/folders/abc/def/ghi" 2>/dev/null)
+  _assert_not_contains "tmux-short-path: non-HOME path does NOT use ~/… prefix (regression)" "~/…" "$_out"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
