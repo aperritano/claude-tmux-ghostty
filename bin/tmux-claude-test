@@ -780,6 +780,119 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── tmux-short-path ──────────────────────────────────
+section "tmux-short-path"
+if [[ -x "$HOME/bin/tmux-short-path" ]]; then
+  if command -v zsh >/dev/null 2>&1; then
+    if zsh -n "$HOME/bin/tmux-short-path" 2>/dev/null; then
+      test_pass "zsh syntax valid"
+    else
+      test_fail "zsh syntax" "parse error"
+    fi
+    # .worktrees/ path abbreviation
+    out=$(zsh "$HOME/bin/tmux-short-path" "$HOME/dev/repo/.worktrees/fix-bug-123" 2>/dev/null)
+    if [[ "$out" == "wt:fix-bug-123" ]]; then
+      test_pass ".worktrees/ abbreviates to wt:<name>"
+    else
+      test_fail ".worktrees/ abbreviation" "got: $out"
+    fi
+    # .claude/worktrees/ path — regression for missing branch in original
+    out=$(zsh "$HOME/bin/tmux-short-path" "$HOME/dev/repo/.claude/worktrees/fix-bug-123" 2>/dev/null)
+    if [[ "$out" == "wt:fix-bug-123" ]]; then
+      test_pass ".claude/worktrees/ abbreviates to wt:<name>"
+    else
+      test_fail ".claude/worktrees/ abbreviation" "got: $out (missing .claude/worktrees support)"
+    fi
+    # Deep path gets ~/…/parent/leaf
+    out=$(zsh "$HOME/bin/tmux-short-path" "$HOME/a/b/c/d" 2>/dev/null)
+    if [[ "$out" == "~/…/c/d" ]]; then
+      test_pass "deep path shortened to ~/…/parent/leaf"
+    else
+      test_fail "deep path abbreviation" "got: $out"
+    fi
+    # 30-char hard cap
+    long_path="$HOME/a-very-long-parent-dir/another-long-dir/leafname"
+    out=$(zsh "$HOME/bin/tmux-short-path" "$long_path" 2>/dev/null)
+    if (( ${#out} <= 30 )); then
+      test_pass "30-char hard cap enforced (len=${#out})"
+    else
+      test_fail "30-char cap" "output length ${#out}: $out"
+    fi
+  else
+    test_pass "tmux-short-path E2E (skipped — no zsh on this host)"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-short-path missing"
+fi
+
+# ─── tmux-pane-label ──────────────────────────────────
+section "tmux-pane-label"
+if [[ -x "$HOME/bin/tmux-pane-label" ]]; then
+  if bash -n "$HOME/bin/tmux-pane-label" 2>/dev/null; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Non-git directory: prints dirname
+  tmp=$(mktemp -d)
+  tmpbase=$(basename "$tmp")
+  out=$("$HOME/bin/tmux-pane-label" "$tmp" 2>/dev/null)
+  rm -rf "$tmp"
+  if [[ "$out" == "$tmpbase" ]]; then
+    test_pass "non-git dir shows dirname"
+  else
+    test_fail "non-git dir output" "got: $out (expected: $tmpbase)"
+  fi
+  # Git repo: shows repo name + branch
+  PANE_LABEL_REPO="/tmp/tmux-pane-label-test-$$"
+  rm -rf "$PANE_LABEL_REPO"
+  mkdir -p "$PANE_LABEL_REPO"
+  (
+    cd "$PANE_LABEL_REPO"
+    git init -q -b main 2>/dev/null || git init -q
+    git commit --allow-empty -q -m initial
+  )
+  out=$("$HOME/bin/tmux-pane-label" "$PANE_LABEL_REPO" 2>/dev/null)
+  rm -rf "$PANE_LABEL_REPO"
+  if [[ "$out" == *"main"* ]]; then
+    test_pass "git repo shows branch name in label"
+  else
+    test_fail "git repo branch label" "got: $out (expected 'main' in output)"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-pane-label missing"
+fi
+
+# ─── tmux-session-list ────────────────────────────────
+section "tmux-session-list"
+if [[ -x "$HOME/bin/tmux-session-list" ]]; then
+  if bash -n "$HOME/bin/tmux-session-list" 2>/dev/null; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # With no tmux server: exits cleanly, no output
+  out=$(TMUX="" "$HOME/bin/tmux-session-list" "main" 2>/dev/null)
+  if [[ $? -eq 0 ]]; then
+    test_pass "no-tmux exits cleanly"
+  else
+    test_fail "no-tmux exit code" "expected 0"
+  fi
+  # Output must contain tmux format tokens when sessions exist
+  if tmux info >/dev/null 2>&1; then
+    out=$("$HOME/bin/tmux-session-list" "$(tmux display-message -p '#S' 2>/dev/null)" 2>/dev/null)
+    if [[ "$out" == *"#["* ]]; then
+      test_pass "produces tmux format-token output"
+    else
+      test_fail "format token output" "no #[ found in: $out"
+    fi
+  else
+    test_pass "tmux format-token check (skipped — no tmux server)"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-session-list missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"
