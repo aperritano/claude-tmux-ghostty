@@ -41,8 +41,9 @@ tile() {
   done <<< "$windows"
 
   # Join all other windows into the target (reverse order preserves visual order)
+  # awk replaces BSD-only "tail -r | cut" with a portable line-reversal
   local other_indices
-  other_indices=$(echo "$windows" | tail -n +2 | tail -r | cut -d: -f1)
+  other_indices=$(echo "$windows" | tail -n +2 | awk -F: '{a[NR]=$1} END{for(i=NR;i>=1;i--) print a[i]}')
 
   for idx in $other_indices; do
     while tmux list-panes -t "$session:$idx" -F '#{pane_id}' 2>/dev/null | head -1 | grep -q .; do
