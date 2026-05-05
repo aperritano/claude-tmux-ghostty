@@ -202,6 +202,22 @@ else
   else
     emit WARN "duplicate bind keys" "shadowed lines exist for: $(echo "$dup_binds" | tr '\n' ' ')"
   fi
+
+  # split-window / run-shell binds that invoke claude or cc-*/claude-*
+  # helpers must use a full path. tmux's split-window inherits a system
+  # PATH that does NOT include ~/.local/bin or ~/bin (no .zshrc sourced),
+  # so bare "claude" or "cc-rich" exits 127 and the new pane disappears.
+  # send-keys binds are exempt — they type into a real interactive shell
+  # which DOES have the user's aliases / PATH.
+  bad_spawn=$(grep -E '^\s*bind .* (split-window|run-shell)' "$TMUXCONF" \
+                | grep -v 'send-keys' \
+                | grep -vE '\$HOME/|/Users/|~/' \
+                | grep -E '"(claude|cc-[a-z]+|claude-[a-z]+)"\s*\\?;|"(claude|cc-[a-z]+|claude-[a-z]+)"\s*$' || true)
+  if [[ -z "$bad_spawn" ]]; then
+    emit PASS "spawn binds (split-window/run-shell) use full paths"
+  else
+    emit FAIL "spawn binds" "bare command in split-window/run-shell — will exit 127:\n    ${bad_spawn//$'\n'/$'\n    '}"
+  fi
 fi
 
 section "Continuum auto-save freshness"
