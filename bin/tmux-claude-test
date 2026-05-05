@@ -427,8 +427,13 @@ if [[ -x "$HOME/bin/tmux-burn-segment" ]]; then
   python3 -c "
 import json, datetime
 def ts(s): return datetime.datetime.fromtimestamp(s).strftime('%Y-%m-%dT%H:%M:%SZ')
-print(json.dumps({'timestamp': ts($prev), 'message': {'usage': {'input_tokens': 100000, 'cache_read_input_tokens': 100000}}}))
-print(json.dumps({'timestamp': ts($now), 'message': {'usage': {'input_tokens': 480000, 'cache_read_input_tokens': 480000}}}))
+# cc-burn-rate uses 'tail -n +2' to skip potentially partial first line on
+# large files. With only 2 lines the baseline row is discarded → NR<2 exit.
+# Add a throwaway first line so lines 2+3 are the real baseline and latest.
+# Token counts stay below ctx_max=200000 so remaining>0 and rate fires.
+print(json.dumps({'timestamp': ts($prev - 10), 'message': {'usage': {'input_tokens': 100, 'cache_read_input_tokens': 100}}}))
+print(json.dumps({'timestamp': ts($prev), 'message': {'usage': {'input_tokens': 5000, 'cache_read_input_tokens': 5000}}}))
+print(json.dumps({'timestamp': ts($now), 'message': {'usage': {'input_tokens': 80000, 'cache_read_input_tokens': 10000}}}))
 " > "$tr_path"
   out=$(CC_BURN_FIXTURE="$fix" CC_BURN_THRESHOLD=99999 "$HOME/bin/tmux-burn-segment" 2>/dev/null)
   if echo "$out" | grep -q "burn:"; then
@@ -454,10 +459,11 @@ fi
 # ─── cc-burn-rate ─────────────────────────────────────
 section "cc-burn-rate"
 if [[ -x "$HOME/bin/cc-burn-rate" ]]; then
-  if python3 -c "import ast; ast.parse(open('$HOME/bin/cc-burn-rate').read())" 2>/dev/null; then
-    test_pass "python syntax valid"
+  # cc-burn-rate is a pure-bash rewrite (was Python); check bash syntax only.
+  if bash -n "$HOME/bin/cc-burn-rate" 2>/dev/null; then
+    test_pass "bash syntax valid"
   else
-    test_fail "python syntax" "parse error"
+    test_fail "bash syntax" "parse error"
   fi
   # Empty / nonexistent transcript exits silent (0)
   out=$("$HOME/bin/cc-burn-rate" /nonexistent 200000 2>/dev/null)
@@ -540,9 +546,12 @@ if [[ -x "$HOME/bin/cc-brain-sync" ]]; then
   else
     test_fail "list" "exited non-zero unexpectedly"
   fi
-  # `push` should fail loudly when age missing (don't actually have age in test env)
+  # `push` should fail loudly when age missing (don't actually have age in test env).
+  # Capture output with $() rather than a pipeline so that pipefail doesn't
+  # propagate cc-brain-sync's non-zero exit code through the grep.
   if ! command -v age >/dev/null 2>&1; then
-    if "$HOME/bin/cc-brain-sync" push 2>&1 | grep -q "not installed"; then
+    brainout=$("$HOME/bin/cc-brain-sync" push 2>&1 || true)
+    if echo "$brainout" | grep -q "not installed"; then
       test_pass "push without age → clear error"
     else
       test_fail "push-no-age" "should warn about missing age"
