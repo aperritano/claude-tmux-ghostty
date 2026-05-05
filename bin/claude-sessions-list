@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""
+claude-sessions-list — fast TSV listing of Claude Code sessions.
+
+Single-process replacement for the per-file jq invocations in claude-tmux.
+For 106 sessions, drops enumeration time from ~6s to <1s by avoiding the
+~212 jq subprocess spawns (one for cwd, one for first message, per file).
+
+Output (TSV): <age> <short_label> <session_id> <preview> <cwd>
+Sort order: most recently modified first.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+PROJECTS = Path.home() / ".claude" / "projects"
+HOME = str(Path.home())
+
+
+def short_label(p: str) -> str:
+    """Compress long paths into scannable labels (mirror of bash short_label)."""
+    if p.startswith(HOME):
+        p = "~" + p[len(HOME):]
+    if "/.worktrees/" in p:
+        repo_root, _, rest = p.partition("/.worktrees/")
+        repo = repo_root.rsplit("/", 1)[-1]
+        wt = rest.split("/", 1)[0]
+        if len(wt) > 24:
+            wt = wt[:21] + "..."
+        return f"{repo}:wt/{wt}"
+    if p in ("~", "/"):
+        return p
+    parts = p.rstrip("/").split("/")
+    if len(parts) >= 2:
+        last1, last2 = parts[-1], parts[-2]
+        if last2 in ("", "~"):
+            return f"~/{last1}"
+        return f"{last2}/{last1}"
+    return p or "(unknown)"
+
+
+def age_str(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+def extract_meta(path: Path) -> tuple[str, str]:
+    """Single pass through the jsonl: pluck first cwd + first user-message text."""
+    cwd = ""
+    preview = ""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not cwd and obj.get("cwd"):
+                    cwd = obj["cwd"]
+                if not preview and obj.get("type") == "user":
+                    msg = obj.get("message") or {}
+                    content = msg.get("content")
+                    if isinstance(content, str):
+                        preview = content
+                    elif isinstance(content, list):
+                        texts = [
+                            b.get("text", "")
+                            for b in content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        ]
+                        preview = " ".join(texts)
+                if cwd and preview:
+                    break
+    except OSError:
+        pass
+
+    if preview:
+        preview = re.sub(r"\s+", " ", preview).strip()[:80]
+    if not preview:
+        preview = "(no preview)"
+    if not cwd:
+        cwd = "(unknown)"
+    return cwd, preview
+
+
+def main() -> int:
+    if not PROJECTS.is_dir():
+        return 0
+
+    now = int(datetime.now().timestamp())
+    # Only top-level <project>/<session>.jsonl files (skip subagents/ at depth 3+).
+    entries = []
+    for path in PROJECTS.glob("*/*.jsonl"):
+        try:
+            mtime = int(path.stat().st_mtime)
+        except OSError:
+            continue
+        entries.append((mtime, path))
+    entries.sort(reverse=True)
+
+    out = sys.stdout.write
+    for mtime, path in entries:
+        cwd, preview = extract_meta(path)
+        label = short_label(cwd)
+        session_id = path.stem
+        age = age_str(now - mtime)
+        out(f"{age}\t{label}\t{session_id}\t{preview}\t{cwd}\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

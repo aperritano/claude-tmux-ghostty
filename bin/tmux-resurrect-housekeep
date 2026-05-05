@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# tmux-resurrect-housekeep — prune old tmux-resurrect snapshot files.
+#
+# tmux-continuum saves every 5 min. Over time, snapshots accumulate
+# (288/day, ~2000/week, ~1KB-5KB each). This trims to the most recent N.
+#
+# Conservative default (200 = ~17h of 5-min cycles) ensures restoration
+# from this morning still works.
+#
+# Hooked into @resurrect-hook-post-save-all alongside tmux-claude-state.
+
+set -uo pipefail
+
+DIR="$HOME/.tmux/resurrect"
+KEEP="${1:-200}"
+
+[[ ! -d "$DIR" ]] && exit 0
+
+# Sort by mtime newest-first, skip the first KEEP, delete the rest.
+deleted=0
+while IFS= read -r f; do
+  rm -f "$f"
+  deleted=$((deleted + 1))
+done < <(
+  find "$DIR" -name "tmux_resurrect_*.txt" -type f -print0 \
+    | xargs -0 stat -f '%m %N' \
+    | sort -rn \
+    | tail -n +$((KEEP + 1)) \
+    | awk '{$1=""; sub(/^ /, ""); print}'
+)
+
+# Verbose mode for manual invocation
+if [[ "${VERBOSE:-0}" == "1" ]] && (( deleted > 0 )); then
+  printf 'tmux-resurrect-housekeep: pruned %d snapshot(s), kept newest %d\n' "$deleted" "$KEEP"
+fi
+exit 0

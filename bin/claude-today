@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""
+claude-today — summarize today's Claude Code work.
+
+Walks ~/.claude/projects/*/*.jsonl, finds sessions modified today, groups by
+project (cwd), and shows for each: first user message, time range, duration.
+
+Useful for: end-of-day reflection, standup prep, "what was I doing?" recall.
+
+Usage:
+  claude-today              # today (since midnight local)
+  claude-today --yesterday  # yesterday only
+  claude-today --days 3     # last 3 days
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from collections import defaultdict
+from datetime import datetime, time as dtime, timedelta
+from pathlib import Path
+
+PROJECTS = Path.home() / ".claude" / "projects"
+HOME = str(Path.home())
+
+C = "\033[36m"
+Y = "\033[33m"
+G = "\033[32m"
+DIM = "\033[90m"
+N = "\033[0m"
+
+
+def short_label(p: str) -> str:
+    if p.startswith(HOME):
+        p = "~" + p[len(HOME):]
+    if "/.worktrees/" in p:
+        repo = p.split("/.worktrees/")[0].rsplit("/", 1)[-1]
+        wt = p.split("/.worktrees/")[1].split("/")[0]
+        if len(wt) > 30:
+            wt = wt[:27] + "..."
+        return f"{repo}:wt/{wt}"
+    if p in ("~", "/"):
+        return p
+    parts = p.rstrip("/").split("/")
+    if len(parts) >= 2:
+        return f"{parts[-2]}/{parts[-1]}"
+    return p
+
+
+def extract_first_user_msg_and_start(jsonl: Path) -> tuple[str, str, datetime | None]:
+    cwd = ""
+    msg = ""
+    start = None
+    try:
+        with jsonl.open(encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not cwd and obj.get("cwd"):
+                    cwd = obj["cwd"]
+                ts = obj.get("timestamp")
+                if start is None and ts:
+                    try:
+                        # ISO timestamp is UTC; convert to naive local for comparison
+                        # with naive datetime.fromtimestamp(mtime).
+                        start = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+                    except Exception:
+                        pass
+                if not msg and obj.get("type") == "user":
+                    m = obj.get("message", {}) or {}
+                    c = m.get("content", "")
+                    if isinstance(c, str):
+                        msg = c
+                    elif isinstance(c, list):
+                        for b in c:
+                            if isinstance(b, dict) and b.get("type") == "text":
+                                msg = b.get("text", "")
+                                break
+                if cwd and msg and start:
+                    break
+    except OSError:
+        pass
+    return cwd, msg, start
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--yesterday", action="store_true")
+    g.add_argument("--days", type=int, default=1, help="last N days (default 1 = today)")
+    args = ap.parse_args()
+
+    today_start = datetime.combine(datetime.now().date(), dtime.min)
+    if args.yesterday:
+        cutoff = today_start - timedelta(days=1)
+        end = today_start
+        label = "yesterday"
+    else:
+        cutoff = today_start - timedelta(days=args.days - 1)
+        end = datetime.now() + timedelta(seconds=1)  # include now
+        label = "today" if args.days == 1 else f"last {args.days} days"
+
+    if not PROJECTS.is_dir():
+        return 0
+
+    sessions = []
+    for jsonl in PROJECTS.glob("*/*.jsonl"):
+        try:
+            mtime = datetime.fromtimestamp(jsonl.stat().st_mtime)
+        except OSError:
+            continue
+        if cutoff <= mtime < end:
+            sessions.append((jsonl, mtime))
+
+    if not sessions:
+        print(f"  {DIM}No Claude sessions {label}.{N}")
+        return 0
+
+    by_project: dict[str, list[dict]] = defaultdict(list)
+    for jsonl, mtime in sessions:
+        cwd, msg, start = extract_first_user_msg_and_start(jsonl)
+        cwd = cwd or "(unknown)"
+        msg = (msg or "").replace("\n", " ").strip()[:80] or "(no preview)"
+        if start is None:
+            start = mtime
+        duration_min = max(int((mtime - start).total_seconds() / 60), 1)
+        by_project[cwd].append({
+            "session": jsonl.stem[:8],
+            "first_msg": msg,
+            "start": start.strftime("%H:%M"),
+            "end": mtime.strftime("%H:%M"),
+            "duration_min": duration_min,
+            "mtime": mtime,
+        })
+
+    print(f"{C}── Claude Code work — {label} ──{N}")
+    print(f"  {len(sessions)} sessions across {len(by_project)} projects\n")
+
+    # Project order: most active first
+    for cwd, recs in sorted(by_project.items(), key=lambda x: -sum(r["duration_min"] for r in x[1])):
+        label_short = short_label(cwd)
+        total_min = sum(r["duration_min"] for r in recs)
+        print(f"{Y}{label_short}{N}  {DIM}({len(recs)} sessions · ~{total_min}m){N}")
+        for r in sorted(recs, key=lambda x: x["mtime"]):
+            print(f"  {C}{r['start']}–{r['end']}{N} {DIM}({r['duration_min']:>3}m){N}  {r['session']}  {r['first_msg']}")
+        print()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

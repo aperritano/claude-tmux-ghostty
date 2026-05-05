@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# cc-config-sync — mirror live config (~/.claude/, ~/.gitconfig, Brewfile) into
+# the dotfiles repo so a cold-start install.sh can reproduce the current state.
+#
+# Symlinked files (~/.zshrc, ~/.tmux.conf, ~/.config/ghostty/config) already
+# point INTO the repo and need no copying — they're in the working tree by
+# definition. This script handles the non-symlinked tail.
+#
+# Flow each run:
+#   1. rsync live → repo for each tracked source
+#   2. `git add -A` everything not in .gitignore
+#   3. Commit with timestamped message ONLY if there's a staged diff
+#   4. Push to origin ONLY if a commit was made and `--push` (or $CC_SYNC_PUSH=1)
+#
+# Usage:
+#   cc-config-sync              # sync + commit, no push
+#   cc-config-sync --push       # sync + commit + push
+#   cc-config-sync --dry-run    # diff only, no writes
+#   cc-config-sync --no-commit  # sync only, leave dirty
+
+set -uo pipefail
+
+REPO="$HOME/dev/dotfiles"
+LOG="/tmp/cc-config-sync-$UID.log"
+
+dry_run=0
+do_commit=1
+do_push=0
+case "${1:-}" in
+  --push) do_push=1 ;;
+  --dry-run) dry_run=1 ;;
+  --no-commit) do_commit=0 ;;
+  --help|-h)
+    sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
+    exit 0 ;;
+esac
+[[ "${CC_SYNC_PUSH:-}" == "1" ]] && do_push=1
+
+if [[ ! -d "$REPO/.git" ]]; then
+  echo "cc-config-sync: not a git repo: $REPO" >&2
+  exit 1
+fi
+
+# rsync_one <src> <dst-rel-to-repo>
+# Copies file (overwrites). Skips if src is missing. Handles the dry-run flag.
+rsync_one() {
+  local src="$1" dst_rel="$2" dst
+  dst="$REPO/$dst_rel"
+  if [[ ! -e "$src" ]]; then return 0; fi
+  mkdir -p "$(dirname "$dst")"
+  if (( dry_run )); then
+    if [[ ! -e "$dst" ]] || ! cmp -s "$src" "$dst"; then
+      printf '  ~ %s -> %s (would change)\n' "$src" "$dst_rel"
+    fi
+    return 0
+  fi
+  cp -p "$src" "$dst"
+}
+
+# rsync_dir <src-dir> <dst-rel> — mirror a directory tree.
+# Uses rsync if available (preserves perms, deletes extra), else falls back to cp.
+rsync_dir() {
+  local src="$1" dst_rel="$2" dst
+  dst="$REPO/$dst_rel"
+  [[ ! -d "$src" ]] && return 0
+  mkdir -p "$dst"
+  if (( dry_run )); then
+    rsync -ani --delete "$src/" "$dst/" 2>/dev/null | sed 's/^/  /' || true
+    return 0
+  fi
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete "$src/" "$dst/"
+  else
+    cp -R "$src/." "$dst/"
+  fi
+}
+
+mkdir -p "$(dirname "$LOG")"
+{
+  printf '\n=== cc-config-sync %s ===\n' "$(date +%Y-%m-%dT%H:%M:%S)"
+
+  # Claude config (the bulk of the cold-start gap)
+  rsync_one  "$HOME/.claude/settings.json"          "claude/settings.json"
+  rsync_one  "$HOME/.claude/CLAUDE.md"              "claude/CLAUDE.md"
+  rsync_one  "$HOME/.claude/statusline-command.sh"  "claude/statusline-command.sh"
+  rsync_dir  "$HOME/.claude/commands"               "claude/commands"
+  rsync_dir  "$HOME/.claude/rules"                  "claude/rules"
+  # Skip settings.local.json — per-project overrides, not cold-start material.
+
+  # Git
+  rsync_one  "$HOME/.gitconfig"                     "git/gitconfig"
+
+  # Homebrew state — `brew bundle dump` regenerates Brewfile from installed pkgs.
+  if (( ! dry_run )) && command -v brew >/dev/null 2>&1; then
+    brew bundle dump --force --file="$REPO/Brewfile" >/dev/null 2>&1 || true
+  fi
+
+  # Symlinked files (~/.zshrc, ~/.tmux.conf, ghostty/config) need no copy —
+  # edits flow into the repo via the symlink target. They show up via
+  # `git status` when modified.
+
+  if (( dry_run )); then
+    printf '\n--- dry-run: pending diff ---\n'
+    git -C "$REPO" --no-pager diff --stat
+    printf '\n--- dry-run: untracked ---\n'
+    git -C "$REPO" status --short | grep '^??' || echo '  (none)'
+    printf '\n(use without --dry-run to commit)\n'
+    exit 0
+  fi
+
+  if (( ! do_commit )); then
+    printf 'sync done; --no-commit, leaving working tree dirty.\n'
+    git -C "$REPO" status --short | head -20
+    exit 0
+  fi
+
+  # Stage everything (including untracked); .gitignore handles exclusions.
+  git -C "$REPO" add -A
+
+  if git -C "$REPO" diff --cached --quiet; then
+    printf 'no changes to commit.\n'
+    exit 0
+  fi
+
+  msg="auto-sync: $(date '+%Y-%m-%d %H:%M')"
+  git -C "$REPO" commit -m "$msg" >/dev/null
+  printf 'committed: %s\n' "$msg"
+  git -C "$REPO" --no-pager log -1 --stat | head -15
+
+  if (( do_push )); then
+    if git -C "$REPO" push origin "$(git -C "$REPO" rev-parse --abbrev-ref HEAD)" 2>&1; then
+      printf 'pushed.\n'
+    else
+      printf 'push failed; commit retained locally.\n'
+      exit 1
+    fi
+  fi
+} 2>&1 | tee -a "$LOG"

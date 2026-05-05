@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# cc-burn-rate — predict minutes-until-context-limit from transcript burn rate.
+#
+# Pure-shell rewrite (was Python). Python startup on this Mac costs ~4s
+# (likely enterprise AV scanning every interpreter exec) — unacceptable
+# for a hot statusline path. Shell + jq + awk start in <100ms.
+#
+# Algorithm:
+#   1. Read tail (256KB) of transcript — bounded I/O regardless of file size
+#   2. jq picks usage records, converts ISO timestamps via fromdateiso8601
+#   3. awk finds latest sample + a baseline >=60s older, computes
+#      (delta_tokens / delta_minutes) = burn rate, projects against
+#      (ctx_max - latest_tokens) headroom
+#   4. Prints "Nm" only when projection < THRESHOLD minutes (default 30)
+#
+# Usage:
+#   cc-burn-rate <transcript_path> <ctx_max>
+#   cc-burn-rate --threshold 60 <path> <max>
+#   cc-burn-rate --debug <path> <max>
+
+set -uo pipefail
+
+threshold=30
+debug=0
+while [[ $# -gt 0 && "$1" == -* ]]; do
+  case "$1" in
+    --threshold) threshold="$2"; shift 2 ;;
+    --debug)     debug=1; shift ;;
+    -h|--help)
+      sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
+      exit 0
+      ;;
+    *) shift ;;
+  esac
+done
+
+if [[ $# -lt 2 ]]; then
+  (( debug )) && echo "usage: cc-burn-rate <transcript> <ctx_max>" >&2
+  exit 0
+fi
+
+transcript="$1"
+ctx_max="$2"
+[[ ! -r "$transcript" ]] && exit 0
+[[ "$ctx_max" =~ ^[0-9]+$ ]] || exit 0
+
+# Tail 256KB; drop the (likely partial) first line; cap to last 300 records.
+data=$(tail -c 262144 "$transcript" 2>/dev/null \
+  | tail -n +2 \
+  | tail -n 300 \
+  | jq -r 'select(.message.usage and .timestamp)
+           | [(.timestamp | sub("\\.\\d+";"") | fromdateiso8601),
+              ((.message.usage.input_tokens // 0)
+               + (.message.usage.cache_creation_input_tokens // 0)
+               + (.message.usage.cache_read_input_tokens // 0))]
+           | @tsv' 2>/dev/null)
+
+[[ -z "$data" ]] && exit 0
+
+echo "$data" | awk -v cmax="$ctx_max" -v thr="$threshold" -v dbg="$debug" '
+  { ts[NR] = $1; tok[NR] = $2 }
+  END {
+    if (NR < 2) exit
+    latest_ts = ts[NR]; latest_tok = tok[NR]
+    base_ts = 0; base_tok = 0
+    for (i = NR - 1; i >= 1; i--) {
+      if (latest_ts - ts[i] >= 60) {
+        base_ts = ts[i]; base_tok = tok[i]; break
+      }
+    }
+    if (!base_ts) { base_ts = ts[1]; base_tok = tok[1] }
+    delta_tok = latest_tok - base_tok
+    delta_sec = latest_ts - base_ts
+    if (dbg) {
+      printf "latest=%d/%d (%.1f%%)\nbaseline=%d (delta_t=%ds, delta_tok=%d)\n",
+        latest_tok, cmax, 100.0 * latest_tok / cmax, base_tok, delta_sec, delta_tok > "/dev/stderr"
+    }
+    if (delta_tok <= 0 || delta_sec <= 0) exit
+    rate = delta_tok / (delta_sec / 60.0)
+    remaining = cmax - latest_tok
+    if (remaining <= 0 || rate <= 0) exit
+    mins = remaining / rate
+    if (dbg) {
+      printf "rate=%.0f tok/min, remaining=%d, mins_to_limit=%.1f\n",
+        rate, remaining, mins > "/dev/stderr"
+    }
+    if (mins >= thr) exit
+    printf "%dm", (mins < 1 ? 1 : int(mins + 0.5))
+  }
+'

@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# tmux-fleet-count — total Claude agent panes across the live tmux server.
+#
+# Outputs `◇N` (with format tokens) when N>0, empty string when no agents
+# active. Single global indicator for status-right; doesn't cause per-window
+# jitter because it lives at the right edge where shifting is invisible.
+
+set -uo pipefail
+
+if ! tmux info >/dev/null 2>&1; then
+  exit 0
+fi
+
+# Cache (4s TTL — jitter prevention)
+CACHE="/tmp/tmux-fleet-count-$UID"
+if [[ -f "$CACHE" ]]; then
+  age=$(( $(date +%s) - $(stat -f %m "$CACHE" 2>/dev/null || echo 0) ))
+  if (( age < 4 )); then
+    cat "$CACHE"
+    exit 0
+  fi
+fi
+
+count=0
+team_set=""  # space-padded list of unique team-id prefixes seen
+team_count=0
+while IFS= read -r tty; do
+  cmd=$(ps -o command= -t "${tty#/dev/}" 2>/dev/null | grep -E '/claude/versions/' | head -1)
+  if [[ "$cmd" == *"--agent-id "* ]]; then
+    count=$((count + 1))
+    # Heuristic for "same team": agent ids in Claude Code typically share a
+    # `<team>-<role>-<index>` shape (e.g., builder-per-3-v2, reviewer-per-3).
+    # Strip trailing -<digits>(-vN)? to get a team prefix.
+    aid=$(echo "$cmd" | grep -oE -- '--agent-id [^ ]+' | head -1 | awk '{print $2}')
+    prefix=$(echo "$aid" | sed -E 's/-[0-9]+(-v[0-9]+)?$//')
+    case " $team_set " in
+      *" $prefix "*) ;;
+      *) team_set="$team_set $prefix"; team_count=$((team_count + 1)) ;;
+    esac
+  fi
+done < <(tmux list-panes -a -F '#{pane_tty}' 2>/dev/null)
+
+if (( count > 0 )); then
+  if (( team_count > 1 )); then
+    out=$(printf "#[fg=colour13]◇%d#[default] #[fg=colour14]team:%d#[default] " "$count" "$team_count")
+  elif (( count >= 2 )); then
+    # Single team with multiple members — show team:1 + member count
+    out=$(printf "#[fg=colour13]◇%d#[default] #[fg=colour14]team:1#[default] " "$count")
+  else
+    out=$(printf "#[fg=colour13]◇%d#[default] " "$count")
+  fi
+else
+  out=""
+fi
+printf '%s' "$out" > "$CACHE" 2>/dev/null
+printf '%s' "$out"

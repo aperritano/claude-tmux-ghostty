@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# claude-pin — protect Claude session transcripts from cleanup tools.
+#
+# Pinning writes a sibling <session-id>.pinned file in the project dir.
+# tmux-claude-prune (and other cleanup tools) skip files that have a .pinned
+# sibling, so reference sessions survive archive/delete cycles.
+#
+# Usage:
+#   claude-pin <session-id>          # pin (protect from prune)
+#   claude-pin --unpin <session-id>  # remove the pin
+#   claude-pin --list                # list all pinned sessions
+#   claude-pin --help                # this help
+#
+# Session-id matching is by prefix — `claude-pin 769d` works.
+
+set -uo pipefail
+
+PROJECTS="$HOME/.claude/projects"
+
+G="\033[32m"
+R="\033[31m"
+Y="\033[33m"
+DIM="\033[90m"
+N="\033[0m"
+
+usage() {
+  cat <<EOF
+usage: claude-pin <session-id>
+       claude-pin --unpin <session-id>
+       claude-pin --list
+
+Pinning protects a session from tmux-claude-prune.
+Session-id can be a UUID prefix (>=4 chars).
+EOF
+  exit "${1:-0}"
+}
+
+case "${1:-}" in
+  --help|-h)
+    usage 0
+    ;;
+  --list|-l)
+    found=0
+    for p in "$PROJECTS"/*/*.pinned; do
+      [[ -f "$p" ]] || continue
+      bn=$(basename "$p" .pinned)
+      proj=$(basename "$(dirname "$p")")
+      printf "  ${G}●${N} ${bn}  ${DIM}${proj}${N}\n"
+      found=$((found + 1))
+    done
+    if [[ $found -eq 0 ]]; then
+      printf "  ${DIM}(no pinned sessions)${N}\n"
+    else
+      printf "\n  ${DIM}── ${found} pinned ──${N}\n"
+    fi
+    ;;
+  --unpin)
+    [[ -z "${2:-}" ]] && usage 1
+    target="$2"
+    if [[ ${#target} -lt 4 ]]; then
+      printf "${R}claude-pin: prefix must be >=4 chars${N}\n" >&2
+      exit 1
+    fi
+    found=0
+    for f in "$PROJECTS"/*/${target}*.jsonl; do
+      [[ -f "$f" ]] || continue
+      pin="${f%.jsonl}.pinned"
+      if [[ -f "$pin" ]]; then
+        rm "$pin"
+        printf "  ${Y}○${N} unpinned $(basename "${f%.jsonl}")\n"
+        found=$((found + 1))
+      fi
+    done
+    if [[ $found -eq 0 ]]; then
+      printf "${R}no pinned session matched '$target'${N}\n" >&2
+      exit 1
+    fi
+    ;;
+  "")
+    usage 1
+    ;;
+  *)
+    target="$1"
+    if [[ ${#target} -lt 4 ]]; then
+      printf "${R}claude-pin: session-id prefix must be >=4 chars${N}\n" >&2
+      exit 1
+    fi
+    found=0
+    for f in "$PROJECTS"/*/${target}*.jsonl; do
+      [[ -f "$f" ]] || continue
+      pin="${f%.jsonl}.pinned"
+      if [[ -f "$pin" ]]; then
+        printf "  ${DIM}● $(basename "${f%.jsonl}") already pinned${N}\n"
+      else
+        touch "$pin"
+        printf "  ${G}●${N} pinned $(basename "${f%.jsonl}")\n"
+      fi
+      found=$((found + 1))
+    done
+    if [[ $found -eq 0 ]]; then
+      printf "${R}claude-pin: session matching '$target' not found${N}\n" >&2
+      exit 1
+    fi
+    ;;
+esac

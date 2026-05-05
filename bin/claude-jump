@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# claude-jump — fzf picker over every active Claude pane, then jump to it.
+#
+# Same probe logic as claude-running, but emits fzf rows and on selection
+# runs `tmux switch-client -t session:window.pane`. Works whether you're
+# in the same session or not.
+#
+# Usage: cc-jump            # interactive picker
+#        cc-jump <substr>   # auto-select if exactly one match, else picker
+
+set -uo pipefail
+
+if ! tmux info >/dev/null 2>&1; then
+  echo "cc-jump: no tmux server attached" >&2
+  exit 1
+fi
+
+if ! command -v fzf >/dev/null 2>&1; then
+  echo "cc-jump: fzf not installed" >&2
+  exit 1
+fi
+
+filter="${1:-}"
+
+# do_switch — switch a client to <target>. When invoked from a tmux popup,
+# the calling pane is the popup itself (its own client); switching that
+# client just closes the popup without effect. Find the parent (most-
+# recently-active other) client and switch *it*. Outside a popup this
+# falls through to plain switch-client.
+do_switch() {
+  local target="$1" self_client parent_client
+  self_client=$(tmux display-message -p '#{client_name}' 2>/dev/null)
+  parent_client=$(tmux list-clients -F '#{client_activity_time} #{client_name}' 2>/dev/null \
+    | sort -rn | awk -v me="$self_client" '$2 != me { print $2; exit }')
+  if [[ -n "$parent_client" ]]; then
+    tmux switch-client -c "$parent_client" -t "$target"
+  else
+    tmux switch-client -t "$target"
+  fi
+}
+
+# Build pane rows: TARGET\tICON SESSION.WIN.PANE  CWD  KIND
+rows=$(
+  while IFS=$'\t' read -r session window pane_idx pane_id tty cwd; do
+    full_cmd=$(ps -o command= -t "${tty#/dev/}" 2>/dev/null \
+                 | grep -m1 -E '/claude/versions/|^claude($| )')
+    [[ -z "$full_cmd" ]] && continue
+
+    if [[ "$full_cmd" == *"--agent-id "* ]]; then
+      icon="◇"
+      kind="agent"
+      agent_id=$(echo "$full_cmd" | grep -oE -- '--agent-id [^ ]+' | head -1 | awk '{print $2}')
+      label="$agent_id"
+    else
+      icon="◆"
+      kind="lead"
+      label=""
+    fi
+
+    short_cwd="${cwd/#$HOME/\~}"
+    target="${session}:${window}.${pane_idx}"
+    # Tab-delimited: target | display
+    printf "%s\t%s %-30s  %s  %s\n" \
+      "$target" "$icon" "$target" "$short_cwd" "$label"
+  done < <(tmux list-panes -a -F '#{session_name}	#{window_index}	#{pane_index}	#{pane_id}	#{pane_tty}	#{pane_current_path}')
+)
+
+if [[ -z "$rows" ]]; then
+  echo "cc-jump: no active Claude panes" >&2
+  exit 0
+fi
+
+# If filter given and uniquely matches, skip picker
+if [[ -n "$filter" ]]; then
+  matched=$(echo "$rows" | grep -i -- "$filter" || true)
+  if [[ $(echo "$matched" | wc -l | tr -d ' ') == "1" && -n "$matched" ]]; then
+    target=$(echo "$matched" | cut -f1)
+    do_switch "$target"
+    exit 0
+  fi
+fi
+
+# Picker — show only the display column, return the target column
+selected=$(echo "$rows" | fzf \
+  --delimiter=$'\t' \
+  --with-nth=2 \
+  --prompt="cc-jump > " \
+  --height=40% \
+  --reverse \
+  --header="◆ lead   ◇ agent" \
+  --query="$filter")
+
+[[ -z "$selected" ]] && exit 0
+
+target=$(echo "$selected" | cut -f1)
+do_switch "$target"

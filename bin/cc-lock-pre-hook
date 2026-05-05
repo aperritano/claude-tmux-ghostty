@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# cc-lock-pre-hook — PreToolUse hook for Edit|Write|MultiEdit.
+# Reads JSON on stdin, attempts to acquire a lock on the target file_path
+# for the calling session_id. On block, emits a deny JSON; on success,
+# exits silently so the tool call proceeds.
+
+set -uo pipefail
+
+payload=$(cat)
+sid=$(echo "$payload" | jq -r '.session_id // empty')
+# Edit / Write: tool_input.file_path
+# MultiEdit: tool_input.file_path (single file, multiple edits)
+path=$(echo "$payload" | jq -r '.tool_input.file_path // empty')
+
+# If we can't determine path (e.g., other tool slipped through matcher), allow.
+if [[ -z "$path" || -z "$sid" ]]; then
+  exit 0
+fi
+
+if "$HOME/bin/cc-lock" acquire "$sid" "$path"; then
+  exit 0
+fi
+
+# Locked by another live session — emit deny JSON.
+holder=$(head -1 "/tmp/cc-locks/$(echo "$path" | sed 's|/|__|g; s|^__||')" 2>/dev/null | head -c 8)
+reason="cc-lock: $path is being edited by another Claude session (${holder}…) — retry shortly or coordinate"
+jq -nc --arg r "$reason" '{
+  hookSpecificOutput: {
+    hookEventName: "PreToolUse",
+    permissionDecision: "deny",
+    permissionDecisionReason: $r
+  }
+}'
+exit 0

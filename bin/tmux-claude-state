@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# tmux-claude-state — capture per-pane Claude session IDs across the tmux server.
+#
+# Designed for use with tmux-resurrect: hook into @resurrect-hook-post-save-all
+# so every save also writes a sidecar of <session>:<window>:<pane> → <claude-session-id>.
+#
+# Use cases:
+#   1. After tmux-resurrect restore, plain `claude` panes restart generically;
+#      this sidecar lets you resume each one to its prior session via `claude --resume <id>`.
+#   2. Standalone audit — see all running Claude sessions across your tmux at a glance.
+#
+# Usage:
+#   tmux-claude-state                                           # print to stdout
+#   tmux-claude-state ~/.tmux/resurrect/claude-state.txt        # also write to file
+#
+# Output (TSV): <session> <window> <pane.idx> <pane_id> <cwd> <claude_session_id>
+
+set -uo pipefail
+
+OUTFILE="${1:-}"
+
+collect() {
+  while IFS=$'\t' read -r session window pane pid tty cwd; do
+    full_cmd=$(ps -o command= -t "${tty#/dev/}" 2>/dev/null \
+                 | grep -m1 -E '/claude/versions/|^claude($| )')
+    [[ -z "$full_cmd" ]] && continue
+
+    # Skip teammate panes — those already save fully via @resurrect-processes.
+    [[ "$full_cmd" == *"--agent-id "* ]] && continue
+
+    project_dir="${cwd//\//-}"
+    project_dir="${project_dir//./-}"
+    project_path="$HOME/.claude/projects/${project_dir}"
+
+    session_id="(none)"
+    if [[ -d "$project_path" ]]; then
+      jsonl=$(ls -t "$project_path"/*.jsonl 2>/dev/null | head -1)
+      [[ -n "$jsonl" ]] && session_id=$(basename "$jsonl" .jsonl)
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$session" "$window" "$pane" "$pid" "$cwd" "$session_id"
+  done < <(tmux list-panes -a -F '#{session_name}	#{window_index}	#{pane_index}	#{pane_id}	#{pane_tty}	#{pane_current_path}')
+}
+
+if [[ -n "$OUTFILE" ]]; then
+  collect | tee "$OUTFILE"
+else
+  collect
+fi

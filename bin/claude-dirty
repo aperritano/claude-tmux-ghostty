@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# claude-dirty — quick "which worktrees have uncommitted changes?" check.
+#
+# Lighter than full cw-prune; uses `git diff --quiet HEAD` for speed.
+# Useful for end-of-day "what should I commit before EOD?" sanity check.
+#
+# Output: red "!" lines for dirty worktrees with diff stat; "all clean" if none.
+
+set -uo pipefail
+
+R="\033[31m"
+G="\033[32m"
+C="\033[36m"
+DIM="\033[90m"
+N="\033[0m"
+
+toplevel=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "claude-dirty: not in a git repo" >&2
+  exit 1
+}
+case "$toplevel" in
+  */.worktrees/*)        main_repo="${toplevel%%/.worktrees/*}" ;;
+  */.claude/worktrees/*) main_repo="${toplevel%%/.claude/worktrees/*}" ;;
+  *)                     main_repo="$toplevel" ;;
+esac
+
+printf "${C}── dirty worktrees in %s ──${N}\n" "$(basename "$main_repo")"
+
+count=0
+while IFS=$'\t' read -r wt branch; do
+  if ! git -C "$wt" diff --quiet HEAD 2>/dev/null; then
+    stat=$(git -C "$wt" diff --shortstat HEAD 2>/dev/null | sed 's/^ //')
+    short="${wt#$main_repo/}"
+    [[ "$wt" == "$main_repo" ]] && short="(main repo)"
+    printf "  ${R}!${N} %s  ${DIM}%s${N}  ${DIM}%s${N}\n" "$short" "$branch" "$stat"
+    count=$((count + 1))
+  fi
+done < <(git -C "$main_repo" worktree list --porcelain | awk '
+  /^worktree / { wt=$2; branch=""; next }
+  /^branch /   { sub(/refs\/heads\//, "", $2); branch=$2; next }
+  /^$/         { if (wt) print wt"\t"branch; wt=""; branch="" }
+  END          { if (wt) print wt"\t"branch }
+')
+
+if [[ $count -eq 0 ]]; then
+  printf "  ${G}✓${N} all clean\n"
+else
+  printf "  ${DIM}── %d dirty worktree(s) ──${N}\n" "$count"
+fi

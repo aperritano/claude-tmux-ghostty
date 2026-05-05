@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# cc-attention — flag the calling tmux pane as needing user attention.
+#
+# Called by Claude Code hooks. The Notification hook calls `set`, the Stop
+# hook calls `clear`. tmux-window-cell reads the flag dir to render a ⚠
+# marker on the affected window.
+#
+# Storage: /tmp/cc-attention/<pane_id_no_pct>  (mtime = when flagged)
+# TTL: stale markers (>1h old) are ignored by readers and pruned by `gc`.
+#
+# Usage:
+#   cc-attention set              # mark $TMUX_PANE (called by Notification hook)
+#   cc-attention clear            # unmark $TMUX_PANE (called by Stop hook)
+#   cc-attention list             # list active markers + ages (debug)
+#   cc-attention windows          # space-separated session:window indices
+#                                 # of every flagged pane (used by statusline)
+#   cc-attention gc               # prune markers older than 1h
+
+set -uo pipefail
+
+DIR="/tmp/cc-attention"
+TTL=3600  # seconds — stale markers ignored after this
+mkdir -p "$DIR"
+
+cmd="${1:-}"
+
+key_for_pane() {
+  # $TMUX_PANE is "%N"; strip the %
+  local p="${1:-${TMUX_PANE:-}}"
+  [[ -z "$p" ]] && return 1
+  printf '%s\n' "${p#%}"
+}
+
+case "$cmd" in
+  set)
+    key=$(key_for_pane) || exit 0  # silently no-op outside tmux
+    : > "$DIR/$key"
+    ;;
+  clear)
+    key=$(key_for_pane) || exit 0
+    rm -f "$DIR/$key"
+    ;;
+  list)
+    now=$(date +%s)
+    for f in "$DIR"/*; do
+      [[ -e "$f" ]] || continue
+      mtime=$(stat -f %m "$f")
+      age=$((now - mtime))
+      printf '%%%s  %ds ago\n' "$(basename "$f")" "$age"
+    done
+    ;;
+  windows)
+    # For each non-stale marker, resolve pane → session:window.
+    # Output: space-separated list, deduped.
+    # Side-effect: prune stale (TTL exceeded) and dead-pane markers so the
+    # dir doesn't accumulate forever — daemon calls this every 4s, so
+    # marker hygiene comes free with normal reads.
+    now=$(date +%s)
+    out=""
+    for f in "$DIR"/*; do
+      [[ -e "$f" ]] || continue
+      mtime=$(stat -f %m "$f")
+      if (( now - mtime > TTL )); then
+        rm -f "$f"
+        continue
+      fi
+      pane="%$(basename "$f")"
+      target=$(tmux display-message -t "$pane" -p '#{session_name}:#{window_index}' 2>/dev/null)
+      # tmux returns ":" (empty session+window joined by ':') with exit 0
+      # when the pane doesn't exist — it doesn't error. Treat both empty
+      # and the bare ':' as "pane gone" and prune.
+      if [[ -z "$target" || "$target" == ":" ]]; then
+        rm -f "$f"
+        continue
+      fi
+      case " $out " in
+        *" $target "*) ;;  # dedupe
+        *) out="$out $target" ;;
+      esac
+    done
+    printf '%s\n' "${out# }"
+    ;;
+  gc)
+    now=$(date +%s)
+    pruned=0
+    for f in "$DIR"/*; do
+      [[ -e "$f" ]] || continue
+      mtime=$(stat -f %m "$f")
+      if (( now - mtime > TTL )); then
+        rm -f "$f"
+        pruned=$((pruned + 1))
+      fi
+    done
+    [[ "${VERBOSE:-0}" == "1" ]] && printf 'cc-attention: pruned %d stale marker(s)\n' "$pruned"
+    ;;
+  ""|help|-h|--help)
+    sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
+    ;;
+  *)
+    echo "cc-attention: unknown command: $cmd" >&2
+    exit 2
+    ;;
+esac

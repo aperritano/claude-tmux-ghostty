@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# tmux-claude-resurrect-restore — hands-free Claude session resumption hook.
+#
+# Wire as @resurrect-hook-post-restore-all. After tmux-resurrect restores the
+# pane layout, this reads ~/.tmux/resurrect/claude-state.txt (written by the
+# pre-save hook tmux-claude-state) and sends `cr <session-id>` keystrokes to
+# each pane that had a Claude session at save time.
+#
+# Prereqs:
+#   - Sidecar is fresh (post-save hook fired before this restore)
+#   - Lead `claude` panes are NOT in @resurrect-processes (they come back as
+#     empty shells; this script repopulates them with claude --resume)
+#   - `cr` zsh alias points to `claude --resume` (defined in ~/.zshrc)
+#
+# Identification: sidecar entries reference (session, window, pane_index)
+# which are stable across resurrect-restore. pane_id (%N) is NOT — it changes.
+
+set -uo pipefail
+
+SIDECAR="$HOME/.tmux/resurrect/claude-state.txt"
+
+if [[ ! -f "$SIDECAR" ]]; then
+  exit 0
+fi
+
+resumed=0
+skipped=0
+
+while IFS=$'\t' read -r session window pane_idx pane_id cwd session_id; do
+  [[ -z "$session" ]] && continue
+  [[ "$session_id" == "(none)" ]] && { skipped=$((skipped+1)); continue; }
+
+  # Resolve the live pane_id for this session:window.pane_idx target.
+  target=$(tmux list-panes -t "${session}:${window}.${pane_idx}" -F '#{pane_id}' 2>/dev/null | head -1)
+  if [[ -z "$target" ]]; then
+    skipped=$((skipped+1))
+    continue
+  fi
+
+  # cwd may no longer exist (e.g. cleaned-up worktree) — skip in that case.
+  if [[ ! -d "$cwd" ]]; then
+    skipped=$((skipped+1))
+    continue
+  fi
+
+  # Send literal text + Enter. -l avoids tmux interpreting key names.
+  tmux send-keys -t "$target" -l "cd $cwd && cr $session_id"
+  tmux send-keys -t "$target" Enter
+  resumed=$((resumed+1))
+done < "$SIDECAR"
+
+# Optional: log to ~/.tmux/resurrect/restore.log so user can see what happened.
+{
+  printf '[%s] tmux-claude-resurrect-restore: resumed=%d skipped=%d\n' \
+    "$(date +'%Y-%m-%dT%H:%M:%S')" "$resumed" "$skipped"
+} >> "$HOME/.tmux/resurrect/restore.log" 2>/dev/null || true

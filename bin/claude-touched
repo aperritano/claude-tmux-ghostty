@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""
+claude-touched — show files Claude edited today (or in N days), ranked by frequency.
+
+Walks all jsonl transcripts modified within the time window, extracts file_path
+from Edit/Write/MultiEdit/NotebookEdit tool calls, aggregates and ranks.
+Useful for: "what files have I been changing across all my sessions?"
+
+Usage:
+  claude-touched              # today
+  claude-touched --days 3     # last 3 days
+  claude-touched --top 10     # top 10 only (default 20)
+  claude-touched --by-session # group by session, not file
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from collections import Counter, defaultdict
+from datetime import datetime, time as dtime, timedelta
+from pathlib import Path
+
+PROJECTS = Path.home() / ".claude" / "projects"
+HOME = str(Path.home())
+
+C = "\033[36m"
+Y = "\033[33m"
+G = "\033[32m"
+DIM = "\033[90m"
+N = "\033[0m"
+
+EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+
+
+def short_path(p: str) -> str:
+    if p.startswith(HOME):
+        return "~" + p[len(HOME):]
+    return p
+
+
+def extract_edits(jsonl_path: Path):
+    """Yield (file_path, tool_name) tuples from tool_use entries in this jsonl."""
+    try:
+        with jsonl_path.open(encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                msg = obj.get("message") or {}
+                content = msg.get("content")
+                if not isinstance(content, list):
+                    continue
+                for b in content:
+                    if not isinstance(b, dict) or b.get("type") != "tool_use":
+                        continue
+                    name = b.get("name", "")
+                    if name not in EDIT_TOOLS:
+                        continue
+                    inp = b.get("input") or {}
+                    fp = inp.get("file_path") or inp.get("notebook_path")
+                    if fp:
+                        yield (fp, name)
+    except OSError:
+        pass
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--days", type=int, default=1)
+    ap.add_argument("--top", type=int, default=20)
+    ap.add_argument("--by-session", action="store_true")
+    args = ap.parse_args()
+
+    cutoff = datetime.combine(datetime.now().date(), dtime.min) - timedelta(days=args.days - 1)
+
+    if not PROJECTS.is_dir():
+        return 0
+
+    file_counter = Counter()
+    file_to_sessions: dict[str, set[str]] = defaultdict(set)
+    file_to_tools: dict[str, Counter] = defaultdict(Counter)
+    sessions_scanned = 0
+    edits_total = 0
+
+    for jsonl in PROJECTS.glob("*/*.jsonl"):
+        try:
+            mtime = datetime.fromtimestamp(jsonl.stat().st_mtime)
+        except OSError:
+            continue
+        if mtime < cutoff:
+            continue
+        sessions_scanned += 1
+        for fp, tool in extract_edits(jsonl):
+            file_counter[fp] += 1
+            file_to_sessions[fp].add(jsonl.stem[:8])
+            file_to_tools[fp][tool] += 1
+            edits_total += 1
+
+    if not file_counter:
+        label = "today" if args.days == 1 else f"last {args.days} days"
+        print(f"  {DIM}No file edits found {label}.{N}")
+        return 0
+
+    days_label = "today" if args.days == 1 else f"last {args.days} days"
+    print(f"{C}── files Claude edited — {days_label} ──{N}")
+    print(f"  {edits_total} edits across {len(file_counter)} files in {sessions_scanned} sessions\n")
+
+    for fp, count in file_counter.most_common(args.top):
+        sessions = len(file_to_sessions[fp])
+        tools = file_to_tools[fp]
+        # most-used tool
+        tool_summary = ", ".join(f"{t}×{c}" for t, c in tools.most_common(3))
+        print(f"  {Y}{count:>3}{N}  {short_path(fp)[:80]:<80}  {DIM}{sessions} session(s)  {tool_summary}{N}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

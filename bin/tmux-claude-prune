@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# tmux-claude-prune — archive (or delete) Claude sessions older than N days.
+#
+# Why: ~/.claude/projects/ accumulates jsonl session files indefinitely.
+# 1641 sessions → claude-tmux picker takes ~4s to enumerate. Pruning idle
+# sessions cuts that to <1s and keeps the picker scannable.
+#
+# Default: 30-day cutoff, dry-run (shows what WOULD be archived).
+# Archive moves to ~/.claude/projects-archive/<same-relative-path>; recoverable.
+# Delete is irreversible — only via explicit `delete` mode.
+#
+# Usage:
+#   tmux-claude-prune                    # dry-run, 30 days, default
+#   tmux-claude-prune 60                 # dry-run, 60-day cutoff
+#   tmux-claude-prune 30 archive         # actually archive the 30+ day-old sessions
+#   tmux-claude-prune 90 delete          # delete sessions older than 90 days
+
+set -uo pipefail
+
+CUTOFF_DAYS="${1:-30}"
+MODE="${2:-dry-run}"
+
+PROJECTS="$HOME/.claude/projects"
+ARCHIVE="$HOME/.claude/projects-archive"
+
+if [[ ! -d "$PROJECTS" ]]; then
+  echo "No projects dir at $PROJECTS — nothing to prune."
+  exit 0
+fi
+
+# Collect all jsonl files older than cutoff, EXCLUDING any that have a sibling
+# .pinned file (claude-pin protection).
+CANDIDATES=()
+SKIPPED_PINNED=0
+while IFS= read -r f; do
+  pin="${f%.jsonl}.pinned"
+  if [[ -f "$pin" ]]; then
+    SKIPPED_PINNED=$((SKIPPED_PINNED + 1))
+    continue
+  fi
+  CANDIDATES+=("$f")
+done < <(find "$PROJECTS" -name "*.jsonl" -type f -mtime "+$CUTOFF_DAYS" 2>/dev/null)
+COUNT=${#CANDIDATES[@]}
+
+if [[ $SKIPPED_PINNED -gt 0 ]]; then
+  printf '\n  Note: %s pinned session(s) excluded from this run (see claude-pin --list)\n' "$SKIPPED_PINNED"
+fi
+
+if [[ $COUNT -eq 0 ]]; then
+  printf 'No sessions older than %s days. (Nothing to prune.)\n' "$CUTOFF_DAYS"
+  exit 0
+fi
+
+# Total disk freed.
+TOTAL_BYTES=0
+for f in "${CANDIDATES[@]}"; do
+  sz=$(stat -f '%z' "$f" 2>/dev/null || echo 0)
+  TOTAL_BYTES=$((TOTAL_BYTES + sz))
+done
+TOTAL_MB=$((TOTAL_BYTES / 1024 / 1024))
+
+case "$MODE" in
+  dry-run)
+    printf '\n  DRY RUN — would archive %d sessions (%d MB total)\n' "$COUNT" "$TOTAL_MB"
+    printf '  Cutoff: older than %d days\n\n' "$CUTOFF_DAYS"
+    printf '  Top 10 candidates by oldest first:\n'
+    for f in "${CANDIDATES[@]}"; do
+      mtime=$(stat -f '%m' "$f")
+      printf '%d\t%s\n' "$mtime" "$f"
+    done | sort -n | head -10 | while IFS=$'\t' read -r m p; do
+      d=$(date -r "$m" '+%Y-%m-%d')
+      sz=$(stat -f '%z' "$p")
+      sz_kb=$((sz / 1024))
+      printf '    %s  %5d KB  %s\n' "$d" "$sz_kb" "${p#$PROJECTS/}"
+    done
+    printf '\n  To execute:  tmux-claude-prune %s archive\n' "$CUTOFF_DAYS"
+    printf '  To delete:   tmux-claude-prune %s delete  (irreversible)\n\n' "$CUTOFF_DAYS"
+    ;;
+
+  archive)
+    mkdir -p "$ARCHIVE"
+    MOVED=0
+    for f in "${CANDIDATES[@]}"; do
+      rel="${f#$PROJECTS/}"
+      dest="$ARCHIVE/$rel"
+      mkdir -p "$(dirname "$dest")"
+      if mv "$f" "$dest" 2>/dev/null; then
+        MOVED=$((MOVED + 1))
+      fi
+    done
+    printf '\n  Archived %d/%d sessions (%d MB) to %s\n' "$MOVED" "$COUNT" "$TOTAL_MB" "$ARCHIVE"
+    printf '  Recovery: mv "%s/<path>" "%s/<path>"\n\n' "$ARCHIVE" "$PROJECTS"
+    ;;
+
+  delete)
+    printf '\n  Deleting %d sessions (%d MB) — IRREVERSIBLE\n' "$COUNT" "$TOTAL_MB"
+    printf '  Ctrl-C within 5 seconds to abort... '
+    sleep 5
+    DELETED=0
+    for f in "${CANDIDATES[@]}"; do
+      if rm -f "$f"; then
+        DELETED=$((DELETED + 1))
+      fi
+    done
+    printf '\n  Deleted %d/%d sessions.\n\n' "$DELETED" "$COUNT"
+    ;;
+
+  *)
+    printf 'Unknown mode: %s\n' "$MODE"
+    printf 'Valid: dry-run | archive | delete\n'
+    exit 1
+    ;;
+esac

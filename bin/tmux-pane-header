@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# tmux-pane-header — render the per-pane top status bar.
+#
+# Output (no trailing newline so tmux can chain it):
+#   <role-icon> <session-or-cmd> [⚠] [🔒N] · <git-ish> · <smart-cwd>
+#
+# Roles:
+#   ◆  lead Claude pane (interactive, you're driving)
+#   ◇  agent teammate pane (`claude --agent-id ...`)
+#   $  shell / other process
+#
+# Indicators:
+#   ⚠   cc-attention marker is set for this pane
+#   🔒N this pane's session holds N file locks
+#
+# Git-ish (when pane cwd is in a git repo):
+#   <branch>           on default branch
+#   wt:<branch>        on a worktree (path contains /.worktrees/)
+#   ●                  dirty working tree
+#   ↑N                 N commits ahead of upstream
+#   ↓N                 N commits behind upstream
+#
+# Smart cwd: $HOME → ~, last two path components for long paths, the
+# bare worktree name when in `<repo>/.worktrees/<wt>/`.
+#
+# Args: $1=pane_id (e.g. %3), $2=pane_current_path (cheap, tmux provides).
+# Cost target: one fork per pane per tmux refresh — keep work to a minimum.
+
+set -uo pipefail
+
+# --compute bypasses the daemon-cache and emits a freshly-computed value.
+# Used by tmux-cell-daemon to populate the pane-headers cache.
+compute_only=0
+if [[ "${1:-}" == "--compute" ]]; then
+  compute_only=1
+  shift
+fi
+
+pane_id="${1:-${TMUX_PANE:-}}"
+cwd="${2:-}"
+[[ -z "$pane_id" ]] && exit 0
+
+# Hot path: read pre-computed value from the daemon's pane-headers cache.
+# The daemon refreshes this every 4s; reads are O(panes) awk lookups.
+DAEMON_CACHE="/tmp/tmux-pane-headers-$UID.cache"
+if (( ! compute_only )) && [[ -f "$DAEMON_CACHE" ]]; then
+  age=$(( $(date +%s) - $(stat -f %m "$DAEMON_CACHE" 2>/dev/null || echo 0) ))
+  if (( age < 30 )); then
+    awk -F'\t' -v p="$pane_id" '$1 == p { sub(/^[^\t]*\t/, ""); print; exit }' "$DAEMON_CACHE"
+    exit 0
+  fi
+fi
+
+# Cold-start fallback (cache missing/stale): compute inline. Result is NOT
+# cached per-pane anymore — the daemon owns caching now. This path runs once
+# per pane until the daemon catches up on its next tick.
+
+# Resolve role + label from the pane's tty (one fork)
+info=$(tmux display-message -t "$pane_id" -p '#{pane_tty}	#{pane_current_command}' 2>/dev/null) || exit 0
+[[ -z "$info" || "$info" == $'\t' ]] && exit 0
+IFS=$'\t' read -r tty cmd <<<"$info"
+[[ -z "$cwd" ]] && cwd=$(tmux display-message -t "$pane_id" -p '#{pane_current_path}' 2>/dev/null)
+
+# One ps invocation: pulls etime + command for every process on the tty.
+# Pick the FIRST claude row (single fork, then awk picks); fall back to
+# any non-defunct row for uptime.
+ps_out=""
+if [[ -n "$tty" ]]; then
+  ps_out=$(ps -o etime=,command= -t "${tty#/dev/}" 2>/dev/null)
+fi
+
+# Find the claude line (lead or agent). Match either /claude/versions/ in
+# the path OR a bare " claude" command word. <defunct> rows are skipped.
+claude_line=""
+if [[ -n "$ps_out" ]]; then
+  claude_line=$(echo "$ps_out" \
+    | grep -v '<defunct>' \
+    | grep -m1 -E '/claude/versions/| claude($| )' || true)
+fi
+
+role="$"
+label="$cmd"
+if [[ -n "$claude_line" ]]; then
+  if [[ "$claude_line" == *"--agent-id "* ]]; then
+    role="◇"
+    label=$(echo "$claude_line" | grep -oE -- '--agent-id [^ ]+' | head -1 | awk '{print $2}')
+  else
+    role="◆"
+    label="claude"
+  fi
+fi
+[[ ${#label} -gt 18 ]] && label="${label:0:15}…"
+
+# Uptime: parse `etime` from the claude_line we matched above (or any
+# non-defunct row). BSD format: [[dd-]hh:]mm:ss. Render `up:Nm` only when
+# >5 min — silent for fresh panes.
+uptime_seg=""
+uptime_src="${claude_line:-}"
+if [[ -z "$uptime_src" && -n "$ps_out" ]]; then
+  uptime_src=$(echo "$ps_out" | grep -v '<defunct>' | head -1)
+fi
+if [[ -n "$uptime_src" ]]; then
+  # Trim leading whitespace from `ps` output, then take first whitespace token.
+  uptime_src="${uptime_src#"${uptime_src%%[![:space:]]*}"}"
+  etime="${uptime_src%%[[:space:]]*}"
+  # Parse: "[dd-]HH:MM:SS" or "MM:SS"
+  total_sec=0
+  if [[ "$etime" == *-* ]]; then
+    days="${etime%%-*}"; rest="${etime#*-}"
+    total_sec=$((days * 86400))
+    etime="$rest"
+  fi
+  IFS=: read -ra parts <<<"$etime"
+  case ${#parts[@]} in
+    3) total_sec=$((total_sec + 10#${parts[0]} * 3600 + 10#${parts[1]} * 60 + 10#${parts[2]})) ;;
+    2) total_sec=$((total_sec + 10#${parts[0]} * 60 + 10#${parts[1]})) ;;
+  esac
+  if (( total_sec > 300 )); then
+    if (( total_sec >= 86400 )); then
+      uptime_seg=" #[fg=colour8]up:$((total_sec / 86400))d#[default]"
+    elif (( total_sec >= 3600 )); then
+      h=$((total_sec / 3600)); m=$(( (total_sec % 3600) / 60 ))
+      uptime_seg=" #[fg=colour8]up:${h}h${m}m#[default]"
+    else
+      uptime_seg=" #[fg=colour8]up:$((total_sec / 60))m#[default]"
+    fi
+  fi
+fi
+
+# Indicators
+attn=""
+if [[ -e "/tmp/cc-attention/${pane_id#%}" ]]; then
+  attn=" #[fg=colour11]⚠#[default]"
+fi
+lock=""
+if [[ "$role" != "$" && -d /tmp/cc-locks ]]; then
+  n=$(ls /tmp/cc-locks 2>/dev/null | wc -l | tr -d ' ')
+  (( n > 0 )) && lock=" #[fg=colour6]🔒${n}#[default]"
+fi
+
+# Git: branch, dirty, ahead/behind, worktree shorthand. Wrap the whole
+# block in a check so non-repo cwds skip git work entirely.
+git_seg=""
+wt_name=""
+in_worktree=0
+git_dir=""
+if [[ -n "$cwd" ]] && git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  branch=$(GIT_OPTIONAL_LOCKS=0 git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null \
+           || GIT_OPTIONAL_LOCKS=0 git -C "$cwd" rev-parse --short HEAD 2>/dev/null \
+           || echo "")
+  # Worktree detection: git_dir != common_dir
+  git_dir=$(GIT_OPTIONAL_LOCKS=0 git -C "$cwd" rev-parse --git-dir 2>/dev/null)
+  common_dir=$(GIT_OPTIONAL_LOCKS=0 git -C "$cwd" rev-parse --git-common-dir 2>/dev/null)
+  if [[ -n "$git_dir" && "$git_dir" != "$common_dir" ]]; then
+    in_worktree=1
+    wt_name=$(basename "$git_dir")
+  fi
+  # Dirty
+  dirty=""
+  if ! GIT_OPTIONAL_LOCKS=0 git -C "$cwd" diff --quiet HEAD 2>/dev/null; then
+    dirty=" #[fg=colour9]●#[default]"
+  fi
+  # Ahead/behind upstream (silent when no upstream)
+  sync=""
+  counts=$(GIT_OPTIONAL_LOCKS=0 git -C "$cwd" rev-list --left-right --count HEAD...@{upstream} 2>/dev/null)
+  if [[ -n "$counts" ]]; then
+    ahead=$(echo "$counts" | cut -f1)
+    behind=$(echo "$counts" | cut -f2)
+    [[ "$ahead" -gt 0 ]] 2>/dev/null && sync="${sync} #[fg=colour10]↑${ahead}#[default]"
+    [[ "$behind" -gt 0 ]] 2>/dev/null && sync="${sync} #[fg=colour9]↓${behind}#[default]"
+  fi
+  if [[ -n "$branch" ]]; then
+    if (( in_worktree )); then
+      git_seg=" #[fg=colour8]·#[default] #[fg=colour14]wt:${branch}#[default]${dirty}${sync}"
+    else
+      git_seg=" #[fg=colour8]·#[default] #[fg=colour3]${branch}#[default]${dirty}${sync}"
+    fi
+  fi
+fi
+
+# Cwd segment — keep it short and non-redundant with the git segment.
+#   In a worktree:   skip (git_seg already shows wt:<branch>)
+#   In a git repo:   show repo basename (the toplevel dir name)
+#   Non-git:         show $HOME-substituted basename
+cwd_seg=""
+if [[ -n "$cwd" ]]; then
+  if (( in_worktree )); then
+    : # nothing — wt:<branch> in git_seg covers it
+  elif [[ -n "${git_dir:-}" ]]; then
+    repo_base=$(basename "$(GIT_OPTIONAL_LOCKS=0 git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)")
+    [[ -n "$repo_base" ]] && cwd_seg=" #[fg=colour8]·#[default] #[fg=colour8]${repo_base}#[default]"
+  else
+    short="$cwd"
+    short="${short/#$HOME/~}"
+    base=$(basename "$short")
+    [[ "$short" == "~" ]] && base="~"
+    cwd_seg=" #[fg=colour8]·#[default] #[fg=colour8]${base}#[default]"
+  fi
+fi
+
+printf '%s %s%s%s%s%s%s' "$role" "$label" "$attn" "$lock" "$uptime_seg" "$git_seg" "$cwd_seg"

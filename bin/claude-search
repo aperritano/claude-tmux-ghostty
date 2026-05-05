@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""
+claude-search — full-text search across all Claude Code session transcripts.
+
+Walks ~/.claude/projects/*/*.jsonl, finds sessions containing the query
+(case-insensitive substring match across user + assistant text content),
+and outputs a TSV listing compatible with the claude-tmux picker shape:
+  <age> <short_label> <session_id> <match_snippet> <cwd>
+
+Usage:
+  claude-search ghostty theme         # find sessions mentioning "ghostty theme"
+  claude-search "tmux resurrect" | head
+  claude-search foo | fzf --delimiter=$'\\t' --with-nth=1,2,4   # pipe to picker
+
+Designed to compose with the existing fzf picker UX (same field layout).
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+PROJECTS = Path.home() / ".claude" / "projects"
+HOME = str(Path.home())
+
+
+def short_label(p: str) -> str:
+    if p.startswith(HOME):
+        p = "~" + p[len(HOME):]
+    if "/.worktrees/" in p:
+        repo_root, _, rest = p.partition("/.worktrees/")
+        repo = repo_root.rsplit("/", 1)[-1]
+        wt = rest.split("/", 1)[0]
+        if len(wt) > 24:
+            wt = wt[:21] + "..."
+        return f"{repo}:wt/{wt}"
+    if p in ("~", "/"):
+        return p
+    parts = p.rstrip("/").split("/")
+    if len(parts) >= 2:
+        last1, last2 = parts[-1], parts[-2]
+        if last2 in ("", "~"):
+            return f"~/{last1}"
+        return f"{last2}/{last1}"
+    return p or "(unknown)"
+
+
+def age_str(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+def extract_text(content) -> str:
+    """Pull plain text from a message.content (string or list-of-blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "text":
+                parts.append(b.get("text", ""))
+        return " ".join(parts)
+    return ""
+
+
+def search_jsonl(path: Path, query_lc: str) -> tuple[str, str]:
+    """
+    Return (cwd, snippet) where snippet is a window around the first match.
+    cwd is the first .cwd seen (so empty-match files still report cwd).
+    Returns (cwd_or_empty, "") if no match found.
+    """
+    cwd = ""
+    snippet = ""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not cwd and obj.get("cwd"):
+                    cwd = obj["cwd"]
+                if not snippet and obj.get("type") in ("user", "assistant"):
+                    msg = obj.get("message") or {}
+                    text = extract_text(msg.get("content"))
+                    if text and query_lc in text.lower():
+                        # Build a 60-char window around the match.
+                        idx = text.lower().find(query_lc)
+                        start = max(0, idx - 25)
+                        end = min(len(text), idx + len(query_lc) + 35)
+                        snippet = text[start:end]
+                        snippet = re.sub(r"\s+", " ", snippet).strip()
+                        if start > 0:
+                            snippet = "…" + snippet
+                        if end < len(text):
+                            snippet = snippet + "…"
+                if cwd and snippet:
+                    break
+    except OSError:
+        pass
+    return cwd, snippet
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        print("usage: claude-search <query>", file=sys.stderr)
+        return 1
+    query = " ".join(argv[1:])
+    query_lc = query.lower()
+
+    if not PROJECTS.is_dir():
+        return 0
+
+    now = int(datetime.now().timestamp())
+    entries = []
+    for path in PROJECTS.glob("*/*.jsonl"):
+        try:
+            mtime = int(path.stat().st_mtime)
+        except OSError:
+            continue
+        entries.append((mtime, path))
+    entries.sort(reverse=True)
+
+    matched = 0
+    for mtime, path in entries:
+        cwd, snippet = search_jsonl(path, query_lc)
+        if not snippet:
+            continue
+        if not cwd:
+            cwd = "(unknown)"
+        label = short_label(cwd)
+        session_id = path.stem
+        age = age_str(now - mtime)
+        sys.stdout.write(
+            f"{age}\t{label}\t{session_id}\t{snippet[:80]}\t{cwd}\n"
+        )
+        matched += 1
+
+    if matched == 0:
+        print(f"  No matches for: {query}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

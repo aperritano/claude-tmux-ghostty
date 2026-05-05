@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# tmux-cell-daemon — background process that keeps tmux statusline cell
+# cache fresh, eliminating per-cell git/tmux subshell costs.
+#
+# Lifecycle:
+#   - Started by tmux session-start hook (or `tmux-cell-daemon &` manually)
+#   - Sleeps 4s between updates
+#   - Exits when tmux server isn't reachable
+#   - PID file at /tmp/tmux-cell-daemon-$UID.pid prevents multiple instances
+#
+# Cache format (TSV at /tmp/tmux-cells-$UID.cache):
+#   <window_idx>\t<active 0|1>\t<rendered cell with tmux format tokens>
+
+set -uo pipefail
+
+PIDFILE="/tmp/tmux-cell-daemon-$UID.pid"
+LOCKDIR="/tmp/tmux-cell-daemon-$UID.lock"
+CACHE="/tmp/tmux-cells-$UID.cache"
+PANE_HEADER_CACHE="/tmp/tmux-pane-headers-$UID.cache"
+INTERVAL=4
+
+# Atomic single-instance guard via mkdir (POSIX-atomic; survives the stampede
+# from tmux statusline refreshes hitting tmux-window-cell across N windows).
+# Plain PID-file check-then-write was racy.
+acquire_lock() {
+  if mkdir "$LOCKDIR" 2>/dev/null; then
+    echo $$ > "$LOCKDIR/pid"
+    return 0
+  fi
+  # Lock dir exists. Determine if owner is alive. There's a microsecond
+  # window between the winner's mkdir and its PID write — losers seeing
+  # an empty PID file must NOT treat that as stale (would clobber the
+  # winner). Retry with backoff before declaring stale.
+  local oldpid attempt
+  for attempt in 1 2 3 4 5; do
+    oldpid=$(cat "$LOCKDIR/pid" 2>/dev/null)
+    if [[ -n "$oldpid" ]]; then
+      if kill -0 "$oldpid" 2>/dev/null; then
+        return 1  # legitimately busy
+      fi
+      break  # PID present but process dead — genuinely stale
+    fi
+    sleep 0.05  # 50ms × 5 = 250ms grace for winner to finish writing
+  done
+  # Genuinely stale lock — owner died. Try to claim. Loser exits.
+  rm -rf "$LOCKDIR"
+  if mkdir "$LOCKDIR" 2>/dev/null; then
+    echo $$ > "$LOCKDIR/pid"
+    return 0
+  fi
+  return 1
+}
+acquire_lock || exit 0
+
+# PIDFILE is the readiness signal tmux-window-cell polls; keep writing it
+# so the reader contract is preserved.
+echo $$ > "$PIDFILE"
+
+cleanup() {
+  rm -f "$PIDFILE" "$PANE_HEADER_CACHE"
+  rm -rf "$LOCKDIR"
+  exit 0
+}
+trap cleanup EXIT INT TERM
+
+render_one_window() {
+  local widx="$1" wname="$2" wcwd="$3" attn="$4"
+  local branch="" color="" dirty=" " mark=" "
+
+  if [[ -n "$wcwd" ]] && git -C "$wcwd" rev-parse --git-dir >/dev/null 2>&1; then
+    branch=$(git -C "$wcwd" symbolic-ref --short HEAD 2>/dev/null \
+             || git -C "$wcwd" rev-parse --short HEAD 2>/dev/null \
+             || echo "")
+  fi
+
+  case "$branch" in
+    main|master|develop)         color="#[fg=colour15]"   ;;
+    feat/*|feature/*|sprint*/*)  color="#[fg=colour11]"   ;;
+    fix/*|hotfix/*|bugfix/*)     color="#[fg=colour9]"    ;;
+    docs/*|chore/*|test/*)       color="#[fg=colour6]"    ;;
+    pr-*|PR-*|review/*)          color="#[fg=colour14]"   ;;
+  esac
+  case "$wname" in
+    PR-*|pr-*|*\#[0-9]*)         color="#[fg=colour14]"   ;;
+  esac
+
+  if [[ -n "$branch" ]] && ! git -C "$wcwd" diff --quiet HEAD 2>/dev/null; then
+    dirty="●"
+  fi
+
+  # Attention marker: amber ⚠ if a pane in this window flagged via cc-attention.
+  # Fixed-width to avoid statusline jitter (matches dirty marker pattern).
+  if [[ "$attn" == "1" ]]; then
+    mark="#[fg=colour11]⚠#[default]"
+  fi
+
+  printf '%s\t0\t%s %s %s %s%s#[default] \n' \
+    "$widx" "$color" "$widx" "$wname" "$dirty" "$mark"
+  printf '%s\t1\t#[fg=colour0,bg=colour12,bold] %s %s %s%s#[default] \n' \
+    "$widx" "$widx" "$wname" "$dirty" "$mark"
+}
+
+while true; do
+  if ! tmux info >/dev/null 2>&1; then
+    cleanup
+  fi
+
+  TMP="$CACHE.$$"
+  : > "$TMP"
+
+  # Resolve the session this daemon is rendering for. Without -t, tmux
+  # commands default to the first/active session — so the listing below
+  # is for that session, and we should only mark windows in *that* session.
+  current_session=$(tmux list-windows -F '#{session_name}' 2>/dev/null | head -1)
+
+  # Build space-padded marked-windows string once per loop. Format from
+  # `cc-attention windows` is "session:idx session:idx ...". Only accept
+  # tokens for current_session — prevents cross-session false positives
+  # (multi-session tmux: a flag in side:5 should NOT light up main:5).
+  marked=" "
+  if [[ -x "$HOME/bin/cc-attention" && -n "$current_session" ]]; then
+    marks_raw=$("$HOME/bin/cc-attention" windows 2>/dev/null)
+    for tok in $marks_raw; do
+      case "$tok" in
+        "$current_session":*) marked="$marked${tok#*:} " ;;
+      esac
+    done
+  fi
+
+  while IFS='|' read -r widx wname wcwd; do
+    [[ -z "$widx" ]] && continue
+    if [[ "$marked" == *" $widx "* ]]; then attn=1; else attn=0; fi
+    render_one_window "$widx" "$wname" "$wcwd" "$attn" >> "$TMP"
+  done < <(tmux list-windows -F '#{window_index}|#{window_name}|#{pane_current_path}' 2>/dev/null)
+  mv -f "$TMP" "$CACHE" 2>/dev/null
+
+  # Pre-compute per-pane headers — pushes the warm-path read down to
+  # an awk lookup (~10ms) instead of git+ps work (~500ms) per pane.
+  # `tmux-pane-header --compute` skips its own cache and emits inline.
+  if [[ -x "$HOME/bin/tmux-pane-header" ]]; then
+    TMP_PH="$PANE_HEADER_CACHE.$$"
+    : > "$TMP_PH"
+    while IFS=$'\t' read -r pid pcwd; do
+      [[ -z "$pid" ]] && continue
+      out=$("$HOME/bin/tmux-pane-header" --compute "$pid" "$pcwd" 2>/dev/null)
+      printf '%s\t%s\n' "$pid" "$out" >> "$TMP_PH"
+    done < <(tmux list-panes -a -F '#{pane_id}	#{pane_current_path}' 2>/dev/null)
+    mv -f "$TMP_PH" "$PANE_HEADER_CACHE" 2>/dev/null
+  fi
+
+  sleep "$INTERVAL"
+done

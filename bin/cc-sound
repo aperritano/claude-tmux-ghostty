@@ -1,0 +1,18 @@
+#!/bin/sh
+# cc-sound — play a sound only if Claude hook audio isn't muted.
+#
+# Wraps afplay with a mute check (~/.claude/.muted file). Hooks call this
+# instead of afplay directly so a single `cc-mute on` silences all of them.
+#
+# Usage: cc-sound <sound-file> [volume]
+#   volume: 0.0–1.0 (default 1.0)
+
+[ -f "$HOME/.claude/.muted" ] && exit 0
+[ -z "${1:-}" ] && exit 0
+
+if [ -n "${2:-}" ]; then
+  afplay -v "$2" "$1" &
+else
+  afplay "$1" &
+fi
+exit 0

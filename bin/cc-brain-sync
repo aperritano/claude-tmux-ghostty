@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# cc-brain-sync — encrypt-and-archive your ~/.claude memory + config so a
+# fresh Mac can rehydrate its "Claude brain" with one decrypt-and-extract.
+#
+# Inspired by toroleapinc/claude-brain. Ships only the cold-start essentials:
+# memory (auto-memory + MEMORY.md), commands, rules, CLAUDE.md, settings.json,
+# statusline-command.sh, agents/. Skips: sessions/, projects/transcripts,
+# plugins, cache, IDE state — those are reproducible or too large.
+#
+# Setup (one-time, do this manually):
+#   brew install age
+#   mkdir -p ~/.config/cc-brain && age-keygen -o ~/.config/cc-brain/key.txt
+#   chmod 600 ~/.config/cc-brain/key.txt
+#   # The pubkey is on line 2 (`# public key: age1...`) — note it for `push`
+#
+# Subcommands:
+#   push          archive + encrypt to $CC_BRAIN_OUT
+#                 (default: ~/dev/dotfiles/.brain.tar.gz.age)
+#   pull          decrypt + extract to ~/.claude (RESTORES, see warning)
+#   list          show what would be archived
+#   pubkey        print your public age recipient (safe to share)
+#
+# Env:
+#   CC_BRAIN_KEY  age key path (default ~/.config/cc-brain/key.txt)
+#   CC_BRAIN_OUT  output blob path (default ~/dev/dotfiles/.brain.tar.gz.age)
+#
+# WARNING: `pull` overwrites files in ~/.claude. Don't run it on the source
+# machine; only on a fresh install or when explicitly reseeding.
+
+set -uo pipefail
+
+KEY="${CC_BRAIN_KEY:-$HOME/.config/cc-brain/key.txt}"
+OUT="${CC_BRAIN_OUT:-$HOME/dev/dotfiles/.brain.tar.gz.age}"
+
+# Curated cold-start manifest. Paths are relative to ~/.claude.
+MANIFEST=(
+  "CLAUDE.md"
+  "settings.json"
+  "statusline-command.sh"
+  "commands"
+  "rules"
+  "agents"
+  "projects"  # only memory/ subdirs are tarred via the filter below
+)
+
+# tar filter: include MEMORY.md and memory/ files anywhere under projects/,
+# skip transcripts and other heavy/derivable state.
+PROJECTS_INCLUDE_RE='projects/[^/]*/(MEMORY\.md$|memory/)'
+
+cmd="${1:-}"
+
+require_age() {
+  if ! command -v age >/dev/null 2>&1 || ! command -v age-keygen >/dev/null 2>&1; then
+    echo "cc-brain-sync: 'age' not installed. Run: brew install age" >&2
+    exit 1
+  fi
+}
+
+ensure_key() {
+  if [[ ! -r "$KEY" ]]; then
+    echo "cc-brain-sync: key not found at $KEY" >&2
+    echo "  setup: mkdir -p \"$(dirname "$KEY")\" && age-keygen -o \"$KEY\" && chmod 600 \"$KEY\"" >&2
+    exit 1
+  fi
+}
+
+build_filelist() {
+  # Print files (relative to $HOME/.claude) that should be tarred.
+  cd "$HOME/.claude" || exit 1
+  for p in "${MANIFEST[@]}"; do
+    if [[ "$p" == "projects" ]]; then
+      # Filter heavy stuff out
+      find projects -type f 2>/dev/null \
+        | awk -v re="$PROJECTS_INCLUDE_RE" '$0 ~ re { print }'
+    elif [[ -e "$p" ]]; then
+      if [[ -d "$p" ]]; then
+        find "$p" -type f 2>/dev/null
+      else
+        printf '%s\n' "$p"
+      fi
+    fi
+  done
+}
+
+case "$cmd" in
+  list)
+    build_filelist | head -100
+    echo "---"
+    n=$(build_filelist | wc -l | tr -d ' ')
+    bytes=$(build_filelist | tr '\n' '\0' | (cd "$HOME/.claude" && xargs -0 du -b 2>/dev/null) | awk '{s+=$1} END {print s+0}')
+    echo "$n files, $((bytes / 1024)) KB uncompressed"
+    ;;
+
+  push)
+    require_age
+    ensure_key
+    pub=$(awk '/^# public key:/ {print $4; exit}' "$KEY")
+    if [[ -z "$pub" ]]; then
+      echo "cc-brain-sync: couldn't extract public key from $KEY" >&2
+      exit 1
+    fi
+    mkdir -p "$(dirname "$OUT")"
+    tmp_tar="/tmp/cc-brain-$$.tar.gz"
+    trap 'rm -f "$tmp_tar"' EXIT
+    cd "$HOME/.claude" || exit 1
+    build_filelist | tar -czf "$tmp_tar" -T -
+    age -r "$pub" -o "$OUT" "$tmp_tar"
+    sz=$(stat -f %z "$OUT" 2>/dev/null || echo 0)
+    printf 'cc-brain-sync: wrote %s (%d KB, encrypted to %s)\n' "$OUT" "$((sz / 1024))" "${pub:0:24}…"
+    ;;
+
+  pull)
+    require_age
+    ensure_key
+    if [[ ! -r "$OUT" ]]; then
+      echo "cc-brain-sync: blob not found at $OUT" >&2
+      exit 1
+    fi
+    tmp_tar="/tmp/cc-brain-$$.tar.gz"
+    trap 'rm -f "$tmp_tar"' EXIT
+    age -d -i "$KEY" -o "$tmp_tar" "$OUT"
+    echo "cc-brain-sync: about to extract into $HOME/.claude"
+    echo "  contents:"
+    tar -tzf "$tmp_tar" | head -20 | sed 's/^/    /'
+    n=$(tar -tzf "$tmp_tar" | wc -l | tr -d ' ')
+    echo "  ($n files total)"
+    if [[ "${CC_BRAIN_FORCE:-}" != "1" ]]; then
+      echo "  set CC_BRAIN_FORCE=1 to confirm and extract." >&2
+      exit 0
+    fi
+    tar -xzf "$tmp_tar" -C "$HOME/.claude"
+    echo "cc-brain-sync: restored."
+    ;;
+
+  pubkey)
+    ensure_key
+    awk '/^# public key:/ {print $4}' "$KEY"
+    ;;
+
+  ""|help|-h|--help)
+    sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
+    ;;
+
+  *)
+    echo "cc-brain-sync: unknown command: $cmd" >&2
+    exit 2
+    ;;
+esac

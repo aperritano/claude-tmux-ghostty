@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""
+claude-grep — content-level search across Claude Code transcripts.
+
+Where claude-search returns ONE row per session matching the query,
+claude-grep returns one row per matching TURN. This closes the gap that
+`cs-find` finds *sessions* but not *what was said in them*.
+
+Output (TSV, fzf-friendly):
+  <age> <short_label> <session_id> <turn_match_preview> <cwd>
+
+The 4th field is the matching turn excerpt with surrounding context, not
+just the first user message. Pipes into the same fzf shape as cs-find.
+
+Usage:
+  claude-grep <query>                    # case-insensitive substring
+  claude-grep -e <regex>                 # regex mode
+  claude-grep --here <query>             # only sessions whose cwd is under $PWD
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+PROJECTS = Path.home() / ".claude" / "projects"
+HOME = str(Path.home())
+
+
+def short_label(p: str) -> str:
+    if p.startswith(HOME):
+        p = "~" + p[len(HOME):]
+    if "/.worktrees/" in p:
+        repo_root, _, rest = p.partition("/.worktrees/")
+        repo = repo_root.rsplit("/", 1)[-1]
+        wt = rest.split("/", 1)[0]
+        if len(wt) > 24:
+            wt = wt[:21] + "..."
+        return f"{repo}:wt/{wt}"
+    if p in ("~", "/"):
+        return p
+    parts = [s for s in p.split("/") if s and s != "~"]
+    return "/".join(parts[-2:]) if len(parts) >= 2 else (parts[0] if parts else p)
+
+
+def fmt_age(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+def extract_text(content) -> str:
+    """Pull text from an arbitrarily-shaped message content field."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        out = []
+        for blk in content:
+            if isinstance(blk, dict):
+                if blk.get("type") == "text" and blk.get("text"):
+                    out.append(blk["text"])
+                elif blk.get("type") == "tool_use" and blk.get("input"):
+                    out.append(json.dumps(blk["input"]))
+        return " ".join(out)
+    return ""
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args:
+        print("usage: claude-grep [--here] [-e <regex>|<query>]", file=sys.stderr)
+        return 1
+
+    only_here = False
+    if "--here" in args:
+        only_here = True
+        args.remove("--here")
+
+    if not args:
+        print("usage: claude-grep [--here] [-e <regex>|<query>]", file=sys.stderr)
+        return 1
+
+    if args[0] == "-e" and len(args) >= 2:
+        pattern = re.compile(" ".join(args[1:]), re.IGNORECASE)
+    else:
+        pattern = re.compile(re.escape(" ".join(args)), re.IGNORECASE)
+
+    pwd = str(Path.cwd())
+    now = datetime.now().astimezone().replace(tzinfo=None)
+
+    rows = []
+    for project_dir in PROJECTS.glob("*"):
+        for jsonl in project_dir.glob("*.jsonl"):
+            session_id = jsonl.stem
+            cwd = ""
+            mtime = jsonl.stat().st_mtime
+            try:
+                with jsonl.open() as f:
+                    lines = f.readlines()
+            except Exception:
+                continue
+
+            # Look up cwd from first message that has it
+            for ln in lines[:5]:
+                try:
+                    obj = json.loads(ln)
+                    if isinstance(obj, dict) and obj.get("cwd"):
+                        cwd = obj["cwd"]
+                        break
+                except Exception:
+                    continue
+            if not cwd:
+                cwd = "(unknown)"
+
+            if only_here and not cwd.startswith(pwd):
+                continue
+
+            # Iterate turns; emit per-match row
+            for turn_idx, ln in enumerate(lines):
+                try:
+                    obj = json.loads(ln)
+                except Exception:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                msg = obj.get("message")
+                if not isinstance(msg, dict):
+                    continue
+                text = extract_text(msg.get("content", ""))
+                if not text:
+                    continue
+                m = pattern.search(text)
+                if not m:
+                    continue
+
+                # Excerpt: 80 chars before + after the match for context
+                start = max(0, m.start() - 80)
+                end = min(len(text), m.end() + 80)
+                snippet = text[start:end].replace("\t", " ").replace("\n", " ")
+                if start > 0:
+                    snippet = "…" + snippet
+                if end < len(text):
+                    snippet = snippet + "…"
+                snippet = snippet[:200]
+
+                age_sec = int((now - datetime.fromtimestamp(mtime)).total_seconds())
+                rows.append((mtime, fmt_age(age_sec), short_label(cwd), session_id, snippet, cwd))
+
+    # Newest first
+    rows.sort(key=lambda r: -r[0])
+    for _, age, label, sid, snip, cwd in rows:
+        print(f"{age}\t{label}\t{sid}\t{snip}\t{cwd}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

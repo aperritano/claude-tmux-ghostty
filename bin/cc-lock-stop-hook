@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# cc-lock-stop-hook — Stop / SubagentStop hook.
+# Releases all locks held by the ending session_id so other agents can
+# resume work on those files.
+
+set -uo pipefail
+
+sid=$(jq -r '.session_id // empty')
+[[ -z "$sid" ]] && exit 0
+
+"$HOME/bin/cc-lock" release-by-session "$sid"
+exit 0

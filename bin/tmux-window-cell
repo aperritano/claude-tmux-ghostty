@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# tmux-window-cell — fast cell reader; daemon keeps cache fresh.
+#
+# If tmux-cell-daemon isn't running OR cache is stale (>30s), spawn the daemon
+# in the background. Either way, return our cell from cache, falling back to
+# an inline-computed cell on cold start.
+#
+# Args: $1 = window_index, $2 = is_active (0|1).
+
+set -uo pipefail
+
+idx="${1:-}"
+active="${2:-0}"
+[[ -z "$idx" ]] && exit 0
+
+CACHE="/tmp/tmux-cells-$UID.cache"
+PIDFILE="/tmp/tmux-cell-daemon-$UID.pid"
+
+# Daemon health check — start if missing/dead/cache too stale.
+need_start=0
+if [[ ! -f "$PIDFILE" ]]; then
+  need_start=1
+elif ! kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+  need_start=1
+elif [[ -f "$CACHE" ]] && (( $(date +%s) - $(stat -f %m "$CACHE") > 30 )); then
+  need_start=1
+fi
+if (( need_start )); then
+  (nohup ~/bin/tmux-cell-daemon >/dev/null 2>&1 &) >/dev/null 2>&1
+fi
+
+# Read from cache if available — daemon writes complete output, so reading
+# is just an awk lookup.
+if [[ -f "$CACHE" ]]; then
+  awk -F'\t' -v i="$idx" -v a="$active" '$1 == i && $2 == a { print $3; exit }' "$CACHE"
+  exit 0
+fi
+
+# Cold-start fallback: emit a minimal cell so tmux has something while the
+# daemon spins up. Will be replaced on next refresh.
+IFS=$'\t' read -r name _ _ < <(tmux list-windows -F '#{window_index}|#{window_name}' 2>/dev/null \
+                                | awk -F'|' -v i="$idx" '$1 == i { print $2 "\t\t"; exit }')
+[[ -z "$name" ]] && exit 0
+if [[ "$active" == "1" ]]; then
+  printf "#[fg=colour0,bg=colour12,bold] %s %s  #[default] " "$idx" "$name"
+else
+  printf " %s %s  #[default] " "$idx" "$name"
+fi

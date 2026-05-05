@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""
+claude-prune-worktrees — analyze and prune git worktrees safely.
+
+Classification per worktree:
+  DIRTY    has uncommitted changes — NEVER auto-removed
+  MERGED   branch is fully an ancestor of (origin/)main or master
+  STALE    no commits in 30+ days AND no Claude session in 7+ days
+  ACTIVE   anything else (recent commit, recent Claude work, or both)
+
+Modes:
+  (default)              Dry-run analysis. Show all worktrees with category counts.
+  --remove merged        Remove worktrees classified MERGED (still confirm).
+  --remove stale         Remove worktrees classified STALE (still confirm).
+  --remove merged,stale  Both.
+  --yes                  Skip the interactive confirmation (use with --remove).
+
+Always safe: refuses to remove DIRTY worktrees regardless of flags.
+After removing a worktree, also deletes its branch if it was MERGED.
+"""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from pathlib import Path
+
+HOME = str(Path.home())
+PROJECTS = Path(HOME) / ".claude" / "projects"
+
+G = "\033[32m"
+Y = "\033[33m"
+R = "\033[31m"
+C = "\033[36m"
+DIM = "\033[90m"
+N = "\033[0m"
+
+
+def run(cmd, cwd=None):
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+
+
+def find_main_repo() -> Path | None:
+    out = run(["git", "rev-parse", "--show-toplevel"]).stdout.strip()
+    if not out:
+        return None
+    if "/.worktrees/" in out:
+        out = out.split("/.worktrees/")[0]
+    elif "/.claude/worktrees/" in out:
+        out = out.split("/.claude/worktrees/")[0]
+    return Path(out)
+
+
+def list_worktrees(main_repo: Path) -> list[dict]:
+    out = run(["git", "-C", str(main_repo), "worktree", "list", "--porcelain"]).stdout
+    entries, cur = [], {}
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            cur = {"wt": line[len("worktree "):]}
+        elif line.startswith("branch "):
+            cur["branch"] = line[len("branch refs/heads/"):]
+        elif line == "" and cur.get("wt"):
+            entries.append(cur)
+            cur = {}
+    if cur.get("wt"):
+        entries.append(cur)
+    return [e for e in entries if e["wt"] != str(main_repo) and e.get("branch")]
+
+
+def is_dirty(wt: str) -> bool:
+    # `git diff --quiet HEAD` exits 0 when clean, 1 when dirty.
+    # Much faster than `status --porcelain` on big repos because it skips
+    # untracked-file enumeration. Final safety: `git worktree remove` itself
+    # refuses if untracked files exist, so we don't lose protection.
+    return run(["git", "-C", wt, "diff", "--quiet", "HEAD"]).returncode != 0
+
+
+def find_main_branch(main_repo: Path) -> str:
+    """Identify the project's main branch — prefers origin/main, falls back."""
+    for ref in ("origin/main", "origin/master", "main", "master"):
+        if run(["git", "-C", str(main_repo), "rev-parse", "--verify", ref]).returncode == 0:
+            return ref
+    return "HEAD"
+
+
+def is_merged(main_repo: Path, branch: str, main_ref: str) -> bool:
+    return run(
+        ["git", "-C", str(main_repo), "merge-base", "--is-ancestor", branch, main_ref]
+    ).returncode == 0
+
+
+def commit_age_days(wt: str) -> int:
+    out = run(["git", "-C", wt, "log", "-1", "--format=%ct"]).stdout.strip()
+    if not out:
+        return 9999
+    return (int(datetime.now().timestamp()) - int(out)) // 86400
+
+
+def claude_age_days(wt: str) -> int:
+    project_dir = wt.replace("/", "-").replace(".", "-")
+    proj_path = PROJECTS / project_dir
+    if not proj_path.is_dir():
+        return 9999
+    files = list(proj_path.glob("*.jsonl"))
+    if not files:
+        return 9999
+    latest = max(f.stat().st_mtime for f in files)
+    return (int(datetime.now().timestamp()) - int(latest)) // 86400
+
+
+def classify(main_repo: Path, e: dict, main_ref: str) -> str:
+    if is_dirty(e["wt"]):
+        return "DIRTY"
+    if is_merged(main_repo, e["branch"], main_ref):
+        return "MERGED"
+    if commit_age_days(e["wt"]) > 30 and claude_age_days(e["wt"]) > 7:
+        return "STALE"
+    return "ACTIVE"
+
+
+def short(s: str, n: int) -> str:
+    return s if len(s) <= n else s[: n - 3] + "..."
+
+
+def remove_worktree(main_repo: Path, wt: str, branch: str, was_merged: bool) -> bool:
+    rm = run(["git", "-C", str(main_repo), "worktree", "remove", wt])
+    if rm.returncode != 0:
+        print(f"  {R}✗{N} {wt}: {rm.stderr.strip()}")
+        return False
+    print(f"  {G}✓{N} removed worktree: {wt}")
+    if was_merged:
+        bd = run(["git", "-C", str(main_repo), "branch", "-d", branch])
+        if bd.returncode == 0:
+            print(f"  {G}✓{N} deleted merged branch: {branch}")
+        else:
+            print(f"  {Y}!{N} could not delete branch {branch}: {bd.stderr.strip()}")
+    return True
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--remove", help="comma-separated categories: merged,stale", default="")
+    ap.add_argument("--yes", action="store_true", help="skip interactive confirmation")
+    args = ap.parse_args()
+
+    main_repo = find_main_repo()
+    if main_repo is None:
+        print("claude-prune-worktrees: not in a git repo", file=sys.stderr)
+        return 1
+
+    main_ref = find_main_branch(main_repo)
+    rows = list_worktrees(main_repo)
+    if not rows:
+        print(f"{DIM}no worktrees in {main_repo.name}{N}")
+        return 0
+
+    print(f"{C}── classify worktrees in {main_repo.name} ──{N}")
+    print(f"  using main ref: {main_ref}")
+    print(f"  {DIM}({len(rows)} worktrees to analyze){N}\n")
+
+    # Classify in parallel — each worktree triggers ~4 git calls, the bulk of which
+    # are I/O-bound on git's process spawn + repo lookup. Threads (not processes)
+    # work because subprocess.run releases the GIL during wait.
+    counts = {"DIRTY": 0, "MERGED": 0, "STALE": 0, "ACTIVE": 0}
+    with ThreadPoolExecutor(max_workers=min(16, len(rows) or 1)) as pool:
+        kinds = list(pool.map(lambda e: classify(main_repo, e, main_ref), rows))
+    classified = list(zip(kinds, rows))
+    for kind, _ in classified:
+        counts[kind] += 1
+
+    color = {"DIRTY": R, "MERGED": G, "STALE": Y, "ACTIVE": ""}
+    for kind, e in classified:
+        wt_short = short(e["wt"].replace(str(main_repo) + "/", ""), 50)
+        branch_short = short(e["branch"], 32)
+        print(f"  {color[kind]}{kind:<8}{N}  {wt_short:<50}  {branch_short}")
+
+    print()
+    print(
+        f"{DIM}── {len(rows)} total · "
+        f"{R}{counts['DIRTY']} dirty{N}{DIM} · "
+        f"{G}{counts['MERGED']} merged{N}{DIM} · "
+        f"{Y}{counts['STALE']} stale{N}{DIM} · "
+        f"{counts['ACTIVE']} active ──{N}"
+    )
+
+    if not args.remove:
+        print()
+        print(f"{DIM}DRY RUN — no changes made.")
+        print(f"  --remove merged       remove the {counts['MERGED']} MERGED worktrees")
+        print(f"  --remove stale        remove the {counts['STALE']} STALE worktrees")
+        print(f"  --remove merged,stale remove both groups{N}")
+        return 0
+
+    targets = [t.strip().upper() for t in args.remove.split(",")]
+    for t in targets:
+        if t not in ("MERGED", "STALE"):
+            print(f"unknown removal target: {t} (valid: merged, stale)", file=sys.stderr)
+            return 1
+
+    to_remove = [(kind, e) for kind, e in classified if kind in targets]
+    if not to_remove:
+        print(f"\n{DIM}nothing to remove (no worktrees in target categories){N}")
+        return 0
+
+    print(f"\n{Y}About to remove {len(to_remove)} worktrees:{N}")
+    for kind, e in to_remove:
+        print(f"  {kind:<8}  {e['wt']}  ({e['branch']})")
+
+    if not args.yes:
+        print()
+        try:
+            ans = input("Proceed? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print(f"\n{DIM}aborted{N}")
+            return 1
+        if ans not in ("y", "yes"):
+            print(f"{DIM}aborted{N}")
+            return 1
+
+    print()
+    removed = 0
+    for kind, e in to_remove:
+        if remove_worktree(main_repo, e["wt"], e["branch"], kind == "MERGED"):
+            removed += 1
+    print(f"\n{G}removed {removed}/{len(to_remove)} worktrees{N}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

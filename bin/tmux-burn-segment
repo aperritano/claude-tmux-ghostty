@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# tmux-burn-segment — status-right segment for context burn-rate warnings.
+#
+# Walks ~/.claude/projects/*/*.jsonl (recently-modified ones only — that's
+# the cheap proxy for "active sessions"), runs cc-burn-rate against each,
+# emits the most-urgent warning when any session is < 30 min from limit.
+# Empty output otherwise — keeps the bar quiet under normal conditions.
+#
+# Output (when at-risk):
+#   #[fg=colour9,bold]burn:Nm#[default]
+# Output (otherwise): nothing.
+#
+# Designed for tmux's `set -g status-right "...#(~/bin/tmux-burn-segment)..."`
+#
+# Env (test/override):
+#   CC_BURN_FIXTURE    override projects root (default ~/.claude/projects)
+#   CC_BURN_THRESHOLD  warn-below-N minutes (default 30; cc-burn-rate's gate)
+#   CC_BURN_DEBUG      print debug info to stderr
+
+set -uo pipefail
+
+PROJECTS="${CC_BURN_FIXTURE:-$HOME/.claude/projects}"
+THRESHOLD="${CC_BURN_THRESHOLD:-30}"
+CACHE="/tmp/tmux-burn-segment-$UID"
+ACTIVE_WINDOW=300   # transcripts modified within last 5 min are "active"
+JSONL_CAP=50        # safety cap; tmux refresh shouldn't scan everything
+
+# Cache hot path — tmux refreshes status-right on every event; 4s TTL avoids
+# scanning the projects dir on every keystroke.
+if [[ -f "$CACHE" && -z "${CC_BURN_FIXTURE:-}${CC_BURN_DEBUG:-}" ]]; then
+  age=$(( $(date +%s) - $(stat -f %m "$CACHE" 2>/dev/null || echo 0) ))
+  if (( age < 4 )); then
+    cat "$CACHE"
+    exit 0
+  fi
+fi
+
+# Bail if the projects dir doesn't exist (fresh install / fixture-not-found).
+if [[ ! -d "$PROJECTS" ]]; then
+  : > "$CACHE" 2>/dev/null
+  exit 0
+fi
+
+# Ctx_max guess: if the live ~/.claude/settings.json model id mentions [1m],
+# use 1M; else 200k. Cheap heuristic — a script-level model probe per session
+# would be more correct but would require parsing each transcript's model id.
+ctx_max=200000
+if grep -q '"model".*\[1m\]' "$HOME/.claude/settings.json" 2>/dev/null; then
+  ctx_max=1000000
+fi
+
+# Find recently-modified jsonls in one pass. find with -mmin is faster
+# than fork-per-file stat; -mmin -5 = modified less than 5 min ago.
+# (BSD find supports -mmin; verified on macOS.)
+now=$(date +%s)
+worst_mins=99999
+recent_count=0
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  recent_count=$((recent_count + 1))
+  (( recent_count > JSONL_CAP )) && break
+  raw=$("$HOME/bin/cc-burn-rate" --threshold 99999 "$f" "$ctx_max" 2>/dev/null)
+  if [[ -n "$raw" && "$raw" =~ ^([0-9]+)m$ ]]; then
+    mins="${BASH_REMATCH[1]}"
+    if (( mins < worst_mins )); then
+      worst_mins="$mins"
+    fi
+  fi
+done < <(find "$PROJECTS" -maxdepth 3 -name '*.jsonl' -type f -mmin -5 2>/dev/null)
+
+if [[ "${CC_BURN_DEBUG:-0}" == "1" ]]; then
+  echo "tmux-burn-segment: worst=${worst_mins}m threshold=${THRESHOLD}m" >&2
+fi
+
+# Emit only when the worst case is under threshold.
+out=""
+if (( worst_mins < THRESHOLD )); then
+  out="#[fg=colour9,bold]burn:${worst_mins}m#[default] "
+fi
+
+printf '%s' "$out" > "$CACHE" 2>/dev/null
+printf '%s' "$out"

@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# claude-running — show all currently-active Claude panes across tmux.
+#
+# Walks every pane on the live tmux server, identifies ones running
+# claude (or a claude agent), and prints them grouped by tmux session.
+# Distinguishes lead Claude sessions from agent teammates by command-line
+# inspection.
+#
+# Useful for: "what agent teams are running right now?" / "where is that
+# claude pane I left somewhere?" / sanity-check before Mac restart.
+#
+# Output legend:
+#   ◆ = lead claude session (interactive, you're driving)
+#   ◇ = agent teammate (--agent-id ...)
+
+set -uo pipefail
+
+C="\033[36m"
+G="\033[32m"
+M="\033[35m"
+DIM="\033[90m"
+N="\033[0m"
+
+if ! tmux info >/dev/null 2>&1; then
+  echo "claude-running: no tmux server attached"
+  exit 0
+fi
+
+HOME_RE="${HOME//\//\\/}"
+
+declare -i lead=0 agents=0
+last_session=""
+
+while IFS=$'\t' read -r session window pane_idx pane_id tty cwd; do
+  full_cmd=$(ps -o command= -t "${tty#/dev/}" 2>/dev/null \
+               | grep -m1 -E '/claude/versions/|^claude($| )')
+  [[ -z "$full_cmd" ]] && continue
+
+  # Distinguish agent vs lead
+  is_agent=0
+  agent_id=""
+  if [[ "$full_cmd" == *"--agent-id "* ]]; then
+    is_agent=1
+    # Extract --agent-id <value>
+    agent_id=$(echo "$full_cmd" | grep -oE -- '--agent-id [^ ]+' | head -1 | awk '{print $2}')
+  fi
+
+  # Print session header when it changes
+  if [[ "$session" != "$last_session" ]]; then
+    [[ -n "$last_session" ]] && echo
+    printf "${C}%s${N}\n" "$session"
+    last_session="$session"
+  fi
+
+  short_cwd=$(echo "$cwd" | sed "s|$HOME|~|")
+  if [[ $is_agent -eq 1 ]]; then
+    printf "  ${M}◇${N} %s.%s.%s  ${DIM}%s${N}  ${M}%s${N}\n" \
+      "$session" "$window" "$pane_idx" "$short_cwd" "$agent_id"
+    agents=$((agents + 1))
+  else
+    printf "  ${G}◆${N} %s.%s.%s  ${DIM}%s${N}\n" \
+      "$session" "$window" "$pane_idx" "$short_cwd"
+    lead=$((lead + 1))
+  fi
+done < <(tmux list-panes -a -F '#{session_name}	#{window_index}	#{pane_index}	#{pane_id}	#{pane_tty}	#{pane_current_path}')
+
+total=$((lead + agents))
+if [[ $total -eq 0 ]]; then
+  echo "no claude panes active"
+  exit 0
+fi
+
+echo
+printf "${DIM}── %d total · ${G}%d lead${N}${DIM} · ${M}%d agent${N}${DIM} ──${N}\n" \
+  "$total" "$lead" "$agents"

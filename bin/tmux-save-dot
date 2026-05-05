@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# tmux-save-dot — emit a colored glyph for continuum auto-save freshness.
+#
+#   ●  bright green   < 1 min   (very fresh)
+#   ●  green          1-6 min   (healthy)
+#   ◐  yellow         6-15 min  (overdue)
+#   ○  red            > 15 min  (continuum probably dead)
+#
+# Drop into status-right via #(tmux-save-dot).
+
+last="$HOME/.tmux/resurrect/last"
+if [[ ! -L "$last" ]]; then
+  echo "#[fg=colour8]·#[default]"  # no save yet → dim mid-dot
+  exit 0
+fi
+resolved=$(readlink "$last")
+mtime=$(stat -f %m "$HOME/.tmux/resurrect/$resolved" 2>/dev/null || echo 0)
+age=$(( $(date +%s) - mtime ))
+
+if   (( age < 60   )); then echo "#[fg=colour10,bold]●#[default]"
+elif (( age < 360  )); then echo "#[fg=colour2]●#[default]"
+elif (( age < 900  )); then echo "#[fg=colour11]◐#[default]"
+else                        echo "#[fg=colour9]○#[default]"
+fi

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# claude-tmux — fzf-based picker for past Claude Code sessions.
+#
+# Designed for use as a tmux popup: `prefix + g` opens this in a centered
+# overlay. Pick a session → cd to its project dir → claude --resume <id>.
+#
+# Use cases:
+#   1. After tmux-resurrect restore, pick which session each pane should resume to
+#      (cross-reference with ~/.tmux/resurrect/claude-state.txt for the original mapping)
+#   2. Browse all past Claude work across all projects without leaving your pane
+#   3. Quick session resumption without remembering session IDs
+#
+# Format displayed in fzf: <age>  <short-label>  <preview>
+# Hidden columns: session_id (field 3), full cwd (field 5)
+#
+# Listing comes from claude-sessions-list (Python single-process — ~7x faster
+# than the previous per-file jq approach).
+
+set -uo pipefail
+
+if ! command -v fzf >/dev/null 2>&1; then
+  echo "claude-tmux: fzf not found on PATH" >&2
+  exit 1
+fi
+
+LISTER="$HOME/bin/claude-sessions-list"
+if [[ ! -x "$LISTER" ]]; then
+  echo "claude-tmux: $LISTER missing or not executable" >&2
+  exit 1
+fi
+
+# Pad age (col 1) to 4 chars, label (col 2) to 32 for alignment in fzf.
+selection=$("$LISTER" \
+  | awk -F'\t' -v OFS='\t' '{ printf "%-4s\t%-32s\t%s\t%s\t%s\n", $1, $2, $3, $4, $5 }' \
+  | fzf \
+      --delimiter=$'\t' \
+      --with-nth=1,2,4 \
+      --header='Claude Sessions — Enter to resume, Esc to cancel' \
+      --reverse \
+      --no-sort \
+      --height=100% \
+      --prompt='session> ' \
+      --preview='echo "session: {3}"; echo "cwd:     {5}"; echo ""; echo "{4}"' \
+      --preview-window=down:4:wrap)
+
+[[ -z "$selection" ]] && exit 0
+
+session_id=$(echo "$selection" | cut -f3 | tr -d ' ')
+cwd=$(echo "$selection" | cut -f5 | sed 's/[[:space:]]*$//')
+
+if [[ ! -d "$cwd" ]]; then
+  echo "claude-tmux: cwd no longer exists: $cwd" >&2
+  exit 1
+fi
+
+cd "$cwd" || exit 1
+exec claude --resume "$session_id"

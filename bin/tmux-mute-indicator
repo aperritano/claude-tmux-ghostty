@@ -1,0 +1,9 @@
+#!/bin/sh
+# tmux-mute-indicator — emit 🔇 in tmux statusline when Claude hooks are muted.
+#
+# Used in status-right to remind the user when audio is silenced. When
+# unmuted, returns empty string (no indicator shown).
+
+if [ -f "$HOME/.claude/.muted" ]; then
+  printf '#[fg=colour11]🔇#[default] '
+fi

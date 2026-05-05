@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""
+claude-worktrees — list git worktrees with Claude session activity per worktree.
+
+Outputs an aligned table:
+  WORKTREE                            BRANCH              AGE    CLAUDE
+  .worktrees/feature-x                feature-x           3h     ●
+  .worktrees/old-thing                old-thing           5w
+
+Indicators:
+  ● = claude session active in last hour
+  ○ = claude session active in last 24h
+  (blank) = no recent claude work
+
+Sort: age ascending (newest at top).
+Run from anywhere inside the repo or any of its worktrees.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+HOME = str(Path.home())
+PROJECTS = Path(HOME) / ".claude" / "projects"
+
+# ANSI color helpers
+G = "\033[32m"   # green
+Y = "\033[33m"   # yellow
+C = "\033[36m"   # cyan
+M = "\033[8;38;5;240m"  # dim
+N = "\033[0m"
+BOLD = "\033[1m"
+
+
+def run(cmd, cwd=None):
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd).stdout
+
+
+def find_main_repo() -> Path | None:
+    toplevel = run(["git", "rev-parse", "--show-toplevel"]).strip()
+    if not toplevel:
+        return None
+    p = toplevel
+    if "/.worktrees/" in p:
+        p = p.split("/.worktrees/")[0]
+    elif "/.claude/worktrees/" in p:
+        p = p.split("/.claude/worktrees/")[0]
+    return Path(p)
+
+
+def list_worktrees(main_repo: Path) -> list[tuple[str, str]]:
+    """Return [(worktree_path, branch_name), ...] excluding the main repo itself."""
+    out = run(["git", "-C", str(main_repo), "worktree", "list", "--porcelain"])
+    entries = []
+    cur = {}
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            cur = {"wt": line[len("worktree "):]}
+        elif line.startswith("branch "):
+            cur["branch"] = line[len("branch refs/heads/"):]
+        elif line.startswith("HEAD "):
+            cur["head"] = line[len("HEAD "):]
+        elif line == "" and cur.get("wt"):
+            entries.append(cur)
+            cur = {}
+    if cur.get("wt"):
+        entries.append(cur)
+    rows = []
+    main_str = str(main_repo)
+    for e in entries:
+        if e["wt"] == main_str:
+            continue
+        rows.append((e["wt"], e.get("branch") or "(detached)"))
+    return rows
+
+
+def commit_age_seconds(wt: str) -> int | None:
+    out = run(["git", "-C", wt, "log", "-1", "--format=%ct"]).strip()
+    if not out:
+        return None
+    try:
+        return int(datetime.now().timestamp()) - int(out)
+    except ValueError:
+        return None
+
+
+def claude_state(wt: str) -> tuple[str, str]:
+    """
+    Return (color_code, indicator) for this worktree based on Claude session activity.
+    """
+    project_dir = wt.replace("/", "-").replace(".", "-")
+    proj_path = PROJECTS / project_dir
+    if not proj_path.is_dir():
+        return ("", "")
+    # Most recent .jsonl in the project dir
+    files = list(proj_path.glob("*.jsonl"))
+    if not files:
+        return ("", "")
+    latest = max(files, key=lambda f: f.stat().st_mtime)
+    age = int(datetime.now().timestamp() - latest.stat().st_mtime)
+    if age < 3600:
+        return (G, "●")
+    if age < 86400:
+        return (Y, "○")
+    return ("", "")
+
+
+def fmt_age(seconds: int) -> str:
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    if seconds < 604800:
+        return f"{seconds // 86400}d"
+    return f"{seconds // 604800}w"
+
+
+def truncate(s: str, n: int) -> str:
+    if len(s) <= n:
+        return s
+    return s[: n - 3] + "..."
+
+
+def main() -> int:
+    main_repo = find_main_repo()
+    if main_repo is None:
+        print("claude-worktrees: not in a git repo", file=sys.stderr)
+        return 1
+
+    rows = list_worktrees(main_repo)
+    main_str = str(main_repo)
+
+    print(f"{C}── worktrees in {main_repo.name} ──{N}")
+    print(f"  {'WORKTREE':<50} {'BRANCH':<32} {'AGE':<6} ")
+
+    enriched = []
+    counts = {"active": 0, "idle": 0, "stale": 0, "none": 0}
+    for wt, branch in rows:
+        age_sec = commit_age_seconds(wt) or 0
+        color, indicator = claude_state(wt)
+        if indicator == "●":
+            counts["active"] += 1
+        elif indicator == "○":
+            counts["idle"] += 1
+        elif claude_state_has_history(wt):
+            counts["stale"] += 1
+        else:
+            counts["none"] += 1
+        enriched.append((age_sec, wt, branch, color, indicator))
+
+    enriched.sort(key=lambda r: r[0])
+
+    for age_sec, wt, branch, color, indicator in enriched:
+        wt_short = wt.replace(main_str + "/", "")
+        wt_short = truncate(wt_short, 50)
+        branch = truncate(branch, 32)
+        age = fmt_age(age_sec) if age_sec else "?"
+        ind = f"{color}{indicator}{N}" if indicator else ""
+        print(f"  {wt_short:<50} {branch:<32} {age:<6} {ind}")
+
+    total = len(rows)
+    summary = (
+        f"\033[90m── {total} total · {G}{counts['active']} active{N}\033[90m · "
+        f"{Y}{counts['idle']} idle{N}\033[90m · {counts['stale']} stale ──{N}"
+    )
+    print(summary)
+    return 0
+
+
+def claude_state_has_history(wt: str) -> bool:
+    project_dir = wt.replace("/", "-").replace(".", "-")
+    return (PROJECTS / project_dir).is_dir() and any((PROJECTS / project_dir).glob("*.jsonl"))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

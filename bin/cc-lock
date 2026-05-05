@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# cc-lock — file-level coordination for the agent fleet.
+#
+# Prevents two teammates editing the same file at the same time. Wired into
+# PreToolUse(Edit|Write) hook to acquire, Stop/SubagentStop hook to release.
+#
+# Storage: /tmp/cc-locks/<sanitized-path>
+#   First line: session_id of holder
+#   Second line: epoch timestamp of acquisition
+# Stale locks (>TTL) are treated as released — auto-recovery if a session dies
+# without releasing.
+#
+# Subcommands:
+#   acquire <session_id> <file_path>  → exit 0 if lock taken or already held by this session
+#                                       exit 1 if held by another live session (caller blocks)
+#   release <session_id> <file_path>  → release this lock if held by this session
+#   release-by-session <session_id>   → release ALL locks held by this session
+#   list                              → show active locks with ages
+#   gc                                → prune stale locks (>TTL)
+#
+# Hook integration sketch (PreToolUse on Edit|Write):
+#   jq -r '. | "\(.session_id)\t\(.tool_input.file_path // empty)"' \
+#     | { read sid path; cc-lock acquire "$sid" "$path"; }
+
+set -uo pipefail
+
+DIR="/tmp/cc-locks"
+TTL=3600  # seconds
+mkdir -p "$DIR"
+
+cmd="${1:-}"
+
+sanitize_path() {
+  # Convert /a/b/c -> _a_b_c (deterministic, reversible enough for debug)
+  printf '%s' "$1" | sed 's|/|__|g; s|^__||; s|^\.|DOT|'
+}
+
+is_alive() {
+  # Best-effort liveness: stale-by-time. We don't have a session-id → pid map
+  # to check actual process liveness, so TTL is the staleness signal.
+  local age="$1"
+  (( age <= TTL ))
+}
+
+case "$cmd" in
+  acquire)
+    sid="${2:-}"; path="${3:-}"
+    [[ -z "$sid" || -z "$path" ]] && { echo "usage: cc-lock acquire <sid> <path>" >&2; exit 2; }
+    key=$(sanitize_path "$path")
+    f="$DIR/$key"
+    now=$(date +%s)
+    if [[ -e "$f" ]]; then
+      holder=$(head -1 "$f" 2>/dev/null)
+      ts=$(sed -n '2p' "$f" 2>/dev/null)
+      ts=${ts:-0}
+      age=$(( now - ts ))
+      if [[ "$holder" == "$sid" ]]; then
+        # We already hold it; refresh timestamp.
+        printf '%s\n%s\n' "$sid" "$now" > "$f"
+        exit 0
+      fi
+      if is_alive "$age"; then
+        # Held by another live session — caller must block.
+        exit 1
+      fi
+      # Stale lock — fall through to take it.
+    fi
+    printf '%s\n%s\n' "$sid" "$now" > "$f"
+    exit 0
+    ;;
+  release)
+    sid="${2:-}"; path="${3:-}"
+    [[ -z "$sid" || -z "$path" ]] && { echo "usage: cc-lock release <sid> <path>" >&2; exit 2; }
+    key=$(sanitize_path "$path")
+    f="$DIR/$key"
+    [[ -e "$f" ]] || exit 0
+    holder=$(head -1 "$f" 2>/dev/null)
+    if [[ "$holder" == "$sid" ]]; then
+      rm -f "$f"
+    fi
+    exit 0
+    ;;
+  release-by-session)
+    sid="${2:-}"
+    [[ -z "$sid" ]] && { echo "usage: cc-lock release-by-session <sid>" >&2; exit 2; }
+    n=0
+    for f in "$DIR"/*; do
+      [[ -e "$f" ]] || continue
+      holder=$(head -1 "$f" 2>/dev/null)
+      if [[ "$holder" == "$sid" ]]; then
+        rm -f "$f"
+        n=$((n + 1))
+      fi
+    done
+    [[ "${VERBOSE:-0}" == "1" ]] && echo "released $n lock(s) for $sid"
+    exit 0
+    ;;
+  list)
+    now=$(date +%s)
+    found=0
+    for f in "$DIR"/*; do
+      [[ -e "$f" ]] || continue
+      holder=$(head -1 "$f" 2>/dev/null)
+      ts=$(sed -n '2p' "$f" 2>/dev/null)
+      ts=${ts:-0}
+      age=$(( now - ts ))
+      key=$(basename "$f")
+      printf '%-40s  %s  %ds\n' "${holder:0:8}" "$key" "$age"
+      found=$((found + 1))
+    done
+    [[ $found -eq 0 ]] && echo "(no active locks)"
+    exit 0
+    ;;
+  gc)
+    now=$(date +%s)
+    n=0
+    for f in "$DIR"/*; do
+      [[ -e "$f" ]] || continue
+      ts=$(sed -n '2p' "$f" 2>/dev/null)
+      ts=${ts:-0}
+      if (( now - ts > TTL )); then
+        rm -f "$f"
+        n=$((n + 1))
+      fi
+    done
+    [[ "${VERBOSE:-0}" == "1" ]] && echo "pruned $n stale lock(s)"
+    exit 0
+    ;;
+  ""|help|-h|--help)
+    sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
+    exit 0
+    ;;
+  *)
+    echo "cc-lock: unknown command: $cmd" >&2
+    exit 2
+    ;;
+esac
