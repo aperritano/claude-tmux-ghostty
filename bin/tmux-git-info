@@ -1,5 +1,6 @@
 #!/bin/zsh
 # Show git branch + dirty state + worktree indicator for tmux status bar
+export GIT_OPTIONAL_LOCKS=0  # avoids status-bar stall when gc/fetch holds a git lock
 cd "$1" 2>/dev/null || exit 0
 
 branch=$(git branch --show-current 2>/dev/null)

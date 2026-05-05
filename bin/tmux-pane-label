@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # tmux-pane-label — worktree + short branch + ahead/behind for pane border
+export GIT_OPTIONAL_LOCKS=0  # avoids status-bar stall when gc/fetch holds a git lock
 path=${1:-.}
 
 # Get branch
