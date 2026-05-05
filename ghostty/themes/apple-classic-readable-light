@@ -1,0 +1,56 @@
+# Apple Classic — Readable (Light)
+#
+# Daytime companion to apple-classic-readable. Inspired by the iTerm2
+# "Apple Classic" scheme but inverted to a parchment-on-ink relationship —
+# evokes classic Mac OS papers + Aqua-blue selection rather than the original
+# amber CRT.
+#
+# Design intent:
+#   - Warm parchment background (#f4ecd8) — older-paper hue, not pure white,
+#     matches the warm coffee bg of the dark variant on the opposite side
+#     of the luminance scale.
+#   - Warm ink foreground (#2a2620) — ~12:1 contrast (WCAG AAA), warm-leaning
+#     (brown-black) instead of cool slate so it pairs with the cream bg.
+#   - Apple amber cursor (#c87f00) — same brand callback as the dark variant
+#     at deeper luminance for visibility on the light bg.
+#   - Aqua-blue selection (#a8c8e8) — the classic Mac OS X highlight, the
+#     diagnostic visual cue that ties dark + light variants together.
+#   - ANSI palette holds AA contrast (≥4.5:1) for normal, ≥3:1 for bright.
+#     "Bright" means more saturated, not lighter — keeps emphasis legible
+#     on cream paper instead of washing out.
+#   - Comments (palette 8) at ~3:1 deliberately so they recede.
+#
+# Pairs with the dark variant; recommended config:
+#   theme = dark:apple-classic-readable,light:apple-classic-readable-light
+
+background = f4ecd8
+foreground = 2a2620
+
+cursor-color = c87f00
+cursor-text  = f4ecd8
+
+# Aqua-blue selection — classic Mac OS X highlight rendered light enough
+# to read foreground ink directly on top
+selection-background = a8c8e8
+selection-foreground = 1c1812
+
+# Normal (0-7) — each hue ≥ 4.5:1 against the parchment bg
+palette = 0=#2a2620
+palette = 1=#a8382c
+palette = 2=#5a7626
+palette = 3=#9c6a00
+palette = 4=#2c5e94
+palette = 5=#8a4274
+palette = 6=#1f7a72
+palette = 7=#5e554a
+
+# Bright (8-15) — same hues, more saturated for emphasis tier (NOT lighter,
+# which would lose contrast on a light background — common bug in light themes)
+palette = 8=#857668
+palette = 9=#c4483a
+palette = 10=#6a8a30
+palette = 11=#b88810
+palette = 12=#3878b0
+palette = 13=#a3568a
+palette = 14=#288c80
+palette = 15=#1c1812

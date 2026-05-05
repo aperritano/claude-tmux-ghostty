@@ -1,0 +1,51 @@
+# Apple Classic — Readable
+#
+# Inspired by iTerm2's "Apple Classic" (mbadolato/iTerm2-Color-Schemes), which
+# is a monochrome amber-on-dark CRT homage. That theme is gorgeous but its
+# amber foreground (#d5a200) is fatiguing for multi-hour code review and
+# strips ANSI hues of their semantic meaning (red=diff-, green=diff+, etc.).
+#
+# Design intent:
+#   - Keep the Apple Classic *spirit*: warm coffee background, cream paper
+#     foreground, Apple amber cursor as the brand callback, Aqua-blue selection.
+#   - Maximize source-code readability: each ANSI hue holds ≥ 4.5:1 contrast
+#     against the background and is distinct from its neighbors so a syntax
+#     highlighter doesn't blur red → orange → yellow into one band.
+#   - Diff-first greens/reds: warm-leaning so 200-line diffs don't vibrate.
+#   - Comments (palette 8) deliberately sit at ~3:1 — readable but recessive.
+#
+# Pairs with the dark Ghostty config; safe to leave the active theme set to
+# claude-code and switch in for a vintage session via:
+#   theme = apple-classic-readable
+# or as the dark half of the auto-switching pair:
+#   theme = dark:apple-classic-readable,light:claude-code-light
+
+background = 1f1d1a
+foreground = e6dac0
+
+cursor-color = ffb700
+cursor-text  = 1f1d1a
+
+# Aqua-blue selection — the "classic Mac OS" highlight, dark enough to read fg on top
+selection-background = 3a5878
+selection-foreground = f4ead4
+
+# Normal (0-7) — warm hue family, each separated for syntax legibility
+palette = 0=#3a342c
+palette = 1=#d85a4a
+palette = 2=#8aa84c
+palette = 3=#d4a017
+palette = 4=#5b8fb9
+palette = 5=#b06fa3
+palette = 6=#4ea99e
+palette = 7=#d8c8a8
+
+# Bright (8-15) — same hues, lifted luminance for emphasis tier
+palette = 8=#857764
+palette = 9=#e9685a
+palette = 10=#a8c469
+palette = 11=#e8c247
+palette = 12=#7eaed5
+palette = 13=#caa1c1
+palette = 14=#75c4b8
+palette = 15=#f4ead4

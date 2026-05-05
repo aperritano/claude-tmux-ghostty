@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  cc-config-sync hourly job.
+
+  Install:
+    cp macos/com.anthony.cc-config-sync.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/com.anthony.cc-config-sync.plist
+
+  Uninstall:
+    launchctl unload -w ~/Library/LaunchAgents/com.anthony.cc-config-sync.plist
+    rm ~/Library/LaunchAgents/com.anthony.cc-config-sync.plist
+
+  Logs: /tmp/cc-config-sync-<UID>.log
+
+  By default this calls `cc-config-sync` (sync + commit, no push). To
+  enable auto-push, change ProgramArguments to include `--push`.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.anthony.cc-config-sync</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/anthony.j.perritano/bin/cc-config-sync</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/cc-config-sync.out</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/cc-config-sync.err</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/anthony.j.perritano</string>
+    </dict>
+</dict>
+</plist>
