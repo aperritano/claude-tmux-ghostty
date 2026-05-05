@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint & audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Expected scripts present and executable ───────────────────────────
+      - name: bin scripts exist and are executable
+        run: |
+          expected="
+            claude-dev setup-github-ssh
+            tmux-claude-session tmux-git-info tmux-kill-teammate-pane
+            tmux-pane-label tmux-session-list tmux-short-path
+            tmux-tile-session tmux-tutorial
+          "
+          ok=true
+          for name in $expected; do
+            f="bin/$name"
+            if [ ! -f "$f" ]; then
+              echo "MISSING: $f"
+              ok=false
+            elif [ ! -x "$f" ]; then
+              echo "NOT EXECUTABLE: $f"
+              ok=false
+            else
+              echo "ok: $f"
+            fi
+          done
+          $ok
+
+      # ── Bash syntax check (bash -n) for all bash scripts ─────────────────
+      - name: bash syntax
+        run: |
+          ok=true
+          for f in \
+            bin/setup-github-ssh \
+            bin/tmux-pane-label \
+            bin/tmux-session-list \
+            bin/tmux-tile-session; do
+            if bash -n "$f"; then
+              echo "ok: $f"
+            else
+              echo "SYNTAX ERROR: $f"
+              ok=false
+            fi
+          done
+          $ok
+
+      # ── Install zsh for zsh syntax checks ────────────────────────────────
+      - name: install zsh
+        run: sudo apt-get install -y zsh
+
+      # ── Zsh syntax check (zsh -n) for all zsh scripts ────────────────────
+      - name: zsh syntax
+        run: |
+          ok=true
+          for f in \
+            bin/claude-dev \
+            bin/tmux-claude-session \
+            bin/tmux-git-info \
+            bin/tmux-kill-teammate-pane \
+            bin/tmux-short-path \
+            bin/tmux-tutorial; do
+            if zsh -n "$f"; then
+              echo "ok: $f"
+            else
+              echo "SYNTAX ERROR: $f"
+              ok=false
+            fi
+          done
+          $ok
+
+      # ── Full audit (runs when bin/tmux-claude-audit is present) ──────────
+      - name: structural audit
+        run: |
+          if [ -f bin/tmux-claude-audit ]; then
+            bash bin/tmux-claude-audit
+          else
+            echo "bin/tmux-claude-audit not present — skipping full audit"
+            echo "(will run once an audit PR is merged)"
+          fi
+
+      # ── Regression tests (runs when bin/tmux-claude-test is present) ─────
+      - name: regression tests
+        run: |
+          if [ -f bin/tmux-claude-test ]; then
+            bash bin/tmux-claude-test
+          else
+            echo "bin/tmux-claude-test not present — skipping regression tests"
+            echo "(will run once a test PR is merged)"
+          fi
