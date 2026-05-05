@@ -527,6 +527,19 @@ if [[ -x "$HOME/bin/cc-lock-pre-hook" ]]; then
   else
     test_fail "deny-JSON" "unexpected output: $out"
   fi
+  # Dot-path: /.dotfile — sanitize_path in cc-lock adds DOT prefix; pre-hook must match.
+  # Without the fix, holder lookup reads the wrong file and reason shows "(…)" with no session.
+  rm -rf /tmp/cc-locks
+  "$HOME/bin/cc-lock" acquire "sX" "/.dotfile" 2>/dev/null
+  out=$(echo '{"session_id":"sY","tool_name":"Edit","tool_input":{"file_path":"/.dotfile"}}' \
+        | "$HOME/bin/cc-lock-pre-hook" 2>/dev/null)
+  if echo "$out" | grep -q "sX"; then
+    test_pass "dot-path: deny reason names holder (DOT-prefix sanitization matches cc-lock)"
+  else
+    test_fail "dot-path holder lookup" "session prefix missing — DOT-prefix mismatch or deny absent: $out"
+  fi
+  "$HOME/bin/cc-lock" release-by-session sX 2>/dev/null
+
   "$HOME/bin/cc-lock" release-by-session sA 2>/dev/null
 else
   test_fail "executable present" "$HOME/bin/cc-lock-pre-hook missing"
