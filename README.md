@@ -123,7 +123,7 @@ Prefix is `Ctrl-a`.
 | `Ctrl-a s` | New shell window |
 | `Ctrl-a c` | New Claude Code window |
 | `Ctrl-a C` | Claude dev layout (65/35 split) |
-| `Ctrl-a n/p` | Next/previous window |
+| `Ctrl-a n/P` | Next/previous window |
 | `Ctrl-a 1-9` | Jump to window |
 | `Ctrl-a R` | Rename current session |
 | `Ctrl-a Tab` | Next session |
