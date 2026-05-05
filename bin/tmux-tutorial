@@ -108,7 +108,6 @@ pause \
 pause \
   "SWITCH BETWEEN WINDOWS
   Press:  ${BOLD}Ctrl-a  then  n${NC}  = next window
-  Press:  ${BOLD}Ctrl-a  then  p${NC}  = previous window
   Press:  ${BOLD}Ctrl-a  then  1${NC}  = window 1
   Press:  ${BOLD}Ctrl-a  then  2${NC}  = window 2
 
@@ -176,7 +175,7 @@ echo "  ${BOLD}Ctrl-h/j/k/l${NC} Navigate panes"
 echo "  ${BOLD}Ctrl-a c${NC}     New Claude Code window"
 echo "  ${BOLD}Ctrl-a s${NC}     New shell window"
 echo "  ${BOLD}Ctrl-a C${NC}     Claude dev layout"
-echo "  ${BOLD}Ctrl-a n/p${NC}   Next/prev window"
+echo "  ${BOLD}Ctrl-a n${NC}      Next window"
 echo "  ${BOLD}Ctrl-a d${NC}     Detach"
 echo "  ${BOLD}Ctrl-a r${NC}     Reload config"
 echo ""
