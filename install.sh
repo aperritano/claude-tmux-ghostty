@@ -125,6 +125,7 @@ link "$DOTFILES/tmux/tmux.conf" "$HOME/.tmux.conf"
 section "Helper scripts (~/bin)"
 mkdir -p "$HOME/bin"
 for script in "$DOTFILES"/bin/*; do
+  [ -f "$script" ] && [ -x "$script" ] || continue
   link "$script" "$HOME/bin/$(basename "$script")"
 done
 
