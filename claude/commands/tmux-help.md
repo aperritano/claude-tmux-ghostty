@@ -10,43 +10,43 @@ Display this reference to the user:
 
 | Action | Keys |
 |---|---|
-| Next pane (cycle forward) | `Ctrl-b` then `o` |
-| Previous pane (last active) | `Ctrl-b` then `;` |
-| Jump to pane by number | `Ctrl-b` then `q` (shows numbers, press number to jump) |
-| Focus pane left | `Ctrl-b` then `Left` |
-| Focus pane right | `Ctrl-b` then `Right` |
-| Focus pane up | `Ctrl-b` then `Up` |
-| Focus pane down | `Ctrl-b` then `Down` |
+| Next pane (cycle forward) | `Ctrl-a` then `o` |
+| Previous pane (last active) | `Ctrl-a` then `;` |
+| Jump to pane by number | `Ctrl-a` then `q` (shows numbers, press number to jump) |
+| Focus pane left | `Ctrl-a` then `Left` |
+| Focus pane right | `Ctrl-a` then `Right` |
+| Focus pane up | `Ctrl-a` then `Up` |
+| Focus pane down | `Ctrl-a` then `Down` |
 
 ## Zoom and Layout
 
 | Action | Keys |
 |---|---|
-| Zoom / unzoom current pane | `Ctrl-b` then `z` |
-| Cycle layouts (tiled, even-h, even-v, etc.) | `Ctrl-b` then `Space` |
-| Swap with next pane | `Ctrl-b` then `}` |
-| Swap with previous pane | `Ctrl-b` then `{` |
+| Zoom / unzoom current pane | `Ctrl-a` then `z` |
+| Cycle layouts (tiled, even-h, even-v, etc.) | `Ctrl-a` then `Space` |
+| Swap with next pane | `Ctrl-a` then `}` |
+| Swap with previous pane | `Ctrl-a` then `{` |
 
 ## Windows (tabs)
 
 | Action | Keys |
 |---|---|
-| Next window | `Ctrl-b` then `n` |
-| Previous window | `Ctrl-b` then `p` |
-| Jump to window by number | `Ctrl-b` then `0`-`9` |
-| List all windows | `Ctrl-b` then `w` |
+| Next window | `Ctrl-a` then `n` |
+| Previous window | `Ctrl-a` then `p` |
+| Jump to window by number | `Ctrl-a` then `0`-`9` |
+| List all windows | `Ctrl-a` then `w` |
 
 ## Session Management
 
 | Action | Keys |
 |---|---|
-| Detach from session | `Ctrl-b` then `d` |
+| Detach from session | `Ctrl-a` then `d` |
 | List sessions | `tmux ls` |
 | Attach to session | `tmux attach -t <name>` |
-| Kill current pane | `Ctrl-b` then `x` |
+| Kill current pane | `Ctrl-a` then `x` |
 
 ## Quick Tips
 
-- **Lost?** `Ctrl-b` then `q` flashes pane numbers — great for finding agent teammates
-- **Need focus?** `Ctrl-b` then `z` zooms one pane to fullscreen, same combo unzooms
-- **Rearrange?** `Ctrl-b` then `Space` cycles through tiled/horizontal/vertical layouts
+- **Lost?** `Ctrl-a` then `q` flashes pane numbers — great for finding agent teammates
+- **Need focus?** `Ctrl-a` then `z` zooms one pane to fullscreen, same combo unzooms
+- **Rearrange?** `Ctrl-a` then `Space` cycles through tiled/horizontal/vertical layouts

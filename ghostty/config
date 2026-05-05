@@ -1,10 +1,11 @@
-# Theme: claude-code (dark) + claude-code-light (light), auto-switching.
-# Previous themes: Alien Blood / Green CRT saved in themes/*.bak
-# Theme files live at ~/.config/ghostty/themes/
-theme = dark:claude-code,light:claude-code-light
+# Theme: stock Apple Classic (amber-on-dark) from iTerm2-Color-Schemes, bundled with Ghostty.
+# Custom apple-classic-readable / claude-code themes still in ~/.config/ghostty/themes/ if needed.
+theme = Apple Classic
+# Override Apple Classic's #2c2b2b with a darker, slightly warm near-black.
+background = #1a1818
 
 # Font
-font-family = NotoMono Nerd Font Mono
+font-family = JetBrainsMono Nerd Font Mono
 font-size = 14
 font-thicken = false
 # Reduced from 20% — large values cause ghost pixels during TUI scroll in tmux
@@ -22,7 +23,9 @@ cursor-style-blink = false
 
 # Shell integration
 shell-integration = detect
-shell-integration-features = cursor,sudo,title
+# Dropped 'title' — zshrc has _update_pane_title hook emitting OSC 2 directly.
+# Letting Ghostty also manage the title caused both to fight on every prompt.
+shell-integration-features = cursor,sudo
 
 # Session restore
 window-save-state = always
@@ -52,6 +55,9 @@ macos-option-as-alt = true
 # keybind = ctrl+k=goto_split:top
 # keybind = ctrl+l=goto_split:right
 
-# Prompt jumping
+# Prompt jumping — works in plain shell (jumps between zsh prompt marks via
+# OSC 133 from shell-integration). Does NOT navigate between Claude turns
+# inside the `claude` TUI — Claude Code does not emit OSC 133 around its own
+# prompts (4 open issues as of 2026-04). Useful outside Claude, no-op inside.
 keybind = cmd+up=jump_to_prompt:-1
 keybind = cmd+down=jump_to_prompt:1

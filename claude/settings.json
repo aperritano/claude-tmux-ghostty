@@ -1,5 +1,62 @@
 {
   "cleanupPeriodDays": 3,
+  "preferredNotifChannel": "iterm2",
+  "terminalProgressBarEnabled": true,
+  "fileCheckpointingEnabled": true,
+  "showTurnDuration": true,
+  "showThinkingSummaries": true,
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/bin/cc-sound /System/Library/Sounds/Glass.aiff; osascript -e 'display notification \"Claude needs your attention\" with title \"Claude Code\"' 2>/dev/null & $HOME/bin/cc-attention set"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/bin/cc-sound /System/Library/Sounds/Pop.aiff; $HOME/bin/cc-attention clear"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/bin/cc-sound /System/Library/Sounds/Funk.aiff; osascript -e 'display notification \"Claude turn failed\" with title \"Claude Code\" subtitle \"check the transcript\"' 2>/dev/null & $HOME/bin/cc-attention set"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/bin/cc-sound /System/Library/Sounds/Submarine.aiff 0.3; $HOME/bin/cc-attention clear"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/bin/cc-sound /System/Library/Sounds/Tink.aiff"
+          }
+        ]
+      }
+    ]
+  },
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
@@ -297,13 +354,16 @@
       "Edit(**/go.sum)",
       "Edit(**/.git/**)"
     ],
-    "defaultMode": "plan",
+    "defaultMode": "auto",
     "disableBypassPermissionsMode": "disable",
     "additionalDirectories": [
       "/tmp/mermaid-validation",
       "/tmp",
       "/Users/anthony.j.perritano/.claude/plans",
-      "/Users/anthony.j.perritano/dev/rde/portal_iq"
+      "/Users/anthony.j.perritano/dev/rde/portal_iq",
+      "/Users/anthony.j.perritano/dev/dotfiles",
+      "/Users/anthony.j.perritano/.claude",
+      "/Users/anthony.j.perritano/.config"
     ]
   },
   "model": "opus[1m]",
@@ -320,6 +380,18 @@
     "frontend-design@claude-plugins-official": true,
     "superpowers@claude-plugins-official": true
   },
-  "effortLevel": "high",
-  "teammateMode": "tmux"
+  "effortLevel": "xhigh",
+  "theme": "auto",
+  "editorMode": "vim",
+  "teammateMode": "tmux",
+  "remoteControlAtStartup": false,
+  "skipAutoPermissionPrompt": true,
+  "extraKnownMarketplaces": {
+    "karpathy-skills": {
+      "source": {
+        "source": "github",
+        "repo": "forrestchang/andrej-karpathy-skills"
+      }
+    }
+  }
 }

@@ -7,8 +7,27 @@ input=$(cat)
 
 cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // "?"')
 model=$(echo "$input" | jq -r '.model.display_name // "?"')
-used=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
+model_id=$(echo "$input" | jq -r '.model.id // empty')
+transcript=$(echo "$input" | jq -r '.transcript_path // empty')
 session=$(echo "$input" | jq -r '.session_name // empty')
+
+# Compute context usage from transcript (Claude Code does not send a percentage field).
+# Sum input + cache_creation + cache_read on the most recent assistant turn.
+used_int=""
+if [ -n "$transcript" ] && [ -r "$transcript" ]; then
+  tokens=$(tail -r "$transcript" 2>/dev/null | head -200 | \
+    jq -r 'select(.message.usage) | .message.usage
+           | (.input_tokens // 0)
+           + (.cache_creation_input_tokens // 0)
+           + (.cache_read_input_tokens // 0)' 2>/dev/null | head -1)
+  if [ -n "$tokens" ] && [ "$tokens" -gt 0 ] 2>/dev/null; then
+    case "$model_id" in
+      *'[1m]'*) ctx_max=1000000 ;;
+      *)        ctx_max=200000  ;;
+    esac
+    used_int=$(( tokens * 100 / ctx_max ))
+  fi
+fi
 
 # user@host
 user=$(whoami)
@@ -67,9 +86,26 @@ if [ -n "$session" ]; then
   line="${line} $(printf '\033[35m[%s]\033[0m' "$session")"
 fi
 
+# tmux-claude-save freshness — visible signal that continuum auto-save is alive.
+# Green: <6m (healthy)  Yellow: 6-15m (overdue)  Red: >15m (continuum may be dead)
+if [ -L "$HOME/.tmux/resurrect/last" ]; then
+  save_resolved=$(readlink "$HOME/.tmux/resurrect/last")
+  save_path="$HOME/.tmux/resurrect/$save_resolved"
+  if [ -f "$save_path" ]; then
+    save_mtime=$(stat -f %m "$save_path" 2>/dev/null || echo 0)
+    save_age_sec=$(( $(date +%s) - save_mtime ))
+    if   [ "$save_age_sec" -lt 60   ]; then save_age="${save_age_sec}s"
+    elif [ "$save_age_sec" -lt 3600 ]; then save_age="$((save_age_sec/60))m"
+    else                                    save_age="$((save_age_sec/3600))h"; fi
+    if   [ "$save_age_sec" -lt 360 ];  then save_color='\033[32m'
+    elif [ "$save_age_sec" -lt 900 ];  then save_color='\033[33m'
+    else                                    save_color='\033[31m'; fi
+    line="${line} $(printf "${save_color}save:${save_age}\033[0m")"
+  fi
+fi
+
 # Context usage with traffic-light coloring
-if [ -n "$used" ]; then
-  used_int=$(printf "%.0f" "$used")
+if [ -n "$used_int" ]; then
   if [ "$used_int" -ge 80 ]; then
     color='\033[31m'
   elif [ "$used_int" -ge 50 ]; then

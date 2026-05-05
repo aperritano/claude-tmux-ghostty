@@ -84,3 +84,23 @@ When authenticated tools are available (kubectl, gcloud, terraform, gh, etc.), r
 **Why this matters:** Static baselines miss running services not in the hosting matrix, real drift between desired and actual state, sync failures, security coverage gaps, and live resource counts. Live commands see reality; baseline files see a frozen past moment.
 
 **Applies to all evidence work:** service inventories, sync status, health probes, drift checks, assembly audits, cluster state, security posture. Do the work properly the first time.
+
+---
+
+## Coding Behavior
+
+These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+**Simplicity First** — Minimum code that solves the problem. No features, abstractions, configurability, or error handling beyond what was asked. If 200 lines could be 50, rewrite it. Senior-engineer test: "Is this overcomplicated?" If yes, simplify.
+
+**Surgical Changes** — Touch only what you must. Don't "improve" adjacent code, don't refactor things that aren't broken, don't change formatting. Match existing style even if you'd do it differently. Remove only orphans your own changes created — pre-existing dead code: mention, don't delete. Every changed line should trace to the user's request.
+
+**Goal-Driven Loops** — Transform tasks into verifiable goals before coding:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan with a verify-check alongside each step. Strong success criteria let you loop independently; weak criteria ("make it work") require constant clarification.
+
+**Multiple Interpretations** — If a request has more than one reasonable reading, surface them. Don't pick silently. If a simpler approach exists, say so and push back when warranted.
+
