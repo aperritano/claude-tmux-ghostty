@@ -1,0 +1,285 @@
+#!/bin/bash
+# Audit the claude-tmux-ghostty dotfiles repo for correctness and completeness.
+# Run from anywhere; resolves paths relative to this script.
+#
+# Output: PASS / FAIL / WARN / SKIP lines + summary.
+# Exit code: 0 if no FAILs, 1 if any FAIL.
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO/bin"
+TMUX_CONF="$REPO/tmux/tmux.conf"
+GHOSTTY_CONF="$REPO/ghostty/config"
+CLAUDE_DIR="$REPO/claude"
+README="$REPO/README.md"
+INSTALL="$REPO/install.sh"
+BREWFILE="$REPO/Brewfile"
+
+pass=0; fail=0; warn=0; skip=0
+
+if [ -t 1 ]; then
+  GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; DIM='\033[2m'; NC='\033[0m'
+else
+  GREEN=''; YELLOW=''; RED=''; DIM=''; NC=''
+fi
+
+_pass() { pass=$((pass + 1)); printf "${GREEN}PASS${NC}: %s\n" "$1"; }
+_fail() { fail=$((fail + 1)); printf "${RED}FAIL${NC}: %s\n" "$1"; }
+_warn() { warn=$((warn + 1)); printf "${YELLOW}WARN${NC}: %s\n" "$1"; }
+_skip() { skip=$((skip + 1)); printf "${DIM}SKIP${NC}: %s\n" "$1"; }
+
+# ── Bin scripts ───────────────────────────────────────────────────────────────
+
+BIN_SCRIPTS="claude-dev setup-github-ssh tmux-claude-session tmux-git-info \
+  tmux-kill-teammate-pane tmux-pane-label tmux-session-list tmux-short-path \
+  tmux-tile-session tmux-tutorial"
+
+echo ""
+echo "── Bin scripts ──────────────────────────────────────────────────────────"
+
+for script in $BIN_SCRIPTS; do
+  path="$BIN/$script"
+
+  if [ -f "$path" ]; then
+    _pass "$script: file exists in bin/"
+  else
+    _fail "$script: missing from bin/"
+    continue
+  fi
+
+  if [ -x "$path" ]; then
+    _pass "$script: is executable"
+  else
+    _fail "$script: not executable (run: chmod +x bin/$script)"
+  fi
+
+  shebang=$(head -1 "$path" 2>/dev/null)
+  case "$shebang" in
+    "#!/bin/bash"|"#!/bin/zsh"|"#!/usr/bin/env bash"|"#!/usr/bin/env zsh")
+      _pass "$script: valid shebang ($shebang)" ;;
+    "#!"*)
+      _warn "$script: non-standard shebang: $shebang" ;;
+    *)
+      _fail "$script: missing shebang" ;;
+  esac
+
+  case "$shebang" in
+    *bash*) interp=bash ;;
+    *zsh*)  interp=zsh  ;;
+    *)      interp=""   ;;
+  esac
+
+  if [ -z "$interp" ]; then
+    _skip "$script: unknown interpreter, skipping syntax check"
+  elif ! command -v "$interp" >/dev/null 2>&1; then
+    _skip "$script: $interp not on PATH, skipping syntax check"
+  elif $interp -n "$path" 2>/dev/null; then
+    _pass "$script: $interp syntax OK"
+  else
+    _fail "$script: $interp syntax error"
+  fi
+done
+
+# ── tmux.conf key bindings ────────────────────────────────────────────────────
+
+echo ""
+echo "── tmux.conf key bindings ───────────────────────────────────────────────"
+
+conf_has() { grep -qE "$1" "$TMUX_CONF" 2>/dev/null; }
+
+check_binding() {
+  if conf_has "$2"; then
+    _pass "tmux.conf: $1"
+  else
+    _fail "tmux.conf: $1 (pattern: $2)"
+  fi
+}
+
+check_binding "prefix = Ctrl-a"                  "set.*prefix.*C-a"
+check_binding "Ctrl-a Ctrl-a sends prefix"        "bind.*C-a.*send-prefix"
+check_binding "split right (prefix+j)"            "bind j.*split-window.*-h"
+check_binding "split down (prefix+i)"             "bind i.*split-window.*-v"
+check_binding "vim nav left (C-h)"                "bind -n C-h.*select-pane"
+check_binding "vim nav down (C-j)"                "bind -n C-j.*select-pane"
+check_binding "vim nav up (C-k)"                  "bind -n C-k.*select-pane"
+check_binding "vim nav right (C-l)"               "bind -n C-l.*select-pane"
+check_binding "resize left (prefix+H)"            "bind.*H.*resize-pane.*-L"
+check_binding "resize down (prefix+J)"            "bind.*J.*resize-pane.*-D"
+check_binding "resize up (prefix+K)"              "bind.*K.*resize-pane.*-U"
+check_binding "resize right (prefix+L)"           "bind.*L.*resize-pane.*-R"
+check_binding "session switch forward (Tab)"      "bind Tab.*switch-client"
+check_binding "zoom toggle (prefix+z)"            "bind z.*resize-pane.*-Z"
+check_binding "equalize panes (prefix+=)"         "bind =.*select-layout"
+check_binding "new shell pane (prefix+s)"         "bind s.*split-window"
+check_binding "new claude pane (prefix+c)"        "bind c.*split-window.*claude"
+check_binding "claude dev layout (prefix+C)"      "bind C.*new-window"
+check_binding "session manager popup (prefix+g)"  "bind g.*display-popup.*claude-tmux"
+check_binding "copy session ID (prefix+y)"        "bind y.*tmux-claude-session"
+check_binding "copy pane path (prefix+p)"         "bind p.*pbcopy"
+check_binding "tile toggle (prefix+E)"            "bind E.*tmux-tile-session"
+check_binding "kill other panes (prefix+X)"       "bind X.*kill-pane"
+check_binding "reload config (prefix+r)"          "bind r.*source-file"
+check_binding "rename session (prefix+R)"         "bind R.*rename-session"
+check_binding "mouse toggle (prefix+m)"           "bind m.*set.*mouse"
+check_binding "help popup (prefix+?)"             "bind \\?.*display-popup"
+
+# ── tmux.conf options ─────────────────────────────────────────────────────────
+
+echo ""
+echo "── tmux.conf options ────────────────────────────────────────────────────"
+
+check_option() {
+  if conf_has "$2"; then
+    _pass "tmux.conf option: $1"
+  else
+    _fail "tmux.conf option: $1 (pattern: $2)"
+  fi
+}
+
+check_option "escape-time 0 (critical for vim/claude)"   "escape-time 0"
+check_option "mouse enabled"                             "set.*mouse on"
+check_option "windows start at 1"                        "base-index 1"
+check_option "panes start at 1"                          "pane-base-index 1"
+check_option "renumber-windows on"                       "renumber-windows on"
+check_option "large scrollback history"                  "history-limit"
+check_option "passthrough enabled (Claude Code cursors)" "allow-passthrough on"
+check_option "status-interval set"                       "status-interval"
+check_option "heavy pane borders"                        "pane-border-lines heavy"
+check_option "status bar at bottom"                      "status-position bottom"
+check_option "default-terminal set"                      "default-terminal"
+check_option "true color (RGB) override"                 "terminal-overrides.*RGB|terminal-features.*RGB"
+
+# ── Status bar script wiring ──────────────────────────────────────────────────
+
+echo ""
+echo "── Status bar script wiring ─────────────────────────────────────────────"
+
+for script in tmux-short-path tmux-git-info tmux-claude-session; do
+  if conf_has "$script"; then
+    _pass "tmux.conf status-right references $script"
+  else
+    _fail "tmux.conf does not reference $script (status bar broken)"
+  fi
+done
+
+# ── SubagentStop hook wiring ──────────────────────────────────────────────────
+
+echo ""
+echo "── SubagentStop hook wiring ─────────────────────────────────────────────"
+
+SETTINGS="$CLAUDE_DIR/settings.json"
+if [ -f "$SETTINGS" ] && grep -q "tmux-kill-teammate-pane" "$SETTINGS" 2>/dev/null; then
+  _pass "tmux-kill-teammate-pane wired in claude/settings.json"
+else
+  _warn "tmux-kill-teammate-pane not wired in claude/settings.json — README claims auto-clean on SubagentStop but hook is absent; owner has not decided to wire or remove the claim"
+fi
+
+# ── README completeness ───────────────────────────────────────────────────────
+
+echo ""
+echo "── README completeness ──────────────────────────────────────────────────"
+
+if [ -f "$README" ]; then
+  _pass "README.md exists"
+  for script in $BIN_SCRIPTS; do
+    if grep -q "$script" "$README"; then
+      _pass "README.md mentions $script"
+    else
+      _fail "README.md does not mention $script"
+    fi
+  done
+else
+  _fail "README.md missing"
+fi
+
+# ── install.sh ────────────────────────────────────────────────────────────────
+
+echo ""
+echo "── install.sh ───────────────────────────────────────────────────────────"
+
+if [ -f "$INSTALL" ]; then
+  _pass "install.sh exists"
+
+  if [ -x "$INSTALL" ]; then
+    _pass "install.sh is executable"
+  else
+    _fail "install.sh is not executable"
+  fi
+
+  if bash -n "$INSTALL" 2>/dev/null; then
+    _pass "install.sh passes bash syntax check"
+  else
+    _fail "install.sh fails bash syntax check"
+  fi
+
+  for target in tmux.conf zshrc vimrc; do
+    if grep -q "$target" "$INSTALL"; then
+      _pass "install.sh symlinks $target"
+    else
+      _fail "install.sh does not reference $target"
+    fi
+  done
+
+  if grep -q 'bin/\*\|bin/\$' "$INSTALL"; then
+    _pass "install.sh copies bin/ scripts to ~/bin/"
+  else
+    _fail "install.sh does not copy bin/ scripts"
+  fi
+else
+  _fail "install.sh missing"
+fi
+
+# ── Ghostty config ────────────────────────────────────────────────────────────
+
+echo ""
+echo "── Ghostty config ───────────────────────────────────────────────────────"
+
+if [ -f "$GHOSTTY_CONF" ]; then
+  _pass "ghostty/config exists"
+  grep -q "font-family"     "$GHOSTTY_CONF" && _pass "ghostty/config has font-family"     || _fail "ghostty/config missing font-family"
+  grep -q "theme"           "$GHOSTTY_CONF" && _pass "ghostty/config has theme"           || _fail "ghostty/config missing theme"
+  grep -q "scrollback-limit" "$GHOSTTY_CONF" && _pass "ghostty/config has scrollback-limit" || _fail "ghostty/config missing scrollback-limit"
+else
+  _fail "ghostty/config missing"
+fi
+
+# ── Brewfile ──────────────────────────────────────────────────────────────────
+
+echo ""
+echo "── Brewfile ─────────────────────────────────────────────────────────────"
+
+if [ -f "$BREWFILE" ]; then
+  _pass "Brewfile exists"
+  for formula in tmux fzf jq; do
+    if grep -qE "\"$formula\"|'$formula'" "$BREWFILE"; then
+      _pass "Brewfile contains $formula"
+    else
+      _fail "Brewfile missing $formula"
+    fi
+  done
+else
+  _fail "Brewfile missing"
+fi
+
+# ── Claude config ─────────────────────────────────────────────────────────────
+
+echo ""
+echo "── Claude config ────────────────────────────────────────────────────────"
+
+for f in "CLAUDE.md" "settings.json" "statusline-command.sh" \
+         "rules/deterministic-execution-protocol.md"; do
+  if [ -f "$CLAUDE_DIR/$f" ]; then
+    _pass "claude/$f exists"
+  else
+    _fail "claude/$f missing"
+  fi
+done
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
+echo ""
+echo "══════════════════════════════════════════════════════════════════════════"
+printf "Audit complete: ${GREEN}%d PASS${NC} / ${YELLOW}%d WARN${NC} / ${RED}%d FAIL${NC} / ${DIM}%d SKIP${NC}\n" \
+  "$pass" "$warn" "$fail" "$skip"
+echo "══════════════════════════════════════════════════════════════════════════"
+
+[ "$fail" -eq 0 ]

@@ -1,0 +1,250 @@
+#!/bin/bash
+# Unit / integration tests for claude-tmux-ghostty bin/ scripts.
+# Tests that require zsh or a live tmux server are skipped when unavailable.
+# Run: bash bin/tmux-claude-test
+#
+# Exit code: 0 if no FAILs, 1 if any FAIL.
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO/bin"
+
+pass=0; fail=0; skip=0
+
+if [ -t 1 ]; then
+  GREEN='\033[0;32m'; RED='\033[0;31m'; DIM='\033[2m'; NC='\033[0m'
+else
+  GREEN=''; RED=''; DIM=''; NC=''
+fi
+
+ok()   { pass=$((pass + 1)); printf "${GREEN}ok${NC}  %s\n" "$1"; }
+fail() { fail=$((fail + 1)); printf "${RED}FAIL${NC} %s\n" "$1"; }
+skip() { skip=$((skip + 1)); printf "${DIM}skip${NC} %s\n" "$1"; }
+
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [ "$expected" = "$actual" ]; then
+    ok "$desc"
+  else
+    fail "$desc (want: $(printf '%q' "$expected"), got: $(printf '%q' "$actual"))"
+  fi
+}
+
+assert_contains() {
+  local desc="$1" pattern="$2" actual="$3"
+  if printf '%s' "$actual" | grep -q "$pattern"; then
+    ok "$desc"
+  else
+    fail "$desc (want pattern '$pattern', got: $(printf '%q' "$actual"))"
+  fi
+}
+
+assert_empty() {
+  local desc="$1" actual="$2"
+  if [ -z "$actual" ]; then
+    ok "$desc"
+  else
+    fail "$desc (want empty, got: $(printf '%q' "$actual"))"
+  fi
+}
+
+assert_nonempty() {
+  local desc="$1" actual="$2"
+  if [ -n "$actual" ]; then
+    ok "$desc"
+  else
+    fail "$desc (want non-empty, got empty)"
+  fi
+}
+
+HAS_ZSH=false
+command -v zsh >/dev/null 2>&1 && HAS_ZSH=true
+
+HAS_TMUX=false
+tmux info >/dev/null 2>&1 && HAS_TMUX=true
+
+# ── Script permissions ────────────────────────────────────────────────────────
+
+echo ""
+echo "── Script permissions ───────────────────────────────────────────────────"
+
+BIN_SCRIPTS="claude-dev setup-github-ssh tmux-claude-session tmux-git-info \
+  tmux-kill-teammate-pane tmux-pane-label tmux-session-list tmux-short-path \
+  tmux-tile-session tmux-tutorial"
+
+for script in $BIN_SCRIPTS; do
+  if [ -x "$BIN/$script" ]; then
+    ok "$script is executable"
+  else
+    fail "$script is not executable"
+  fi
+done
+
+# ── Script syntax checks ──────────────────────────────────────────────────────
+
+echo ""
+echo "── Script syntax checks ─────────────────────────────────────────────────"
+
+for script in $BIN_SCRIPTS; do
+  path="$BIN/$script"
+  shebang=$(head -1 "$path" 2>/dev/null)
+  case "$shebang" in
+    *bash*) interp=bash ;;
+    *zsh*)  interp=zsh  ;;
+    *)      interp=""   ;;
+  esac
+
+  if [ -z "$interp" ]; then
+    skip "$script: unknown interpreter"
+  elif ! command -v "$interp" >/dev/null 2>&1; then
+    skip "$script: $interp not available"
+  elif $interp -n "$path" 2>/dev/null; then
+    ok "$script: $interp syntax OK"
+  else
+    fail "$script: $interp syntax error"
+  fi
+done
+
+# ── tmux-short-path ───────────────────────────────────────────────────────────
+
+echo ""
+echo "── tmux-short-path ──────────────────────────────────────────────────────"
+
+SHORT_PATH="$BIN/tmux-short-path"
+
+if ! $HAS_ZSH; then
+  skip "tmux-short-path: zsh not available (skipping all short-path tests)"
+else
+  # home dir → ~
+  result=$(zsh "$SHORT_PATH" "$HOME")
+  assert_eq "home dir → ~" "~" "$result"
+
+  # 1-level under home
+  result=$(zsh "$SHORT_PATH" "$HOME/foo")
+  assert_eq "1-level under home → ~/foo" "~/foo" "$result"
+
+  # 2-level under home (3 parts total: ~, foo, bar)
+  result=$(zsh "$SHORT_PATH" "$HOME/foo/bar")
+  assert_eq "2-level under home → ~/foo/bar" "~/foo/bar" "$result"
+
+  # deep path (5 parts: ~, a, b, c, d) → ~/…/c/d
+  result=$(zsh "$SHORT_PATH" "$HOME/a/b/c/d")
+  assert_eq "deep path → ~/…/c/d" "~/…/c/d" "$result"
+
+  # worktree path
+  result=$(zsh "$SHORT_PATH" "$HOME/dev/.worktrees/feature-foo")
+  assert_eq "worktree path → wt:feature-foo" "wt:feature-foo" "$result"
+
+  # long worktree name gets "wt:" prefix and truncated to ≤19 chars
+  result=$(zsh "$SHORT_PATH" "$HOME/dev/.worktrees/this-is-a-very-long-worktree-name")
+  assert_contains "long worktree name has wt: prefix" "^wt:" "$result"
+  if [ "${#result}" -le 19 ]; then
+    ok "long worktree name ≤19 chars (${#result})"
+  else
+    fail "long worktree name too long: ${#result} chars (want ≤19)"
+  fi
+
+  # result is always capped at 30 chars
+  result=$(zsh "$SHORT_PATH" "$HOME/one/two/three/four/five/six/seven/eight/nine/ten")
+  if [ "${#result}" -le 30 ]; then
+    ok "path result capped at ≤30 chars (${#result})"
+  else
+    fail "path result exceeds 30 chars: ${#result}"
+  fi
+
+  # non-worktree absolute path outside $HOME
+  result=$(zsh "$SHORT_PATH" "/usr/local/bin")
+  assert_contains "absolute path outside home is non-empty" "." "$result"
+fi
+
+# ── tmux-pane-label ───────────────────────────────────────────────────────────
+
+echo ""
+echo "── tmux-pane-label ──────────────────────────────────────────────────────"
+
+PANE_LABEL="$BIN/tmux-pane-label"
+
+# Non-git directory: returns dirname only
+tmpdir=$(mktemp -d)
+result=$(bash "$PANE_LABEL" "$tmpdir" 2>/dev/null)
+assert_eq "non-git dir: returns basename" "$(basename "$tmpdir")" "$result"
+rmdir "$tmpdir"
+
+# In the repo itself: returns something with branch info
+result=$(bash "$PANE_LABEL" "$REPO" 2>/dev/null)
+assert_nonempty "git repo: label is non-empty" "$result"
+assert_contains "git repo: label contains repo name" "claude-tmux-ghostty" "$result"
+
+# ── tmux-git-info ─────────────────────────────────────────────────────────────
+
+echo ""
+echo "── tmux-git-info ────────────────────────────────────────────────────────"
+
+GIT_INFO="$BIN/tmux-git-info"
+
+if ! $HAS_ZSH; then
+  skip "tmux-git-info: zsh not available (skipping all git-info tests)"
+else
+  # Non-git dir: exits cleanly with no output
+  tmpdir=$(mktemp -d)
+  result=$(zsh "$GIT_INFO" "$tmpdir" 2>/dev/null)
+  assert_empty "non-git dir: no output" "$result"
+  rmdir "$tmpdir"
+
+  # Inside this git repo: returns branch info
+  result=$(zsh "$GIT_INFO" "$REPO" 2>/dev/null)
+  assert_nonempty "git repo: returns branch info" "$result"
+
+  # Output starts with space (for status bar formatting)
+  case "$result" in
+    " "*) ok "git-info output starts with space (status bar padding)" ;;
+    *) fail "git-info output missing leading space (breaks status bar alignment)" ;;
+  esac
+fi
+
+# ── tmux-session-list ─────────────────────────────────────────────────────────
+
+echo ""
+echo "── tmux-session-list ────────────────────────────────────────────────────"
+
+SESSION_LIST="$BIN/tmux-session-list"
+
+if ! $HAS_TMUX; then
+  # Without a tmux server, list-sessions fails silently → empty output
+  result=$(bash "$SESSION_LIST" "main" 2>/dev/null)
+  assert_empty "no tmux server: empty output" "$result"
+  skip "live tmux-session-list tests require a running tmux server"
+else
+  # With a live server: output should be non-empty and contain current session
+  current=$(tmux display-message -p '#{session_name}' 2>/dev/null || echo "main")
+  result=$(bash "$SESSION_LIST" "$current" 2>/dev/null)
+  assert_nonempty "tmux server: session list non-empty" "$result"
+  assert_contains "tmux server: current session highlighted" "$current" "$result"
+fi
+
+# ── tmux-tile-session (no live tmux) ─────────────────────────────────────────
+
+echo ""
+echo "── tmux-tile-session ────────────────────────────────────────────────────"
+
+TILE_SESSION="$BIN/tmux-tile-session"
+
+if ! $HAS_TMUX; then
+  skip "tmux-tile-session: requires running tmux server"
+else
+  # With tmux: calling with bad arg should print usage to stderr and exit non-zero
+  if bash "$TILE_SESSION" badarg 2>/dev/null; then
+    fail "tmux-tile-session: bad arg should exit non-zero"
+  else
+    ok "tmux-tile-session: bad arg exits non-zero"
+  fi
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
+echo ""
+echo "══════════════════════════════════════════════════════════════════════════"
+printf "Tests complete: ${GREEN}%d ok${NC} / ${RED}%d FAIL${NC} / ${DIM}%d skip${NC}\n" \
+  "$pass" "$fail" "$skip"
+echo "══════════════════════════════════════════════════════════════════════════"
+
+[ "$fail" -eq 0 ]
