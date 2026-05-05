@@ -23,7 +23,7 @@ func mkMsgs() []*sessiontree.Message {
 }
 
 func TestConversationRenders(t *testing.T) {
-	m := NewConversation(mkMsgs())
+	m := NewConversation("", mkMsgs())
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
 	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
 	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
@@ -82,7 +82,7 @@ func TestConversationRendersMarkdown(t *testing.T) {
 			}},
 		},
 	}
-	m := NewConversation(msgs)
+	m := NewConversation("", msgs)
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
 	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
 	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
@@ -121,7 +121,7 @@ func TestConversationRendersAllContentBlocks(t *testing.T) {
 			},
 		},
 	}
-	m := NewConversation(msgs)
+	m := NewConversation("", msgs)
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
 	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
 	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
@@ -146,7 +146,7 @@ func TestConversationStyleColors(t *testing.T) {
 		Timestamp: time.Now(),
 		Content:   []sessiontree.Block{{Type: "text", Text: "plain body, then **emphasis**."}},
 	}}
-	m := NewConversation(msgs)
+	m := NewConversation("", msgs)
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
 	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
 	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
@@ -188,7 +188,7 @@ func TestConversationLinksFilePathsToVSCode(t *testing.T) {
 			Text: "See docs/ADR-001.md and nonexistent/missing.md.",
 		}},
 	}}
-	m := NewConversation(msgs)
+	m := NewConversation("", msgs)
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
 	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
 	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
@@ -230,7 +230,7 @@ func TestConversationLinksGitHubRefs(t *testing.T) {
 		Cwd:       dir,
 		Content:   []sessiontree.Block{{Type: "text", Text: "Working on PR-828 and issue-429."}},
 	}}
-	m := NewConversation(msgs)
+	m := NewConversation("", msgs)
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
 	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
 	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
@@ -254,7 +254,7 @@ func TestConversationWrapsLinksInOSC8(t *testing.T) {
 		Timestamp: time.Now(),
 		Content:   []sessiontree.Block{{Type: "text", Text: "see https://anthropic.com for details"}},
 	}}
-	m := NewConversation(msgs)
+	m := NewConversation("", msgs)
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
 	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
 	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
@@ -284,7 +284,7 @@ func TestConversationViewportShowsAllContent(t *testing.T) {
 			Content:   []sessiontree.Block{{Type: "text", Text: fmt.Sprintf("message %02d body line", i)}},
 		}
 	}
-	m := NewConversation(msgs)
+	m := NewConversation("", msgs)
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 10))
 	tm.Send(tea.WindowSizeMsg{Width: 80, Height: 10})
 	// Send enough PgDn to reach the bottom: 50 msgs / ~3 lines per
@@ -313,7 +313,7 @@ func TestConversationGotoTopAndBottom(t *testing.T) {
 			Content:   []sessiontree.Block{{Type: "text", Text: fmt.Sprintf("msg-%02d", i)}},
 		}
 	}
-	m := NewConversation(msgs)
+	m := NewConversation("", msgs)
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 10))
 	tm.Send(tea.WindowSizeMsg{Width: 80, Height: 10})
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")}) // jump to bottom
@@ -344,7 +344,7 @@ func TestConversationCursorFollowsViewport(t *testing.T) {
 			Content:   []sessiontree.Block{{Type: "text", Text: fmt.Sprintf("body-%02d", i)}},
 		}
 	}
-	m := NewConversation(msgs)
+	m := NewConversation("", msgs)
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 10))
 	tm.Send(tea.WindowSizeMsg{Width: 80, Height: 10})
 	// Press j 25 times — cursor goes to msg index 25, well past the
@@ -375,7 +375,7 @@ func TestConversationFooterShowsScrollPosition(t *testing.T) {
 			Content:   []sessiontree.Block{{Type: "text", Text: fmt.Sprintf("body %02d", i)}},
 		}
 	}
-	m := NewConversation(msgs)
+	m := NewConversation("", msgs)
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 20))
 	tm.Send(tea.WindowSizeMsg{Width: 80, Height: 20})
 	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
@@ -389,6 +389,92 @@ func TestConversationFooterShowsScrollPosition(t *testing.T) {
 	}
 	if !strings.Contains(got, "lines") {
 		t.Errorf("footer missing line-position counter:\n%s", got)
+	}
+}
+
+// Right-click on the conversation area must open the context menu overlay.
+// The overlay embeds ANSI cursor-positioning sequences in View() output.
+// We verify directly via Update+View rather than through teatest.FinalOutput,
+// because FinalOutput only captures the last rendered frame (after any
+// dismissal) — not the intermediate frame where the menu was visible.
+func TestContextMenuOpensOnRightClick(t *testing.T) {
+	msgs := make([]*sessiontree.Message, 5)
+	for i := range msgs {
+		msgs[i] = &sessiontree.Message{
+			UUID:      fmt.Sprintf("u-%02d", i),
+			Role:      "user",
+			Timestamp: time.Now(),
+			Content:   []sessiontree.Block{{Type: "text", Text: fmt.Sprintf("body-%02d", i)}},
+		}
+	}
+	m := NewConversation("", msgs)
+
+	// Size the model so the viewport is ready.
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	conv := model.(ConversationModel)
+
+	// Simulate right-click at (5, 3).
+	model, _ = conv.Update(tea.MouseMsg{
+		Button: tea.MouseButtonRight,
+		Action: tea.MouseActionPress,
+		X:      5,
+		Y:      3,
+	})
+	conv = model.(ConversationModel)
+
+	// View() must contain the menu labels while cmenu is visible.
+	got := conv.View()
+	for _, label := range []string{"Resume + branch", "Replay as prompt", "Quote to buffer"} {
+		if !strings.Contains(got, label) {
+			t.Errorf("context menu label %q not in View() after right-click", label)
+		}
+	}
+
+	// Esc must dismiss the menu (not quit).
+	model, cmd := conv.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	conv = model.(ConversationModel)
+	if cmd != nil {
+		// Should not be tea.Quit — menu dismiss only
+		t.Logf("cmd after Esc-from-menu: %v (expected nil or batch)", cmd)
+	}
+	// Menu must be gone from the view after dismiss.
+	got = conv.View()
+	if strings.Contains(got, "Resume + branch") {
+		t.Errorf("context menu still visible after Esc dismiss")
+	}
+}
+
+// Pressing 4 on the cursor message must quote its text to the buffer file
+// and show a toast confirmation in the footer. The toast replaces the
+// normal position counter for exactly one frame.
+func TestQuoteKeyWritesBufferAndShowsToast(t *testing.T) {
+	dir := t.TempDir()
+	msgs := []*sessiontree.Message{{
+		UUID:      "u-qt",
+		Role:      "user",
+		Timestamp: time.Now(),
+		Content:   []sessiontree.Block{{Type: "text", Text: "quotable content here"}},
+	}}
+	// Override HOME so the quote buffer lands in the temp dir.
+	t.Setenv("HOME", dir)
+	m := NewConversation("test-sid", msgs)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 20))
+	tm.Send(tea.WindowSizeMsg{Width: 80, Height: 20})
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("4")})
+	tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
+	got := readOutput(t, tm)
+
+	if !strings.Contains(got, "quoted") {
+		t.Errorf("toast message not shown after pressing 4:\n%s", got)
+	}
+	// Verify the buffer file was actually written.
+	bufPath := filepath.Join(dir, ".local", "share", "cc-rich", "quotes.md")
+	data, err := os.ReadFile(bufPath)
+	if err != nil {
+		t.Fatalf("quote buffer not created at %s: %v", bufPath, err)
+	}
+	if !strings.Contains(string(data), "quotable content here") {
+		t.Errorf("quote buffer does not contain message text: %s", data)
 	}
 }
 

@@ -99,9 +99,14 @@ shipped via `~/dev/dotfiles/`. Run `cc-doctor` to verify all are wired.
 | `G` | jump to bottom |
 | `PgUp` / `PgDn` | half-page scroll |
 | mouse wheel | scroll |
-| `q` / `Esc` | close sidebar |
+| right-click | context menu for that message |
+| `1` | context menu → Resume + branch (F1 fork) |
+| `2` | context menu → Replay as prompt (F2 fork) |
+| `4` | quote message to `~/.local/share/cc-rich/quotes.md` |
+| `m` | merge composer (coming soon) |
+| `q` / `Esc` | close sidebar (or dismiss context menu if open) |
 
-Footer shows `Nlines/Mlines · Pmsg/Qmsg` for orientation.
+Footer shows `Nlines/Mlines · Pmsg/Qmsg` for orientation. After `4`, shows a one-frame toast confirmation.
 
 ## Clickable links (OSC 8)
 

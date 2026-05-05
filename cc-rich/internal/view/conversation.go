@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,6 +17,7 @@ import (
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/aperritano/cc-rich/internal/actions"
 	"github.com/aperritano/cc-rich/internal/sessiontree"
 )
 
@@ -226,18 +228,44 @@ func styleConfig() ansi.StyleConfig {
 	return cfg
 }
 
+// cmenuState holds the state of the right-click context menu overlay.
+// visible=false means the menu is not shown.
+type cmenuState struct {
+	visible bool
+	sel     int // 0=resume+branch 1=replay 2=quote 3=merge
+	msgIdx  int // which message this menu targets
+	x, y    int // screen position of the right-click (0-indexed)
+}
+
+var cmenuLabels = [4]string{
+	"[1] Resume + branch",
+	"[2] Replay as prompt",
+	"[4] Quote to buffer",
+	"[m] Merge composer",
+}
+
+// PendingAction carries a fork request to dispatch after the TUI exits.
+// main.go reads this from the final model after p.Run() returns and
+// executes via actions.Fork with a DefaultRunner.
+type PendingAction struct {
+	Kind      string // "fork_resume" | "fork_replay"
+	Msg       *sessiontree.Message
+	SessionID string
+}
+
 // ConversationModel renders a list of messages as a scrollable column.
 // The actual scroll state (YOffset) lives in viewport; we own cursor
 // position and the message list and feed the viewport pre-rendered
 // content via SetContent on state changes.
 type ConversationModel struct {
-	msgs   []*sessiontree.Message
-	cursor int
-	width  int
-	height int
-	done   bool
-	md     *glamour.TermRenderer // built lazily on first WindowSizeMsg
-	mdW    int                   // width the renderer was built for
+	msgs      []*sessiontree.Message
+	cursor    int
+	width     int
+	height    int
+	done      bool
+	sessionID string // Claude session UUID — carried to PendingAction for fork
+	md        *glamour.TermRenderer // built lazily on first WindowSizeMsg
+	mdW       int                   // width the renderer was built for
 
 	vp    viewport.Model // owns scroll position; we feed it content
 	ready bool           // becomes true after first WindowSizeMsg
@@ -258,10 +286,20 @@ type ConversationModel struct {
 	// We avoid rebuilding on cursor moves — content doesn't change,
 	// only the viewport offset does.
 	contentBuilt bool
+
+	// Context menu overlay state.
+	cmenu cmenuState
+	// toastMsg shows a brief notice in the footer for one frame (cleared
+	// after being rendered once).
+	toastMsg string
+
+	// PendingAction is set before tea.Quit for fork actions (F1/F2).
+	// main.go reads this after p.Run() and dispatches via actions.Fork.
+	PendingAction *PendingAction
 }
 
-func NewConversation(msgs []*sessiontree.Message) ConversationModel {
-	return ConversationModel{msgs: msgs}
+func NewConversation(sessionID string, msgs []*sessiontree.Message) ConversationModel {
+	return ConversationModel{sessionID: sessionID, msgs: msgs}
 }
 
 func (m ConversationModel) Init() tea.Cmd { return nil }
@@ -297,7 +335,49 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.contentBuilt = true
 		}
 
+	case tea.MouseMsg:
+		if t.Button == tea.MouseButtonRight && t.Action == tea.MouseActionPress {
+			// Map screen Y → content line → message index.
+			contentLine := m.vp.YOffset + t.Y
+			msgIdx := m.msgIdxAtContentLine(contentLine)
+			m.cmenu = cmenuState{
+				visible: true,
+				sel:     0,
+				msgIdx:  msgIdx,
+				x:       t.X,
+				y:       t.Y,
+			}
+			return m, nil
+		}
+
 	case tea.KeyMsg:
+		if m.cmenu.visible {
+			// Context menu key handling.
+			switch t.String() {
+			case "esc", "q":
+				m.cmenu.visible = false
+				return m, nil
+			case "j", "down":
+				m.cmenu.sel = (m.cmenu.sel + 1) % 4
+				return m, nil
+			case "k", "up":
+				m.cmenu.sel = (m.cmenu.sel + 3) % 4
+				return m, nil
+			case "enter":
+				return m.executeAction(m.cmenu.sel)
+			case "1":
+				return m.executeAction(0)
+			case "2":
+				return m.executeAction(1)
+			case "4":
+				return m.executeAction(2)
+			case "m":
+				return m.executeAction(3)
+			}
+			return m, nil
+		}
+
+		// Normal key handling when menu is not visible.
 		switch t.String() {
 		case "esc", "q":
 			m.done = true
@@ -311,8 +391,6 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.vp.GotoBottom()
 			}
 		case "j", "down":
-			// Advance cursor + scroll viewport to it. No content
-			// rebuild — just an offset change.
 			if m.cursor < len(m.msgs)-1 {
 				m.cursor++
 				if m.ready && m.cursor < len(m.msgLineStart) {
@@ -326,18 +404,58 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.vp.SetYOffset(m.msgLineStart[m.cursor])
 				}
 			}
+		case "1":
+			// F1: open menu pre-selecting "Resume + branch"
+			m.cmenu = cmenuState{visible: true, sel: 0, msgIdx: m.cursor, x: 2, y: 2}
+			return m, nil
+		case "2":
+			// F2: open menu pre-selecting "Replay as prompt"
+			m.cmenu = cmenuState{visible: true, sel: 1, msgIdx: m.cursor, x: 2, y: 2}
+			return m, nil
+		case "4":
+			// F4: quote immediately — no menu needed for this single-step action
+			if m.cursor < len(m.msgs) {
+				if err := m.doQuote(m.msgs[m.cursor]); err != nil {
+					m.toastMsg = "quote failed: " + err.Error()
+				} else {
+					m.toastMsg = "quoted → ~/.local/share/cc-rich/quotes.md"
+				}
+			}
+			return m, nil
+		case "m":
+			m.toastMsg = "merge composer not yet implemented"
+			return m, nil
 		}
 	}
 
 	// Forward unhandled keys + mouse to viewport so PgUp/PgDn/wheel
-	// work without us having to enumerate them. Tasks 4-5 add the
-	// rest of the explicit keymap above this fallthrough.
-	if m.ready {
+	// work without us having to enumerate them. Context menu intercepts
+	// all keys when visible (returns early above), so only non-menu
+	// events reach here.
+	if m.ready && !m.cmenu.visible {
 		var cmd tea.Cmd
 		m.vp, cmd = m.vp.Update(msg)
 		cmds = append(cmds, cmd)
 	}
 	return m, tea.Batch(cmds...)
+}
+
+// msgIdxAtContentLine returns the index of the message whose rendered
+// block begins at or before contentLine. Used to map right-click Y
+// coordinate (+ viewport offset) to a message.
+func (m *ConversationModel) msgIdxAtContentLine(contentLine int) int {
+	if len(m.msgLineStart) == 0 {
+		return 0
+	}
+	idx := 0
+	for i, start := range m.msgLineStart {
+		if start <= contentLine {
+			idx = i
+		} else {
+			break
+		}
+	}
+	return idx
 }
 
 // renderMarkdown lazily builds a width-tuned Glamour renderer and runs the
@@ -369,13 +487,12 @@ func (m *ConversationModel) renderMarkdown(md string) string {
 	return strings.TrimRight(out, "\n")
 }
 
-// footer renders a one-line scroll-position indicator. Format:
-//
-//	42/418 lines · 12/45 messages
-//
-// Muted color; no leading icon. Shown below the viewport content in
-// View().
-func (m ConversationModel) footer() string {
+// footerLine renders a one-line scroll-position indicator, or a brief
+// toast message for one render cycle.
+func (m ConversationModel) footerLine() string {
+	if m.toastMsg != "" {
+		return StyleMuted.Render("✓ " + m.toastMsg)
+	}
 	if !m.ready {
 		return ""
 	}
@@ -393,6 +510,71 @@ func (m ConversationModel) footer() string {
 		"%d/%d lines · %d/%d messages",
 		curLine, totalLines, curMsg, totalMsgs,
 	))
+}
+
+// renderContextMenu returns a lipgloss-bordered context menu string
+// with the currently selected item highlighted.
+func (m ConversationModel) renderContextMenu() string {
+	menuBorder := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorAccent).
+		Padding(0, 1)
+	selStyle := lipgloss.NewStyle().
+		Background(ColorAccent).
+		Foreground(lipgloss.Color("0")).
+		Bold(true)
+
+	var lines []string
+	msg := ""
+	if m.cmenu.msgIdx < len(m.msgs) {
+		msg = m.msgs[m.cmenu.msgIdx].UUID
+		if len(msg) > 12 {
+			msg = msg[:12]
+		}
+	}
+	lines = append(lines, StyleMuted.Render("msg: "+msg))
+	for i, label := range cmenuLabels {
+		if i == m.cmenu.sel {
+			lines = append(lines, selStyle.Render("  "+label+"  "))
+		} else {
+			lines = append(lines, "  "+label)
+		}
+	}
+	lines = append(lines, StyleMuted.Render("↑↓ navigate · enter/1/2/4/m · esc cancel"))
+	return menuBorder.Render(strings.Join(lines, "\n"))
+}
+
+// overlayContextMenu embeds the context menu over base using ANSI cursor
+// positioning, clamped to the screen bounds. AltScreen mode means the
+// framework clears the screen each frame so there are no artifacts.
+func (m ConversationModel) overlayContextMenu(base string) string {
+	menu := m.renderContextMenu()
+	menuLines := strings.Split(menu, "\n")
+	menuW := 28 // approximate visible width of the menu box
+	menuH := len(menuLines)
+
+	startX := m.cmenu.x
+	startY := m.cmenu.y
+	if startX+menuW > m.width {
+		startX = m.width - menuW
+	}
+	if startX < 0 {
+		startX = 0
+	}
+	if startY+menuH > m.height-1 {
+		startY = m.height - 1 - menuH
+	}
+	if startY < 0 {
+		startY = 0
+	}
+
+	var sb strings.Builder
+	sb.WriteString(base)
+	for i, line := range menuLines {
+		// \x1b[row;colH: ANSI cursor absolute positioning (1-indexed)
+		sb.WriteString(fmt.Sprintf("\x1b[%d;%dH%s", startY+i+1, startX+1, line))
+	}
+	return sb.String()
 }
 
 // buildContent renders all messages into a single string and
@@ -460,6 +642,74 @@ func (m *ConversationModel) buildContent() string {
 	return sb.String()
 }
 
+// doQuote appends the message's text content to the shared quote buffer.
+// Creates the directory and file if needed. Atomic: write to tmp + rename.
+func (m *ConversationModel) doQuote(msg *sessiontree.Message) error {
+	home := os.Getenv("HOME")
+	bufDir := filepath.Join(home, ".local", "share", "cc-rich")
+	if err := os.MkdirAll(bufDir, 0o755); err != nil {
+		return err
+	}
+	bufPath := filepath.Join(bufDir, "quotes.md")
+
+	var text strings.Builder
+	for _, b := range msg.Content {
+		if b.Type == "text" {
+			text.WriteString(b.Text)
+			text.WriteString("\n")
+		}
+	}
+	return actions.QuoteToBuffer(bufPath, actions.QuoteEntry{
+		SessionID: m.sessionID,
+		MsgUUID:   msg.UUID,
+		Timestamp: time.Now(),
+		Text:      strings.TrimSpace(text.String()),
+	})
+}
+
+// executeAction dispatches the selected context menu action.
+// Fork actions (0, 1) set PendingAction and quit — main.go runs them.
+// Quote (2) writes the buffer file inline and shows a toast.
+// Merge (3) is not yet implemented.
+func (m ConversationModel) executeAction(itemIdx int) (tea.Model, tea.Cmd) {
+	m.cmenu.visible = false
+	if m.cmenu.msgIdx >= len(m.msgs) {
+		return m, nil
+	}
+	msg := m.msgs[m.cmenu.msgIdx]
+
+	switch itemIdx {
+	case 0: // Resume + branch (F1)
+		m.PendingAction = &PendingAction{
+			Kind:      "fork_resume",
+			Msg:       msg,
+			SessionID: m.sessionID,
+		}
+		m.done = true
+		return m, tea.Quit
+
+	case 1: // Replay as prompt (F2)
+		m.PendingAction = &PendingAction{
+			Kind:      "fork_replay",
+			Msg:       msg,
+			SessionID: m.sessionID,
+		}
+		m.done = true
+		return m, tea.Quit
+
+	case 2: // Quote to buffer (F4)
+		if err := m.doQuote(msg); err != nil {
+			m.toastMsg = "quote failed: " + err.Error()
+		} else {
+			m.toastMsg = "quoted → ~/.local/share/cc-rich/quotes.md"
+		}
+
+	case 3: // Merge composer
+		m.toastMsg = "merge composer not yet implemented"
+	}
+	return m, nil
+}
+
 func (m ConversationModel) View() string {
 	if !m.ready {
 		// Pre-WindowSizeMsg: viewport has no size; fall back to the
@@ -467,8 +717,13 @@ func (m ConversationModel) View() string {
 		// sees something for the first frame).
 		return m.buildContent()
 	}
-	// Reserve the bottom row for the footer; viewport already sized
-	// itself to Height-1 in Update, so we just stack the viewport +
-	// footer with lipgloss.
-	return lipgloss.JoinVertical(lipgloss.Left, m.vp.View(), m.footer())
+	// Clear toast after first render (shown for one frame).
+	footer := m.footerLine()
+	m.toastMsg = ""
+
+	base := lipgloss.JoinVertical(lipgloss.Left, m.vp.View(), footer)
+	if m.cmenu.visible {
+		return m.overlayContextMenu(base)
+	}
+	return base
 }

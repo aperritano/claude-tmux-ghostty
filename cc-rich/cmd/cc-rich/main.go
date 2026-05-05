@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/aperritano/cc-rich/internal/actions"
 	"github.com/aperritano/cc-rich/internal/sessiontree"
 	"github.com/aperritano/cc-rich/internal/view"
 )
@@ -63,13 +64,23 @@ func runPane(paneID string) {
 		return
 	}
 	p := tea.NewProgram(
-		view.NewConversation(msgs),
+		view.NewConversation(sid, msgs),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
-	if _, err := p.Run(); err != nil {
+	final, err := p.Run()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	// Dispatch any pending fork action (F1 / F2) set by the conversation
+	// view before it called tea.Quit. Fork requires tmux subprocess calls
+	// which must happen outside the Bubble Tea render loop.
+	if conv, ok := final.(view.ConversationModel); ok && conv.PendingAction != nil {
+		if err := dispatchFork(conv.PendingAction); err != nil {
+			fmt.Fprintf(os.Stderr, "fork error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }
 
@@ -124,4 +135,56 @@ func transcriptPath(sid string) (string, error) {
 		return "", fmt.Errorf("not found")
 	}
 	return found, nil
+}
+
+// dispatchFork executes a pending fork action after the TUI has exited.
+// fork_resume: synthesized preamble → seed file → cc-replay-shim in new tmux window.
+// fork_replay: raw message text → seed file → cc-replay-shim in new tmux window.
+// Both use atomic seed writes through actions.Fork so cc-replay-shim never
+// sees a partial file.
+func dispatchFork(a *view.PendingAction) error {
+	tmpDir := os.TempDir()
+	seedPath := filepath.Join(tmpDir, "cc-rich-seed-"+a.Msg.UUID[:8]+".txt")
+
+	// Collect text content from the message.
+	var textParts []string
+	for _, b := range a.Msg.Content {
+		if b.Type == "text" {
+			textParts = append(textParts, b.Text)
+		}
+	}
+	msgText := strings.Join(textParts, "\n")
+
+	// Derive tmux session name (the fork opens a new window in the same session).
+	sessOut, err := exec.Command("tmux", "display-message", "-p", "#{session_name}").Output()
+	if err != nil {
+		return fmt.Errorf("tmux session name: %w", err)
+	}
+	sessName := strings.TrimSpace(string(sessOut))
+	cwd := a.Msg.Cwd
+	if cwd == "" {
+		cwd = os.Getenv("HOME")
+	}
+
+	r := actions.DefaultRunner{}
+	switch a.Kind {
+	case "fork_resume":
+		preamble := "# Continuing from session " + a.SessionID + "\n\n" + msgText
+		return actions.Fork(r, actions.ForkResume, actions.ForkArgs{
+			SessionName:  sessName,
+			OrigCwd:      cwd,
+			SeedPath:     seedPath,
+			PreambleText: preamble,
+		})
+	case "fork_replay":
+		if err := os.WriteFile(seedPath, []byte(msgText), 0o644); err != nil {
+			return err
+		}
+		return actions.Fork(r, actions.ForkReplay, actions.ForkArgs{
+			SessionName: sessName,
+			OrigCwd:     cwd,
+			SeedPath:    seedPath,
+		})
+	}
+	return fmt.Errorf("unknown fork kind: %s", a.Kind)
 }
