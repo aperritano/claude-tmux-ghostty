@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+# tmux-claude-audit — living spec for the claude-tmux-ghostty dotfiles repo
+#
+# Every shipped tool gets an audit check here.  CI runs this on every PR.
+# Exit 0 = all clear; non-zero = at least one FAIL.
+#
+# Bash 3.2+ compatible (macOS bash floor).
+
+set -uo pipefail
+
+PASS=0; WARN=0; FAIL=0
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO_ROOT/bin"
+TMUX_CONF="$REPO_ROOT/tmux/tmux.conf"
+
+_pass() { PASS=$((PASS+1)); printf "  PASS  %s\n" "$1"; }
+_warn() { WARN=$((WARN+1)); printf "  WARN  %s\n" "$1"; }
+_fail() { FAIL=$((FAIL+1)); printf "  FAIL  %s\n" "$1"; }
+_section() { printf "\n── %s ──\n" "$1"; }
+
+# ── 1. bin/ workflow scripts: present, executable, shebang ────────────────────
+_section "bin/ workflow scripts"
+
+for s in claude-dev setup-github-ssh tmux-claude-session tmux-git-info \
+          tmux-kill-teammate-pane tmux-pane-label tmux-session-list \
+          tmux-short-path tmux-tile-session tmux-tutorial; do
+  f="$BIN/$s"
+  if [ ! -f "$f" ]; then
+    _fail "$s: file missing"
+    continue
+  fi
+  if [ ! -x "$f" ]; then
+    _fail "$s: not executable (chmod +x bin/$s)"
+    continue
+  fi
+  if ! head -1 "$f" | grep -qE '^#!'; then
+    _fail "$s: no shebang on line 1"
+    continue
+  fi
+  _pass "$s"
+done
+
+# ── 2. Audit + test scripts: present and executable ───────────────────────────
+_section "audit + test scripts"
+
+for s in tmux-claude-audit tmux-claude-test; do
+  f="$BIN/$s"
+  if [ ! -f "$f" ]; then
+    _fail "$s: missing"
+    continue
+  fi
+  if [ ! -x "$f" ]; then
+    _fail "$s: not executable"
+    continue
+  fi
+  if ! head -1 "$f" | grep -qE '^#!'; then
+    _fail "$s: no shebang"
+    continue
+  fi
+  _pass "$s"
+done
+
+# ── 3. tmux.conf wiring to ~/bin/ scripts ────────────────────────────────────
+_section "tmux.conf wiring"
+
+for s in tmux-short-path tmux-git-info tmux-claude-session tmux-tile-session; do
+  if grep -qE "(~/bin/|\\\$HOME/bin/)$s" "$TMUX_CONF"; then
+    _pass "tmux.conf → ~/bin/$s"
+  else
+    _fail "tmux.conf has no reference to ~/bin/$s"
+  fi
+done
+
+# tmux-kill-teammate-pane: README claims it is wired via Claude Code hooks but
+# there is no hook in the repo and tmux.conf does not reference it directly.
+# This is a known open question — WARN rather than FAIL so it surfaces on
+# every run without blocking CI.
+if grep -q "tmux-kill-teammate-pane" "$TMUX_CONF"; then
+  _pass "tmux.conf references tmux-kill-teammate-pane"
+else
+  _warn "tmux-kill-teammate-pane not in tmux.conf (README/impl skew — open question: wire hook or drop README claim)"
+fi
+
+# tmux-session-list exists in bin/ but the current tmux.conf uses the built-in
+# #{S:...} format string for status-left instead.  May be intentional.
+if grep -q "tmux-session-list" "$TMUX_CONF"; then
+  _pass "tmux.conf references tmux-session-list"
+else
+  _warn "tmux-session-list not in tmux.conf (#{S:...} used instead — verify this is intentional)"
+fi
+
+# ── 4. install.sh symlinks bin/ → ~/bin/ ─────────────────────────────────────
+_section "install.sh"
+
+INSTALL="$REPO_ROOT/install.sh"
+if [ ! -f "$INSTALL" ]; then
+  _fail "install.sh missing"
+else
+  if [ -x "$INSTALL" ]; then
+    _pass "install.sh is executable"
+  else
+    _fail "install.sh is not executable"
+  fi
+  if grep -qE '"?\$HOME/bin|~/bin' "$INSTALL"; then
+    _pass "install.sh references ~/bin"
+  else
+    _fail "install.sh does not set up ~/bin"
+  fi
+  if grep -q 'for script in.*bin/' "$INSTALL"; then
+    _pass "install.sh loops over bin/* to symlink scripts"
+  else
+    _warn "install.sh may not symlink all bin/ scripts (check the bin loop)"
+  fi
+fi
+
+# ── 5. Core config files present ─────────────────────────────────────────────
+_section "core config files"
+
+for f in tmux/tmux.conf zsh/zshrc git/gitconfig git/gitignore_global \
+          vim/vimrc Brewfile install.sh; do
+  if [ -f "$REPO_ROOT/$f" ]; then
+    _pass "$f"
+  else
+    _fail "$f missing"
+  fi
+done
+
+# ── 6. Ghostty config + named themes ─────────────────────────────────────────
+_section "Ghostty config + themes"
+
+if [ -f "$REPO_ROOT/ghostty/config" ]; then
+  _pass "ghostty/config"
+else
+  _fail "ghostty/config missing"
+fi
+
+THEMES_DIR="$REPO_ROOT/ghostty/themes"
+for theme in "claude-code" "claude-code-light" "claude-quiet" "Green CRT"; do
+  if [ -f "$THEMES_DIR/$theme" ]; then
+    _pass "ghostty/themes/$theme"
+  else
+    _fail "ghostty/themes/$theme missing"
+  fi
+done
+
+# ── 7. tmux.conf key bindings ────────────────────────────────────────────────
+_section "tmux.conf key bindings"
+
+_check_bind() {
+  local key="$1" desc="$2"
+  if grep -qE "^bind $key " "$TMUX_CONF"; then
+    _pass "bind $key ($desc)"
+  else
+    _fail "bind $key missing ($desc)"
+  fi
+}
+
+_check_bind c   "new Claude pane (tiled into current window)"
+_check_bind C   "Claude dev layout (65%/35% split)"
+_check_bind E   "tile/untile toggle (expose all windows)"
+_check_bind g   "Claude session manager popup"
+_check_bind X   "kill orphaned agent panes"
+_check_bind s   "new shell pane"
+_check_bind j   "split right"
+_check_bind i   "split down"
+_check_bind z   "zoom pane"
+_check_bind R   "rename current session"
+_check_bind r   "reload config"
+_check_bind y   "copy Claude session ID to clipboard"
+_check_bind p   "copy pane path to clipboard"
+_check_bind "?" "help popup / cheat sheet"
+
+# ── 8. tmux.conf terminal settings ───────────────────────────────────────────
+_section "tmux.conf terminal settings"
+
+_tmux_has() {
+  if grep -q "$1" "$TMUX_CONF"; then
+    _pass "$2"
+  else
+    _fail "$2"
+  fi
+}
+
+_tmux_has "allow-passthrough on"  "allow-passthrough on (Claude Code cursor + clipboard)"
+_tmux_has "escape-time 0"         "escape-time 0 (no vim/Claude Code key delay)"
+_tmux_has "history-limit 100000"  "history-limit 100000 (matches Ghostty scrollback)"
+_tmux_has "mouse on"              "mouse enabled"
+_tmux_has "renumber-windows on"   "renumber-windows on"
+_tmux_has "base-index 1"          "base-index 1"
+_tmux_has "pane-base-index 1"     "pane-base-index 1"
+_tmux_has "tmux-256color"         "tmux-256color default-terminal"
+_tmux_has "xterm-ghostty"         "xterm-ghostty terminal features"
+_tmux_has "set-clipboard on"      "set-clipboard on (copy-mode integration)"
+
+# ── 9. Claude Code config files ───────────────────────────────────────────────
+_section "claude/ config"
+
+for f in claude/CLAUDE.md claude/settings.json claude/statusline-command.sh; do
+  if [ -f "$REPO_ROOT/$f" ]; then
+    _pass "$f"
+  else
+    _fail "$f missing"
+  fi
+done
+
+RULES_DIR="$REPO_ROOT/claude/rules"
+if [ -d "$RULES_DIR" ]; then
+  rule_count=$(ls "$RULES_DIR"/*.md 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$rule_count" -gt 0 ]; then
+    _pass "claude/rules/ ($rule_count rule file(s))"
+  else
+    _fail "claude/rules/ exists but is empty"
+  fi
+else
+  _fail "claude/rules/ directory missing"
+fi
+
+CMDS_DIR="$REPO_ROOT/claude/commands"
+if [ -d "$CMDS_DIR" ]; then
+  cmd_count=$(ls "$CMDS_DIR"/*.md 2>/dev/null | wc -l | tr -d ' ')
+  _pass "claude/commands/ ($cmd_count command file(s))"
+else
+  _warn "claude/commands/ missing (optional but expected)"
+fi
+
+# ── 10. Brewfile key packages ────────────────────────────────────────────────
+_section "Brewfile key packages"
+
+for pkg in tmux fzf jq git gh; do
+  if grep -q "\"$pkg\"" "$REPO_ROOT/Brewfile"; then
+    _pass "Brewfile: brew \"$pkg\""
+  else
+    _fail "Brewfile missing: $pkg"
+  fi
+done
+
+if grep -q "ghostty" "$REPO_ROOT/Brewfile"; then
+  _pass "Brewfile: ghostty cask"
+else
+  _fail "Brewfile missing: ghostty cask"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+printf "\n── Summary ──\n"
+printf "  %d PASS  /  %d WARN  /  %d FAIL\n" "$PASS" "$WARN" "$FAIL"
+printf "\n"
+
+[ "$FAIL" -eq 0 ]

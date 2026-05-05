@@ -1,0 +1,305 @@
+#!/usr/bin/env bash
+# tmux-claude-test — regression tests for bin/ scripts
+#
+# Tests that require zsh or a live tmux server are skipped automatically.
+# Output: PASS / SKIP / FAIL per test, then a summary line.
+# Exit 0 = all clear (FAILs absent); non-zero = at least one FAIL.
+#
+# Bash 3.2+ compatible (macOS bash floor).
+
+set -uo pipefail
+
+PASS=0; FAIL=0; SKIP=0
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO_ROOT/bin"
+
+_pass() { PASS=$((PASS+1)); printf "  PASS  %s\n" "$1"; }
+_fail() { FAIL=$((FAIL+1)); printf "  FAIL  %s\n" "$1"; }
+_skip() { SKIP=$((SKIP+1)); printf "  SKIP  %s\n" "$1"; }
+_section() { printf "\n── %s ──\n" "$1"; }
+
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [ "$expected" = "$actual" ]; then
+    _pass "$desc"
+  else
+    _fail "$desc  (expected: '$expected'  got: '$actual')"
+  fi
+}
+
+assert_contains() {
+  local desc="$1" needle="$2" actual="$3"
+  if printf '%s' "$actual" | grep -qF "$needle"; then
+    _pass "$desc"
+  else
+    _fail "$desc  (expected to contain '$needle'  got: '$actual')"
+  fi
+}
+
+assert_empty() {
+  local desc="$1" actual="$2"
+  if [ -z "$actual" ]; then
+    _pass "$desc"
+  else
+    _fail "$desc  (expected empty  got: '$actual')"
+  fi
+}
+
+assert_max_len() {
+  local desc="$1" max="$2" actual="$3"
+  # Use wc -m for character count; fall back to ${#} for byte count.
+  local len
+  len=$(printf '%s' "$actual" | wc -m 2>/dev/null | tr -d ' ') || len=${#actual}
+  if [ "$len" -le "$max" ]; then
+    _pass "$desc (len=$len)"
+  else
+    _fail "$desc  (len=$len > $max  value: '$actual')"
+  fi
+}
+
+# Capability probes
+HAS_ZSH=0
+command -v zsh >/dev/null 2>&1 && HAS_ZSH=1
+
+HAS_TMUX_SERVER=0
+tmux list-sessions >/dev/null 2>&1 && HAS_TMUX_SERVER=1
+
+IN_TMUX=0
+[ -n "${TMUX:-}" ] && IN_TMUX=1
+
+# ── Bash syntax — bash scripts ────────────────────────────────────────────────
+_section "syntax check — bash scripts"
+
+for s in tmux-pane-label tmux-session-list tmux-tile-session \
+          tmux-claude-audit tmux-claude-test; do
+  f="$BIN/$s"
+  if [ ! -f "$f" ]; then
+    _fail "$s: file missing"
+    continue
+  fi
+  if bash -n "$f" 2>/dev/null; then
+    _pass "$s: bash syntax OK"
+  else
+    _fail "$s: bash syntax error"
+  fi
+done
+
+# ── Zsh syntax — zsh scripts ──────────────────────────────────────────────────
+_section "syntax check — zsh scripts"
+
+ZSH_SCRIPTS="tmux-short-path tmux-git-info tmux-claude-session tmux-kill-teammate-pane tmux-tutorial"
+
+if [ "$HAS_ZSH" -eq 0 ]; then
+  for s in $ZSH_SCRIPTS; do
+    _skip "$s: zsh not available"
+  done
+else
+  for s in $ZSH_SCRIPTS; do
+    f="$BIN/$s"
+    if [ ! -f "$f" ]; then
+      _fail "$s: file missing"
+      continue
+    fi
+    if zsh -n "$f" 2>/dev/null; then
+      _pass "$s: zsh syntax OK"
+    else
+      _fail "$s: zsh syntax error"
+    fi
+  done
+fi
+
+# ── tmux-pane-label ───────────────────────────────────────────────────────────
+_section "tmux-pane-label"
+
+# Known git repo → label contains repo name
+actual=$("$BIN/tmux-pane-label" "$REPO_ROOT" 2>/dev/null)
+assert_contains "git repo → repo name in label" "claude-tmux-ghostty" "$actual"
+
+# Known git repo → label contains current branch name
+branch=$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null)
+if [ -n "$branch" ]; then
+  assert_contains "git repo → branch name in label" "$branch" "$actual"
+else
+  _skip "tmux-pane-label: could not determine current branch (detached HEAD?)"
+fi
+
+# Non-git directory → returns basename of path (no git metadata)
+tmpdir=$(mktemp -d)
+actual=$("$BIN/tmux-pane-label" "$tmpdir" 2>/dev/null)
+expected=$(basename "$tmpdir")
+assert_eq "non-git dir → basename only" "$expected" "$actual"
+rmdir "$tmpdir"
+
+# Default arg (.) works when CWD is a git repo
+actual=$(cd "$REPO_ROOT" && "$BIN/tmux-pane-label" 2>/dev/null)
+if [ -n "$actual" ]; then
+  _pass "tmux-pane-label: default arg (.) returns non-empty"
+else
+  _fail "tmux-pane-label: default arg (.) returned empty from repo root"
+fi
+
+# Script exits 0 for a valid git path
+"$BIN/tmux-pane-label" "$REPO_ROOT" >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  _pass "tmux-pane-label: exits 0 for valid git path"
+else
+  _fail "tmux-pane-label: non-zero exit ($rc) for valid git path"
+fi
+
+# ── tmux-session-list ────────────────────────────────────────────────────────
+_section "tmux-session-list"
+
+# No tmux server → empty output, exits 0 (tmux list-sessions silenced by 2>/dev/null)
+if [ "$HAS_TMUX_SERVER" -eq 0 ]; then
+  actual=$("$BIN/tmux-session-list" "nosuchsession" 2>/dev/null)
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    _pass "tmux-session-list: exits 0 without tmux server"
+  else
+    _fail "tmux-session-list: non-zero exit without tmux server (rc=$rc)"
+  fi
+  assert_empty "tmux-session-list: empty output without tmux server" "$actual"
+else
+  actual=$("$BIN/tmux-session-list" "" 2>/dev/null)
+  if [ -n "$actual" ]; then
+    _pass "tmux-session-list: returns non-empty output with live server"
+  else
+    _skip "tmux-session-list: server running but no sessions to list"
+  fi
+fi
+
+# ── tmux-short-path ───────────────────────────────────────────────────────────
+_section "tmux-short-path"
+
+if [ "$HAS_ZSH" -eq 0 ]; then
+  for t in "short path (<=3 parts)" "long path (>3 parts abbreviation)" \
+            "worktree path prefix" "hard cap 30 chars" "long worktree name truncation"; do
+    _skip "tmux-short-path ($t): zsh not available"
+  done
+else
+  # Use a fake HOME for deterministic substitution without touching the real one
+  FAKE_HOME="/tmp/tmux-claude-test-home-$$"
+
+  actual=$(HOME="$FAKE_HOME" "$BIN/tmux-short-path" "$FAKE_HOME/dev/myproject" 2>/dev/null)
+  assert_eq "short path (<=3 parts)" "~/dev/myproject" "$actual"
+
+  actual=$(HOME="$FAKE_HOME" "$BIN/tmux-short-path" "$FAKE_HOME/a/b/c/d/e" 2>/dev/null)
+  assert_contains "long path (>3 parts) → ~/…/ prefix" "~/…/" "$actual"
+
+  actual=$(HOME="$FAKE_HOME" "$BIN/tmux-short-path" "$FAKE_HOME/dev/repo/.worktrees/feature-x" 2>/dev/null)
+  assert_eq "worktree path → wt:<name>" "wt:feature-x" "$actual"
+
+  long_path="$FAKE_HOME/dev/very-long-company-name/very-long-project-name/subdir"
+  actual=$(HOME="$FAKE_HOME" "$BIN/tmux-short-path" "$long_path" 2>/dev/null)
+  assert_max_len "hard cap at 30 chars" 30 "$actual"
+
+  actual=$(HOME="$FAKE_HOME" "$BIN/tmux-short-path" "$FAKE_HOME/r/.worktrees/a-very-long-worktree-branch-name-here" 2>/dev/null)
+  if printf '%s' "$actual" | grep -q '^wt:'; then
+    _pass "long worktree name → wt: prefix retained"
+    assert_max_len "long worktree name → at most 19 chars" 19 "$actual"
+  else
+    _fail "long worktree name should start with 'wt:'  (got: '$actual')"
+  fi
+fi
+
+# ── tmux-git-info ─────────────────────────────────────────────────────────────
+_section "tmux-git-info"
+
+if [ "$HAS_ZSH" -eq 0 ]; then
+  for t in "git repo → non-empty output" "non-git dir → empty output" \
+            "output format (leading space + branch)"; do
+    _skip "tmux-git-info ($t): zsh not available"
+  done
+else
+  actual=$("$BIN/tmux-git-info" "$REPO_ROOT" 2>/dev/null)
+  if [ -n "$actual" ]; then
+    _pass "tmux-git-info: git repo → non-empty output"
+  else
+    _fail "tmux-git-info: git repo → expected non-empty output"
+  fi
+
+  tmpdir=$(mktemp -d)
+  actual=$("$BIN/tmux-git-info" "$tmpdir" 2>/dev/null)
+  assert_empty "tmux-git-info: non-git dir → empty output" "$actual"
+  rmdir "$tmpdir"
+
+  actual=$("$BIN/tmux-git-info" "$REPO_ROOT" 2>/dev/null)
+  if printf '%s' "$actual" | grep -qE '^ .'; then
+    _pass "tmux-git-info: output starts with space (status bar spacing)"
+  else
+    _fail "tmux-git-info: unexpected output format (got: '$actual')"
+  fi
+fi
+
+# ── tmux-claude-session ───────────────────────────────────────────────────────
+_section "tmux-claude-session"
+
+if [ "$HAS_ZSH" -eq 0 ]; then
+  _skip "tmux-claude-session (empty TTY guard): zsh not available"
+else
+  # Empty TTY arg → exits 0, produces no output (first guard in script)
+  actual=$("$BIN/tmux-claude-session" "" 2>/dev/null)
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    _pass "tmux-claude-session: empty TTY arg → exits 0"
+  else
+    _fail "tmux-claude-session: empty TTY arg should exit 0 (got rc=$rc)"
+  fi
+  assert_empty "tmux-claude-session: empty TTY arg → no output" "$actual"
+fi
+
+# ── tmux-kill-teammate-pane ───────────────────────────────────────────────────
+_section "tmux-kill-teammate-pane"
+
+if [ "$HAS_ZSH" -eq 0 ]; then
+  _skip "tmux-kill-teammate-pane (TMUX guard): zsh not available"
+elif [ "$IN_TMUX" -eq 1 ]; then
+  _skip "tmux-kill-teammate-pane: skipping destructive test inside live tmux"
+else
+  # Outside tmux (TMUX unset) → exits 0 immediately without doing anything
+  actual=$(TMUX="" "$BIN/tmux-kill-teammate-pane" 2>/dev/null)
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    _pass "tmux-kill-teammate-pane: exits 0 when TMUX unset (guard works)"
+  else
+    _fail "tmux-kill-teammate-pane: expected exit 0 when TMUX unset (got rc=$rc)"
+  fi
+fi
+
+# ── tmux-tile-session ─────────────────────────────────────────────────────────
+_section "tmux-tile-session"
+
+# All tmux-tile-session tests need an active tmux context because the script
+# calls `tmux display-message` before the case/action dispatch.
+if [ "$IN_TMUX" -eq 0 ]; then
+  _skip "tmux-tile-session (invalid action → usage): not inside tmux"
+  _skip "tmux-tile-session (tile/untile): not inside tmux"
+else
+  # Unknown action → exits non-zero and prints usage
+  "$BIN/tmux-tile-session" _bad_action_ >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _pass "tmux-tile-session: invalid action exits non-zero"
+  else
+    _fail "tmux-tile-session: invalid action should exit non-zero (got 0)"
+  fi
+  _skip "tmux-tile-session (tile/untile): skipping session-modifying test in live tmux"
+fi
+
+# ── claude-dev ────────────────────────────────────────────────────────────────
+_section "claude-dev"
+
+# claude-dev creates/attaches tmux sessions; skip when no server
+if [ "$HAS_TMUX_SERVER" -eq 0 ]; then
+  _skip "claude-dev: no tmux server — session-creation tests skipped"
+else
+  _skip "claude-dev: skipping session-creation test (would spawn a new tmux session)"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+printf "\n── Summary ──\n"
+printf "  %d PASS  /  %d SKIP  /  %d FAIL\n" "$PASS" "$SKIP" "$FAIL"
+printf "\n"
+
+[ "$FAIL" -eq 0 ]
