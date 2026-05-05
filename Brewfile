@@ -14,6 +14,7 @@ brew "fd"
 brew "bat"
 brew "htop"
 brew "watch"
+brew "shellcheck"
 
 # Languages & version managers
 brew "pyenv"
