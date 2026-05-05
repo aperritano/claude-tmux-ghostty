@@ -101,10 +101,10 @@ link "$DOTFILES/git/gitignore_global" "$HOME/.gitignore_global"
 
 section "Ghostty"
 link "$DOTFILES/ghostty/config" "$HOME/.config/ghostty/config"
-link "$DOTFILES/ghostty/themes/Green CRT" "$HOME/.config/ghostty/themes/Green CRT"
-link "$DOTFILES/ghostty/themes/claude-code" "$HOME/.config/ghostty/themes/claude-code"
-link "$DOTFILES/ghostty/themes/claude-code-light" "$HOME/.config/ghostty/themes/claude-code-light"
-link "$DOTFILES/ghostty/themes/claude-quiet" "$HOME/.config/ghostty/themes/claude-quiet"
+mkdir -p "$HOME/.config/ghostty/themes"
+for theme in "$DOTFILES"/ghostty/themes/*; do
+  [ -f "$theme" ] && link "$theme" "$HOME/.config/ghostty/themes/$(basename "$theme")"
+done
 
 section "iTerm color presets"
 mkdir -p "$HOME/.config/iterm"
@@ -134,7 +134,9 @@ link "$DOTFILES/claude/statusline-command.sh" "$HOME/.claude/statusline-command.
 link "$DOTFILES/claude/settings.json" "$HOME/.claude/settings.json"
 link "$DOTFILES/claude/settings.local.json" "$HOME/.claude/settings.local.json"
 link "$DOTFILES/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
-link "$DOTFILES/claude/rules/deterministic-execution-protocol.md" "$HOME/.claude/rules/deterministic-execution-protocol.md"
+for rule in "$DOTFILES"/claude/rules/*.md; do
+  [ -f "$rule" ] && link "$rule" "$HOME/.claude/rules/$(basename "$rule")"
+done
 for cmd in "$DOTFILES"/claude/commands/*.md; do
   [ -f "$cmd" ] && link "$cmd" "$HOME/.claude/commands/$(basename "$cmd")"
 done
