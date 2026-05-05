@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# tmux-fzf-session — fuzzy-find and switch to a tmux session
+# Invoked via: bind S display-popup -E "~/bin/tmux-fzf-session"
+# Requires: fzf (brew install fzf)
+
+[ -z "${TMUX:-}" ] && { printf 'tmux-fzf-session: not inside tmux\n' >&2; exit 1; }
+
+if ! command -v fzf >/dev/null 2>&1; then
+  tmux display-message "tmux-fzf-session: fzf not found — brew install fzf"
+  exit 1
+fi
+
+current=$(tmux display-message -p '#S')
+session=$(
+  tmux list-sessions -F '#{session_name}' \
+    | fzf --height=100% --reverse --border \
+          --prompt="session: " \
+          --header="current: ${current}" \
+          --preview='tmux list-windows -t {} -F "  #{window_index}: #{window_name}#{?window_active, (active),}" 2>/dev/null'
+)
+
+[ -n "$session" ] && tmux switch-client -t "$session"

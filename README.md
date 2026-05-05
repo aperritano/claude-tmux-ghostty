@@ -74,6 +74,7 @@ dotfiles/
 │   ├── tmux-git-info           # Branch + dirty indicator (worktree-aware)
 │   ├── tmux-kill-teammate-pane # Auto-close teammate panes when agents finish
 │   ├── tmux-pane-label         # Pane border label — repo, branch, ahead/behind
+│   ├── tmux-fzf-session        # Fuzzy session switcher (fzf) — Ctrl-a S
 │   ├── tmux-session-list       # Multi-session status-left renderer
 │   ├── tmux-short-path         # Abbreviated path display (worktree-aware)
 │   ├── tmux-tile-session       # Toggle all windows into tiled panes and back
@@ -126,6 +127,7 @@ Prefix is `Ctrl-a`.
 | `Ctrl-a n/p` | Next/previous window |
 | `Ctrl-a 1-9` | Jump to window |
 | `Ctrl-a R` | Rename current session |
+| `Ctrl-a S` | Fuzzy session switcher (fzf) |
 | `Ctrl-a Tab` | Next session |
 | `Ctrl-a E` | Tile/untile toggle (expose all windows as panes) |
 
