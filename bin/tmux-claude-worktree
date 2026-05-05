@@ -1,0 +1,46 @@
+#!/bin/zsh
+# tmux-claude-worktree — create (or reuse) a git worktree, then open a claude-dev session
+# Usage: tmux-claude-worktree <branch> [repo-path]
+#
+# Creates a worktree at <repo-root>/.worktrees/<branch-leaf> and hands off to
+# claude-dev, which creates or reattaches a named tmux session for that directory.
+
+branch="$1"
+project_dir="${2:-$(pwd)}"
+
+if [[ -z "$branch" ]]; then
+  print -u2 "Usage: tmux-claude-worktree <branch> [repo-path]"
+  exit 1
+fi
+
+# Resolve git root (must be a real repo, not a worktree sub-path)
+git_root=$(git -C "$project_dir" rev-parse --show-toplevel 2>/dev/null)
+if [[ -z "$git_root" ]]; then
+  print -u2 "tmux-claude-worktree: not a git repo: $project_dir"
+  exit 1
+fi
+
+branch_leaf="${branch##*/}"
+worktree_dir="${git_root}/.worktrees/${branch_leaf}"
+
+if [[ -d "$worktree_dir" ]]; then
+  print "Reusing existing worktree: $worktree_dir"
+else
+  # Add worktree: checkout existing branch or create a new one
+  if git -C "$git_root" rev-parse --verify "$branch" >/dev/null 2>&1; then
+    git -C "$git_root" worktree add "$worktree_dir" "$branch" || {
+      print -u2 "tmux-claude-worktree: worktree add failed for branch '$branch'"
+      exit 1
+    }
+  else
+    git -C "$git_root" worktree add -b "$branch" "$worktree_dir" || {
+      print -u2 "tmux-claude-worktree: failed to create branch '$branch'"
+      exit 1
+    }
+    print "Created branch: $branch"
+  fi
+  print "Worktree: $worktree_dir"
+fi
+
+# Hand off to claude-dev, which handles attach-vs-switch-client
+"$HOME/bin/claude-dev" "$worktree_dir"
