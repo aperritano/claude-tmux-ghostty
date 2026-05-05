@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+# tmux-claude-test — regression suite for claude-tmux-ghostty bin/ scripts
+# Skips tests that require zsh, a live tmux server, or macOS-only tools.
+# Safe to run in CI (Linux, no tmux server).
+#
+# Usage: bash bin/tmux-claude-test
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PASS=0; FAIL=0; SKIP=0
+
+pass() { echo "[PASS] $1"; PASS=$((PASS+1)); }
+fail() { echo "[FAIL] $1"; FAIL=$((FAIL+1)); }
+skip() { echo "[SKIP] $1"; SKIP=$((SKIP+1)); }
+
+has_zsh()  { command -v zsh  >/dev/null 2>&1; }
+has_tmux() { tmux info >/dev/null 2>&1; }
+
+# ── tmux-short-path ──────────────────────────────────────────────────────────
+# These tests exercise the path-abbreviation logic directly via zsh.
+# Skip on CI where zsh is unavailable.
+
+SCRIPT="$REPO_ROOT/bin/tmux-short-path"
+
+if has_zsh; then
+  # Worktree subdir: must show worktree name, NOT the deepest component
+  result=$(HOME=/home/user zsh "$SCRIPT" "/home/user/.worktrees/feature-x/src/components")
+  if [ "$result" = "wt:feature-x" ]; then
+    pass "tmux-short-path: worktree subdir shows worktree name, not deepest dir"
+  else
+    fail "tmux-short-path: worktree subdir — got '$result', want 'wt:feature-x'"
+  fi
+
+  # Worktree at root (no subdir): still shows worktree name
+  result=$(HOME=/home/user zsh "$SCRIPT" "/home/user/.worktrees/my-branch")
+  if [ "$result" = "wt:my-branch" ]; then
+    pass "tmux-short-path: worktree at root shows worktree name"
+  else
+    fail "tmux-short-path: worktree root — got '$result', want 'wt:my-branch'"
+  fi
+
+  # Worktree name longer than 18 chars gets truncated
+  result=$(HOME=/home/user zsh "$SCRIPT" "/home/user/.worktrees/this-is-a-very-long-branch-name/src")
+  if echo "$result" | grep -q '^wt:'; then
+    pass "tmux-short-path: long worktree name has wt: prefix"
+  else
+    fail "tmux-short-path: long worktree name — got '$result'"
+  fi
+
+  # Home path with ≤3 components: output unchanged
+  result=$(HOME=/home/user zsh "$SCRIPT" "/home/user/dev")
+  if [ "$result" = "~/dev" ]; then
+    pass "tmux-short-path: short home path passes through unchanged"
+  else
+    fail "tmux-short-path: short home path — got '$result', want '~/dev'"
+  fi
+
+  # Home path with 4+ components: abbreviated
+  result=$(HOME=/home/user zsh "$SCRIPT" "/home/user/dev/projects/myapp/src")
+  if echo "$result" | grep -qE '^~/…/'; then
+    pass "tmux-short-path: long home path gets ~/…/ prefix"
+  else
+    fail "tmux-short-path: long home path — got '$result', want ~/…/…"
+  fi
+
+  # Non-home absolute path with 4+ components: must NOT start with ~/
+  result=$(HOME=/home/user zsh "$SCRIPT" "/usr/local/share/foo/bar")
+  if echo "$result" | grep -q '^~/'; then
+    fail "tmux-short-path: non-home path incorrectly prefixed with ~/ — got '$result'"
+  else
+    pass "tmux-short-path: non-home path does not get ~/ prefix"
+  fi
+else
+  skip "tmux-short-path tests — zsh not available"
+  skip "tmux-short-path tests — zsh not available"
+  skip "tmux-short-path tests — zsh not available"
+  skip "tmux-short-path tests — zsh not available"
+  skip "tmux-short-path tests — zsh not available"
+  skip "tmux-short-path tests — zsh not available"
+fi
+
+# ── tmux-pane-label ──────────────────────────────────────────────────────────
+SCRIPT="$REPO_ROOT/bin/tmux-pane-label"
+
+# Non-git dir: output is basename of path
+result=$("$SCRIPT" /tmp 2>/dev/null)
+if [ "$result" = "tmp" ]; then
+  pass "tmux-pane-label: non-git path shows basename"
+else
+  fail "tmux-pane-label: non-git path — got '$result', want 'tmp'"
+fi
+
+# Git repo: output contains repo name and branch
+result=$("$SCRIPT" "$REPO_ROOT" 2>/dev/null)
+if echo "$result" | grep -q 'claude-tmux-ghostty'; then
+  pass "tmux-pane-label: git repo shows repo name"
+else
+  fail "tmux-pane-label: git repo name — got '$result'"
+fi
+
+if echo "$result" | grep -qE '[a-zA-Z0-9/_-]+'; then
+  pass "tmux-pane-label: git repo output is non-empty"
+else
+  fail "tmux-pane-label: git repo output — got '$result'"
+fi
+
+# Exit code is always 0 (never crashes)
+"$SCRIPT" /nonexistent 2>/dev/null; ec=$?
+if [ $ec -eq 0 ]; then
+  pass "tmux-pane-label: exits 0 on non-existent path"
+else
+  fail "tmux-pane-label: non-zero exit on non-existent path (exit $ec)"
+fi
+
+# ── tmux-session-list ────────────────────────────────────────────────────────
+SCRIPT="$REPO_ROOT/bin/tmux-session-list"
+
+# Without a live tmux server: outputs nothing and exits 0
+result=$(bash "$SCRIPT" "main" 2>/dev/null); ec=$?
+if [ $ec -eq 0 ] && [ -z "$result" ]; then
+  pass "tmux-session-list: no tmux server → empty output, exit 0"
+else
+  fail "tmux-session-list: got exit=$ec output='$result'"
+fi
+
+# ── tmux-tile-session ────────────────────────────────────────────────────────
+SCRIPT="$REPO_ROOT/bin/tmux-tile-session"
+
+# Bash syntax check
+if bash -n "$SCRIPT" 2>/dev/null; then
+  pass "tmux-tile-session: bash -n syntax ok"
+else
+  fail "tmux-tile-session: bash -n syntax error"
+fi
+
+# Invalid action → exit non-zero
+"$SCRIPT" bogus-action 2>/dev/null; ec=$?
+if [ $ec -ne 0 ]; then
+  pass "tmux-tile-session: invalid action exits non-zero"
+else
+  fail "tmux-tile-session: invalid action should exit non-zero but got 0"
+fi
+
+# ── setup-github-ssh ─────────────────────────────────────────────────────────
+SCRIPT="$REPO_ROOT/bin/setup-github-ssh"
+
+if bash -n "$SCRIPT" 2>/dev/null; then
+  pass "setup-github-ssh: bash -n syntax ok"
+else
+  fail "setup-github-ssh: bash -n syntax error"
+fi
+
+# ── tmux-kill-teammate-pane ──────────────────────────────────────────────────
+SCRIPT="$REPO_ROOT/bin/tmux-kill-teammate-pane"
+
+if has_zsh; then
+  # Without TMUX set: exits immediately (safety guard)
+  result=$(TMUX="" zsh "$SCRIPT" 2>/dev/null); ec=$?
+  if [ $ec -eq 0 ] && [ -z "$result" ]; then
+    pass "tmux-kill-teammate-pane: exits 0 without TMUX set"
+  else
+    fail "tmux-kill-teammate-pane: got exit=$ec output='$result' without TMUX"
+  fi
+else
+  skip "tmux-kill-teammate-pane tests — zsh not available"
+fi
+
+# ── tmux-claude-session ──────────────────────────────────────────────────────
+SCRIPT="$REPO_ROOT/bin/tmux-claude-session"
+
+if has_zsh; then
+  # Empty TTY argument: exits 0, no output
+  result=$(zsh "$SCRIPT" "" 2>/dev/null); ec=$?
+  if [ $ec -eq 0 ] && [ -z "$result" ]; then
+    pass "tmux-claude-session: empty TTY → empty output, exit 0"
+  else
+    fail "tmux-claude-session: got exit=$ec output='$result' for empty TTY"
+  fi
+else
+  skip "tmux-claude-session tests — zsh not available"
+fi
+
+# ── tmux-git-info ────────────────────────────────────────────────────────────
+SCRIPT="$REPO_ROOT/bin/tmux-git-info"
+
+if has_zsh; then
+  # Git repo: output contains a branch indicator
+  result=$(zsh "$SCRIPT" "$REPO_ROOT" 2>/dev/null)
+  if echo "$result" | grep -qE ' [a-zA-Z0-9/_-]+'; then
+    pass "tmux-git-info: git repo returns branch info"
+  else
+    fail "tmux-git-info: git repo — got '$result'"
+  fi
+
+  # Non-git dir: no output (exits 0)
+  result=$(zsh "$SCRIPT" /tmp 2>/dev/null); ec=$?
+  if [ $ec -eq 0 ] && [ -z "$result" ]; then
+    pass "tmux-git-info: non-git dir → empty, exit 0"
+  else
+    fail "tmux-git-info: non-git dir — got exit=$ec output='$result'"
+  fi
+else
+  skip "tmux-git-info tests — zsh not available"
+  skip "tmux-git-info tests — zsh not available"
+fi
+
+# ── Summary ──────────────────────────────────────────────────────────────────
+echo ""
+echo "────────────────────────────────────────────"
+echo "Tests: $PASS PASS / $FAIL FAIL / $SKIP SKIP"
+echo "────────────────────────────────────────────"
+
+[ "$FAIL" -eq 0 ]

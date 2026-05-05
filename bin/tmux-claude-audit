@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+# tmux-claude-audit — living spec for the claude-tmux-ghostty dotfiles
+# Every shipped tool gets a check here. Exit 0 iff no FAILures.
+#
+# Output: [PASS], [WARN], [FAIL], or [SKIP] per check.
+# Usage: bash bin/tmux-claude-audit
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PASS=0; WARN=0; FAIL=0; SKIP=0
+
+pass() { echo "[PASS] $1"; PASS=$((PASS+1)); }
+warn() { echo "[WARN] $1"; WARN=$((WARN+1)); }
+fail() { echo "[FAIL] $1"; FAIL=$((FAIL+1)); }
+skip() { echo "[SKIP] $1"; SKIP=$((SKIP+1)); }
+
+# ── bin/ scripts: present, executable, shebang ──────────────────────────────
+BIN_SCRIPTS="
+  tmux-claude-audit
+  tmux-claude-test
+  tmux-short-path
+  tmux-git-info
+  tmux-pane-label
+  tmux-session-list
+  tmux-kill-teammate-pane
+  tmux-claude-session
+  tmux-tile-session
+  tmux-tutorial
+  claude-dev
+  setup-github-ssh
+"
+
+for s in $BIN_SCRIPTS; do
+  f="$REPO_ROOT/bin/$s"
+  if [ ! -f "$f" ]; then
+    fail "bin/$s: missing"
+    continue
+  fi
+  pass "bin/$s: exists"
+  if [ -x "$f" ]; then
+    pass "bin/$s: executable"
+  else
+    fail "bin/$s: not executable"
+  fi
+  if head -1 "$f" | grep -qE '^#!'; then
+    pass "bin/$s: has shebang"
+  else
+    fail "bin/$s: missing shebang"
+  fi
+done
+
+# ── bash -n syntax check (bash scripts only) ────────────────────────────────
+BASH_SCRIPTS="
+  tmux-claude-audit
+  tmux-claude-test
+  tmux-pane-label
+  tmux-tile-session
+  tmux-session-list
+  setup-github-ssh
+"
+for s in $BASH_SCRIPTS; do
+  f="$REPO_ROOT/bin/$s"
+  [ -f "$f" ] || continue
+  if bash -n "$f" 2>/dev/null; then
+    pass "bash -n bin/$s: syntax ok"
+  else
+    fail "bash -n bin/$s: syntax error"
+  fi
+done
+
+# ── zsh -n syntax check (zsh scripts) ───────────────────────────────────────
+ZSH_SCRIPTS="
+  tmux-short-path
+  tmux-git-info
+  tmux-kill-teammate-pane
+  tmux-claude-session
+  tmux-tutorial
+  claude-dev
+"
+if command -v zsh >/dev/null 2>&1; then
+  for s in $ZSH_SCRIPTS; do
+    f="$REPO_ROOT/bin/$s"
+    [ -f "$f" ] || continue
+    if zsh -n "$f" 2>/dev/null; then
+      pass "zsh -n bin/$s: syntax ok"
+    else
+      fail "zsh -n bin/$s: syntax error"
+    fi
+  done
+else
+  for s in $ZSH_SCRIPTS; do
+    skip "zsh not available — skipping syntax check for bin/$s"
+  done
+fi
+
+# ── Core config files ────────────────────────────────────────────────────────
+REQUIRED_FILES="
+  tmux/tmux.conf
+  ghostty/config
+  zsh/zshrc
+  git/gitconfig
+  git/gitignore_global
+  claude/CLAUDE.md
+  claude/settings.json
+  claude/statusline-command.sh
+  install.sh
+  Brewfile
+  README.md
+"
+for f in $REQUIRED_FILES; do
+  if [ -f "$REPO_ROOT/$f" ]; then
+    pass "$f: exists"
+  else
+    fail "$f: missing"
+  fi
+done
+
+# ── tmux.conf: key bindings ──────────────────────────────────────────────────
+CONF="$REPO_ROOT/tmux/tmux.conf"
+
+check_conf() {
+  local desc="$1" pattern="$2"
+  if grep -qE "$pattern" "$CONF" 2>/dev/null; then
+    pass "tmux.conf: $desc"
+  else
+    fail "tmux.conf: $desc — pattern not found: $pattern"
+  fi
+}
+
+check_conf "prefix C-a"         "set -g prefix C-a"
+check_conf "bind j split right" "bind j split-window"
+check_conf "bind i split down"  "bind i split-window"
+check_conf "C-h navigate left"  "bind -n C-h select-pane -L"
+check_conf "C-j navigate down"  "bind -n C-j select-pane -D"
+check_conf "C-k navigate up"    "bind -n C-k select-pane -U"
+check_conf "C-l navigate right" "bind -n C-l select-pane -R"
+check_conf "bind z zoom"        "bind z resize-pane -Z"
+check_conf "bind = equalize"    'bind = select-layout tiled'
+check_conf "bind c claude pane" 'bind c split-window.*claude'
+check_conf "bind s shell pane"  'bind s split-window'
+check_conf "bind C dev layout"  'bind C new-window'
+check_conf "bind g popup"       'bind g display-popup.*claude-tmux'
+check_conf "bind y session id"  'bind y run-shell.*tmux-claude-session'
+check_conf "bind p copy path"   'bind p run-shell.*pane_current_path'
+check_conf "bind E tile toggle" 'bind E run-shell.*tmux-tile-session'
+check_conf "bind X kill panes"  'bind X confirm-before.*kill-pane'
+check_conf "bind R rename sess" 'bind R command-prompt.*rename-session'
+check_conf "bind Tab next sess" 'bind Tab switch-client'
+check_conf "mouse on"           'set -g mouse on'
+check_conf "allow-passthrough"  'set -g allow-passthrough on'
+check_conf "escape-time 0"      'set.*escape-time 0'
+check_conf "history-limit"      'set -g history-limit'
+check_conf "base-index 1"       'set -g base-index 1'
+check_conf "renumber-windows"   'set -g renumber-windows on'
+
+# ── tmux.conf: status-bar script references ──────────────────────────────────
+check_conf "status-right tmux-short-path"    'tmux-short-path'
+check_conf "status-right tmux-git-info"      'tmux-git-info'
+check_conf "status-right tmux-claude-session" 'tmux-claude-session'
+check_conf "bind E tmux-tile-session"        'tmux-tile-session'
+
+# ── tmux-short-path: worktree subdir extraction ──────────────────────────────
+SHORT_PATH="$REPO_ROOT/bin/tmux-short-path"
+if [ -f "$SHORT_PATH" ]; then
+  # The fix: must use param expansion to get worktree name, not ##*/
+  if grep -q 'wtname.*#*\.worktrees.*%%' "$SHORT_PATH" 2>/dev/null || \
+     grep -qE 'wtname=.*#\*/.worktrees/' "$SHORT_PATH" 2>/dev/null; then
+    pass "tmux-short-path: worktree name extracted correctly (not ##*/)"
+  else
+    fail "tmux-short-path: uses ##*/ for worktree name — shows subdirectory instead of worktree name"
+  fi
+fi
+
+# ── install.sh wiring ────────────────────────────────────────────────────────
+INSTALL="$REPO_ROOT/install.sh"
+if grep -q '~/bin' "$INSTALL" 2>/dev/null || grep -q 'bin/' "$INSTALL" 2>/dev/null; then
+  pass "install.sh: references bin/ scripts"
+else
+  fail "install.sh: no bin/ script references found"
+fi
+
+# ── README: all bin/ scripts documented ──────────────────────────────────────
+README="$REPO_ROOT/README.md"
+README_SCRIPTS="
+  tmux-short-path
+  tmux-git-info
+  tmux-pane-label
+  tmux-session-list
+  tmux-kill-teammate-pane
+  tmux-claude-session
+  tmux-tile-session
+  tmux-tutorial
+  claude-dev
+  setup-github-ssh
+"
+for s in $README_SCRIPTS; do
+  if grep -q "$s" "$README" 2>/dev/null; then
+    pass "README: documents $s"
+  else
+    fail "README: missing documentation for $s"
+  fi
+done
+
+# ── Open questions (WARN, not FAIL) ─────────────────────────────────────────
+# tmux-kill-teammate-pane: README claims SubagentStop hook, but none is wired
+if grep -q 'tmux-kill-teammate-pane' "$REPO_ROOT/claude/settings.json" 2>/dev/null; then
+  pass "tmux-kill-teammate-pane: wired in claude/settings.json"
+else
+  warn "tmux-kill-teammate-pane: not wired as SubagentStop hook — README claims auto-clean but hook is missing. Owner must decide: wire it or drop the README claim."
+fi
+
+# tmux-session-list: not referenced in tmux.conf (possible dead code)
+if grep -q 'tmux-session-list' "$CONF" 2>/dev/null; then
+  pass "tmux-session-list: referenced in tmux.conf"
+else
+  warn "tmux-session-list: not called from tmux.conf — status-left uses built-in #{S:…} format. Decide: wire it or remove the script."
+fi
+
+# ── Brewfile: key packages ───────────────────────────────────────────────────
+BREW="$REPO_ROOT/Brewfile"
+for pkg in tmux fzf jq gh; do
+  if grep -q "\"$pkg\"" "$BREW" 2>/dev/null; then
+    pass "Brewfile: $pkg present"
+  else
+    fail "Brewfile: $pkg missing"
+  fi
+done
+
+# ── Summary ──────────────────────────────────────────────────────────────────
+echo ""
+echo "────────────────────────────────────────────"
+echo "Audit: $PASS PASS / $WARN WARN / $FAIL FAIL / $SKIP SKIP"
+echo "────────────────────────────────────────────"
+
+[ "$FAIL" -eq 0 ]
