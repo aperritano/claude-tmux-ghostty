@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# tmux-claude-audit — living spec for the claude-tmux-ghostty dotfiles.
+# Every shipped tool gets a check. Most checks run offline; the tmux.conf
+# live-load check starts a temp server if tmux is reachable.
+#
+# Exit: 0 = no FAILs, 1 = at least one FAIL
+
+set -u
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+PASS=0; WARN=0; FAIL=0; SKIP=0
+
+_ok()   { PASS=$((PASS+1));  printf '\033[32m[PASS]\033[0m %s\n' "$1"; }
+_warn() { WARN=$((WARN+1));  printf '\033[33m[WARN]\033[0m %s\n' "$1"; }
+_fail() { FAIL=$((FAIL+1));  printf '\033[31m[FAIL]\033[0m %s\n' "$1"; }
+_skip() { SKIP=$((SKIP+1));  printf '[SKIP] %s\n' "$1"; }
+_head() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+
+# ── 1. bin/ scripts — exist, executable, shebang ─────────────────────────────
+_head "1. bin/ scripts"
+
+BIN_SCRIPTS="claude-dev setup-github-ssh tmux-claude-audit tmux-claude-session
+  tmux-claude-test tmux-git-info tmux-kill-teammate-pane tmux-pane-label
+  tmux-session-list tmux-short-path tmux-tile-session tmux-tutorial"
+
+for _s in $BIN_SCRIPTS; do
+  _p="$REPO/bin/$_s"
+  if [ ! -f "$_p" ]; then
+    _fail "bin/$_s: not found"
+    continue
+  fi
+  _ok "bin/$_s: exists"
+  if [ ! -x "$_p" ]; then
+    _fail "bin/$_s: not executable (run: chmod +x bin/$_s)"
+  else
+    _ok "bin/$_s: executable"
+  fi
+  if head -1 "$_p" | grep -q '^#!'; then
+    _ok "bin/$_s: has shebang"
+  else
+    _fail "bin/$_s: missing shebang on line 1"
+  fi
+done
+
+# ── 2. install.sh — glob covers all bin/* ────────────────────────────────────
+_head "2. install.sh glob"
+
+if grep -q 'for script in.*"\$DOTFILES"/bin/\*' "$REPO/install.sh" 2>/dev/null; then
+  _ok "install.sh: glob 'for script in \"\$DOTFILES\"/bin/*' symlinks all bin/ scripts"
+else
+  _fail "install.sh: expected glob 'for script in \"\$DOTFILES\"/bin/*' not found — new bin/ scripts may not be symlinked"
+fi
+
+# ── 3. ghostty themes — all referenced themes exist ──────────────────────────
+_head "3. ghostty themes"
+
+for _theme in "Green CRT" claude-code claude-code-light claude-quiet; do
+  if [ -f "$REPO/ghostty/themes/$_theme" ]; then
+    _ok "ghostty/themes/$_theme: exists"
+  else
+    _fail "ghostty/themes/$_theme: missing (referenced in install.sh)"
+  fi
+done
+
+# ── 4. tmux.conf — status bar wiring ─────────────────────────────────────────
+_head "4. tmux.conf status bar"
+
+for _s in tmux-short-path tmux-git-info tmux-claude-session; do
+  if grep -q "~/bin/$_s" "$REPO/tmux/tmux.conf" 2>/dev/null; then
+    _ok "tmux.conf: ~/bin/$_s referenced in status-right"
+  else
+    _fail "tmux.conf: ~/bin/$_s missing from status-right"
+  fi
+done
+
+# ── 5. tmux.conf — key bindings ───────────────────────────────────────────────
+_head "5. tmux.conf bindings"
+
+if grep -q 'set -g prefix C-a' "$REPO/tmux/tmux.conf" 2>/dev/null; then
+  _ok "tmux.conf: prefix is Ctrl-a"
+else
+  _fail "tmux.conf: prefix Ctrl-a not set"
+fi
+
+if grep -q 'tmux-tile-session' "$REPO/tmux/tmux.conf" 2>/dev/null; then
+  _ok "tmux.conf: tmux-tile-session wired (prefix E = tile/untile toggle)"
+else
+  _fail "tmux.conf: tmux-tile-session not wired to a key binding"
+fi
+
+# ── 6. claude/ — core files ───────────────────────────────────────────────────
+_head "6. claude/ files"
+
+for _f in CLAUDE.md settings.json settings.local.json statusline-command.sh; do
+  if [ -f "$REPO/claude/$_f" ]; then
+    _ok "claude/$_f: exists"
+  else
+    _fail "claude/$_f: missing"
+  fi
+done
+
+if [ -f "$REPO/claude/rules/deterministic-execution-protocol.md" ]; then
+  _ok "claude/rules/deterministic-execution-protocol.md: exists"
+else
+  _fail "claude/rules/deterministic-execution-protocol.md: missing"
+fi
+
+if grep -q 'statusline-command.sh' "$REPO/claude/settings.json" 2>/dev/null; then
+  _ok "settings.json: statusline-command.sh referenced in statusLine"
+else
+  _fail "settings.json: statusline-command.sh not referenced in statusLine"
+fi
+
+# ── 7. hook wiring — open questions ──────────────────────────────────────────
+_head "7. hook wiring"
+
+if grep -q 'tmux-kill-teammate-pane' "$REPO/claude/settings.json" 2>/dev/null; then
+  _ok "settings.json: tmux-kill-teammate-pane wired in hooks"
+else
+  _warn "settings.json: tmux-kill-teammate-pane NOT wired in SubagentStop/TeammateIdle hooks — README claims auto-clean but owner has not decided to wire or drop the claim (open question)"
+fi
+
+# ── 8. portability — no bash-4-only constructs in bash scripts ───────────────
+_head "8. portability"
+
+# BSD tail -r is macOS-only; GNU uses tac. Fine for macOS dotfiles, worth noting.
+if grep -q 'tail -r' "$REPO/bin/tmux-tile-session" 2>/dev/null; then
+  _warn "bin/tmux-tile-session: uses 'tail -r' (BSD/macOS only; GNU coreutils uses 'tac' — acceptable for macOS dotfiles)"
+fi
+
+# Bash scripts must not use bash-4+ constructs (macOS ships bash 3.2).
+# tmux-claude-audit and tmux-claude-test are excluded — they contain the
+# pattern strings themselves and would generate false positives.
+for _s in claude-dev setup-github-ssh tmux-pane-label tmux-session-list tmux-tile-session; do
+  _p="$REPO/bin/$_s"
+  [ -f "$_p" ] || continue
+  if grep -qE 'declare -A|mapfile|readarray|\$\{[a-z]+,,' "$_p" 2>/dev/null; then
+    _warn "bin/$_s: possible bash-4-only construct (declare -A / mapfile / case-conversion) — verify bash 3.2 compat"
+  else
+    _ok "bin/$_s: no bash-4-only constructs detected"
+  fi
+done
+
+# ── 9. tmux.conf — live config load ──────────────────────────────────────────
+_head "9. tmux.conf live load"
+
+_SOCK="/tmp/tmux-audit-$$"
+if tmux -S "$_SOCK" new-session -d -s _audit 2>/dev/null; then
+  _ERRS=$(tmux -S "$_SOCK" source-file "$REPO/tmux/tmux.conf" 2>&1 || true)
+  tmux -S "$_SOCK" kill-server 2>/dev/null || true
+  rm -f "$_SOCK"
+  if [ -z "$_ERRS" ]; then
+    _ok "tmux.conf: loads without errors (tmux $(tmux -V | cut -d' ' -f2))"
+  else
+    _fail "tmux.conf: load errors — $_ERRS"
+  fi
+else
+  rm -f "$_SOCK"
+  _skip "tmux.conf: live load (could not start temp tmux server)"
+fi
+
+# ── Summary ──────────────────────────────────────────────────────────────────
+printf '\n'
+printf 'Audit complete — %d PASS / %d WARN / %d FAIL / %d SKIP\n' \
+  "$PASS" "$WARN" "$FAIL" "$SKIP"
+printf '\n'
+
+[ "$FAIL" -eq 0 ]
