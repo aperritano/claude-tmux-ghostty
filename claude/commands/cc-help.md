@@ -83,7 +83,7 @@ shipped via `~/dev/dotfiles/`. Run `cc-doctor` to verify all are wired.
 | `Ctrl-a n` / `N` | new tab / new session (prompts for name) |
 | `Ctrl-a Ctrl-s` | save tmux state (resurrect) |
 | `Ctrl-a Ctrl-r` | restore tmux state (resurrect) |
-| `Ctrl-a R` | cc-rich: rich **sidebar** view of the active session (toggle — press R again to close) |
+| `Ctrl-a R` | cc-rich: rich **sidebar** view of the active session (R from a different pane swaps sidebar to that pane; R from same pane closes) |
 | `Ctrl-a B` | cc-rich: browse all known sessions in sidebar (toggle) |
 | `Ctrl-a M` | cc-rich: open merge composer for the active session (sidebar, toggle) |
 | `Ctrl-a P` | toggle the per-pane top header (role + ⚠ + locks + cwd) |
@@ -100,6 +100,27 @@ shipped via `~/dev/dotfiles/`. Run `cc-doctor` to verify all are wired.
 | `PgUp` / `PgDn` | half-page scroll |
 | mouse wheel | scroll |
 | `q` / `Esc` | close sidebar |
+
+Footer shows `Nlines/Mlines · Pmsg/Qmsg` for orientation.
+
+## Clickable links (OSC 8)
+
+`cc-rich`, `cc-tail`, and `cc-export` (when stdout is a TTY) all wrap
+link-bearing tokens in OSC 8 hyperlink escapes. Ghostty / iTerm2 /
+WezTerm / modern Konsole make them clickable. Hold ⌘ / Ctrl when
+clicking.
+
+| Token | Click target |
+|---|---|
+| `https://...` | The URL itself |
+| `PR-N` / `pr-N` | `https://github.com/<owner>/<repo>/pull/N` (slug from msg's cwd) |
+| `issue-N` | `https://github.com/<owner>/<repo>/issues/N` |
+| `path/to/file.ext` (existing) | `vscode://file/<abs-path>` — opens in VS Code/Cursor |
+| `path/to/file.go:131` | Same, jumps to line 131 |
+
+Bare filenames (`Makefile`, `README`) are deliberately skipped to avoid
+false positives. Paths only wrap if `os.Stat` finds the file relative
+to the message's cwd.
 
 ## Audio cues (default; mute via `cc-mute`)
 
