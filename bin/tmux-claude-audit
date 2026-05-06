@@ -11,6 +11,12 @@
 
 set -uo pipefail
 
+# Portable mtime: BSD stat (macOS) uses -f %m; GNU stat (Linux) uses -c %Y
+case "$(uname 2>/dev/null)" in
+  Darwin) _mtime() { stat -f %m "$1" 2>/dev/null || echo 0; } ;;
+  *)      _mtime() { stat -c %Y "$1" 2>/dev/null || echo 0; } ;;
+esac
+
 QUIET=0
 [[ "${1:-}" == "--quiet" ]] && QUIET=1
 
@@ -224,7 +230,7 @@ section "Continuum auto-save freshness"
 last="$HOME/.tmux/resurrect/last"
 if [[ -L "$last" ]]; then
   resolved=$(readlink "$last")
-  age_sec=$(( $(date +%s) - $(stat -f %m "$HOME/.tmux/resurrect/$resolved" 2>/dev/null || echo 0) ))
+  age_sec=$(( $(date +%s) - $(_mtime "$HOME/.tmux/resurrect/$resolved") ))
   # Threshold reasoning: continuum auto-saves every 5min. A 6m threshold flags
   # any 1-min slip as drift, generating noise during normal cycles. 9m gives
   # a safer buffer (~80% chance of being healthy after a single missed cycle).

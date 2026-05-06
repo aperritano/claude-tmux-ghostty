@@ -11,6 +11,12 @@
 
 set -uo pipefail
 
+# Portable mtime: BSD stat (macOS) uses -f %m; GNU stat (Linux) uses -c %Y
+case "$(uname 2>/dev/null)" in
+  Darwin) _mtime() { stat -f %m "$1" 2>/dev/null || echo 0; } ;;
+  *)      _mtime() { stat -c %Y "$1" 2>/dev/null || echo 0; } ;;
+esac
+
 DIR="$HOME/.tmux/resurrect"
 KEEP="${1:-200}"
 
@@ -22,11 +28,12 @@ while IFS= read -r f; do
   rm -f "$f"
   deleted=$((deleted + 1))
 done < <(
-  find "$DIR" -name "tmux_resurrect_*.txt" -type f -print0 \
-    | xargs -0 stat -f '%m %N' \
+  while IFS= read -r -d '' p; do
+    printf '%s %s\n' "$(_mtime "$p")" "$p"
+  done < <(find "$DIR" -name "tmux_resurrect_*.txt" -type f -print0) \
     | sort -rn \
     | tail -n +$((KEEP + 1)) \
-    | awk '{$1=""; sub(/^ /, ""); print}'
+    | cut -d' ' -f2-
 )
 
 # Verbose mode for manual invocation

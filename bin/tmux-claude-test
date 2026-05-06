@@ -10,6 +10,12 @@
 
 set -uo pipefail
 
+# Portable mtime: BSD stat (macOS) uses -f %m; GNU stat (Linux) uses -c %Y
+case "$(uname 2>/dev/null)" in
+  Darwin) _mtime() { stat -f %m "$1" 2>/dev/null || echo 0; } ;;
+  *)      _mtime() { stat -c %Y "$1" 2>/dev/null || echo 0; } ;;
+esac
+
 G="\033[32m"
 R="\033[31m"
 C="\033[36m"
@@ -209,7 +215,7 @@ if [[ -x "$HOME/bin/tmux-cell-daemon" ]]; then
     # Freshness — if daemon is alive and ticking, cache should be <30s old
     cache_file=$(ls /tmp/tmux-cells-*.cache 2>/dev/null | head -1)
     if [[ -n "$cache_file" ]]; then
-      cache_age=$(( $(date +%s) - $(stat -f %m "$cache_file" 2>/dev/null || echo 0) ))
+      cache_age=$(( $(date +%s) - $(_mtime "$cache_file") ))
       if (( cache_age < 30 )); then
         test_pass "cache fresh (${cache_age}s old)"
       else
@@ -362,7 +368,7 @@ section "tmux-cell-daemon (pane-headers cache)"
 PANE_HEADER_CACHE="/tmp/tmux-pane-headers-$UID.cache"
 if [[ -f "$PANE_HEADER_CACHE" ]]; then
   test_pass "pane-headers cache file exists at $PANE_HEADER_CACHE"
-  age=$(( $(date +%s) - $(stat -f %m "$PANE_HEADER_CACHE" 2>/dev/null || echo 0) ))
+  age=$(( $(date +%s) - $(_mtime "$PANE_HEADER_CACHE") ))
   if (( age < 30 )); then
     test_pass "pane-headers cache fresh (${age}s old)"
   else

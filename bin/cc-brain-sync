@@ -29,6 +29,12 @@
 
 set -uo pipefail
 
+# Portable file size: BSD stat (macOS) uses -f %z; GNU stat (Linux) uses -c %s
+case "$(uname 2>/dev/null)" in
+  Darwin) _fsize() { stat -f %z "$1" 2>/dev/null || echo 0; } ;;
+  *)      _fsize() { stat -c %s "$1" 2>/dev/null || echo 0; } ;;
+esac
+
 KEY="${CC_BRAIN_KEY:-$HOME/.config/cc-brain/key.txt}"
 OUT="${CC_BRAIN_OUT:-$HOME/dev/dotfiles/.brain.tar.gz.age}"
 
@@ -105,7 +111,7 @@ case "$cmd" in
     cd "$HOME/.claude" || exit 1
     build_filelist | tar -czf "$tmp_tar" -T -
     age -r "$pub" -o "$OUT" "$tmp_tar"
-    sz=$(stat -f %z "$OUT" 2>/dev/null || echo 0)
+    sz=$(_fsize "$OUT")
     printf 'cc-brain-sync: wrote %s (%d KB, encrypted to %s)\n' "$OUT" "$((sz / 1024))" "${pub:0:24}…"
     ;;
 
