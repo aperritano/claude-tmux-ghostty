@@ -546,6 +546,31 @@ if [[ -x "$HOME/bin/cc-brain-sync" ]]; then
   else
     test_fail "list" "exited non-zero unexpectedly"
   fi
+  # list output format contract: separator line + "N files, N KB" summary
+  list_out=$("$HOME/bin/cc-brain-sync" list 2>/dev/null)
+  if echo "$list_out" | grep -q "^---$"; then
+    test_pass "list output has '---' separator"
+  else
+    test_fail "list format" "missing '---' separator line"
+  fi
+  if echo "$list_out" | grep -qE "^[0-9]+ files, [0-9]+ KB"; then
+    test_pass "list output has 'N files, N KB' summary"
+  else
+    test_fail "list format" "missing 'N files, N KB' summary line"
+  fi
+  # Regression: macOS du has no -b flag, silently reports 0 KB.
+  # stat -f %z is the correct macOS byte-size probe (already used in push).
+  if [[ -f "$HOME/.claude/settings.json" ]]; then
+    sz=$(stat -f %z "$HOME/.claude/settings.json" 2>/dev/null || echo 0)
+    if (( sz >= 1024 )); then
+      kb_val=$(echo "$list_out" | grep -oE ', [0-9]+ KB' | head -1 | grep -oE '[0-9]+')
+      if [[ -n "$kb_val" && "$kb_val" -gt 0 ]]; then
+        test_pass "list byte count non-zero (stat -f %z, not du -b)"
+      else
+        test_fail "list byte count" "got '0 KB' but settings.json is ${sz}B — du -b regression?"
+      fi
+    fi
+  fi
   # `push` should fail loudly when age missing (don't actually have age in test env).
   # Capture output with $() rather than a pipeline so that pipefail doesn't
   # propagate cc-brain-sync's non-zero exit code through the grep.
