@@ -31,8 +31,11 @@ mkdir -p "$DIR"
 cmd="${1:-}"
 
 sanitize_path() {
-  # Convert /a/b/c -> _a_b_c (deterministic, reversible enough for debug)
-  printf '%s' "$1" | sed 's|/|__|g; s|^__||; s|^\.|DOT|'
+  # Bijective percent-encoding: % → %25, / → %2F, leading . → %2E.
+  # The old __ separator caused /foo__bar/baz ≡ /foo/bar__baz (key collision);
+  # paths with double-underscores in a dirname would silently block an unrelated
+  # path that shared the same sanitized key.
+  printf '%s' "$1" | sed 's|%|%25|g; s|/|%2F|g; s|^\.|%2E|'
 }
 
 is_alive() {
