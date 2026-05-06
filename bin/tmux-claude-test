@@ -45,6 +45,48 @@ if [[ -x "$HOME/bin/claude-sessions-list" ]]; then
   else
     test_fail "produces output" "empty stdout"
   fi
+
+  # Syntax check (can run without a live projects dir)
+  if python3 -m py_compile "$HOME/bin/claude-sessions-list" 2>/dev/null; then
+    test_pass "python3 syntax"
+  else
+    test_fail "python3 syntax" "parse error"
+  fi
+
+  # CLAUDE_PROJECTS=/nonexistent → exits 0 (no crash, clean empty output)
+  if CLAUDE_PROJECTS=/nonexistent python3 "$HOME/bin/claude-sessions-list" >/dev/null 2>&1; then
+    test_pass "CLAUDE_PROJECTS nonexistent → exits 0"
+  else
+    test_fail "CLAUDE_PROJECTS nonexistent → exits 0" "non-zero exit"
+  fi
+
+  # Regression: /.claude/worktrees/ path must produce repo:wt/<branch> label.
+  # Claude Code places worktrees at <repo>/.claude/worktrees/<branch>; previously
+  # only /.worktrees/ was checked so the compact label never fired.
+  _fix_tmp=$(mktemp -d)
+  _proj_dir="$_fix_tmp/testproj"
+  mkdir -p "$_proj_dir"
+  printf '{"type":"user","cwd":"/Users/test/myrepo/.claude/worktrees/my-branch","message":{"content":"test"}}\n' \
+    > "$_proj_dir/abc123def456.jsonl"
+  _fix_label=$(CLAUDE_PROJECTS="$_fix_tmp" python3 "$HOME/bin/claude-sessions-list" 2>/dev/null \
+                 | awk -F'\t' '{print $2}')
+  if [[ "$_fix_label" == "myrepo:wt/my-branch" ]]; then
+    test_pass "/.claude/worktrees/ path → wt: label"
+  else
+    test_fail "/.claude/worktrees/ path → wt: label" "got: '$_fix_label'"
+  fi
+
+  # Regression: /.worktrees/ (bare git) path must still produce repo:wt/<branch> label.
+  printf '{"type":"user","cwd":"/Users/test/myrepo/.worktrees/old-branch","message":{"content":"test"}}\n' \
+    > "$_proj_dir/abc123def457.jsonl"
+  _old_label=$(CLAUDE_PROJECTS="$_fix_tmp" python3 "$HOME/bin/claude-sessions-list" 2>/dev/null \
+                 | awk -F'\t' 'NR==1{print $2}')
+  if [[ "$_old_label" == "myrepo:wt/my-branch" || "$_old_label" == "myrepo:wt/old-branch" ]]; then
+    test_pass "/.worktrees/ path → wt: label (backward compat)"
+  else
+    test_fail "/.worktrees/ path → wt: label" "got: '$_old_label'"
+  fi
+  rm -rf "$_fix_tmp"
 else
   test_fail "executable present" "$HOME/bin/claude-sessions-list missing"
 fi

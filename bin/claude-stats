@@ -33,12 +33,14 @@ N = "\033[0m"
 def short_label(p: str) -> str:
     if p.startswith(HOME):
         p = "~" + p[len(HOME):]
-    if "/.worktrees/" in p:
-        repo = p.split("/.worktrees/")[0].rsplit("/", 1)[-1]
-        wt = p.split("/.worktrees/")[1].split("/")[0]
-        if len(wt) > 24:
-            wt = wt[:21] + "..."
-        return f"{repo}:wt/{wt}"
+    # Check /.claude/worktrees/ first (Claude Code managed), then /.worktrees/ (bare git).
+    for sep in ("/.claude/worktrees/", "/.worktrees/"):
+        if sep in p:
+            repo = p.split(sep)[0].rsplit("/", 1)[-1]
+            wt = p.split(sep)[1].split("/")[0]
+            if len(wt) > 24:
+                wt = wt[:21] + "..."
+            return f"{repo}:wt/{wt}"
     parts = p.rstrip("/").split("/")
     return f"{parts[-2]}/{parts[-1]}" if len(parts) >= 2 else p
 

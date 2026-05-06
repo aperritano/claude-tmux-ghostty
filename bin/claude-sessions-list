@@ -13,12 +13,13 @@ Sort order: most recently modified first.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from datetime import datetime
 from pathlib import Path
 
-PROJECTS = Path.home() / ".claude" / "projects"
+PROJECTS = Path(os.environ.get("CLAUDE_PROJECTS", str(Path.home() / ".claude" / "projects")))
 HOME = str(Path.home())
 
 
@@ -26,13 +27,15 @@ def short_label(p: str) -> str:
     """Compress long paths into scannable labels (mirror of bash short_label)."""
     if p.startswith(HOME):
         p = "~" + p[len(HOME):]
-    if "/.worktrees/" in p:
-        repo_root, _, rest = p.partition("/.worktrees/")
-        repo = repo_root.rsplit("/", 1)[-1]
-        wt = rest.split("/", 1)[0]
-        if len(wt) > 24:
-            wt = wt[:21] + "..."
-        return f"{repo}:wt/{wt}"
+    # Check /.claude/worktrees/ first (Claude Code managed), then /.worktrees/ (bare git).
+    for sep in ("/.claude/worktrees/", "/.worktrees/"):
+        if sep in p:
+            repo_root, _, rest = p.partition(sep)
+            repo = repo_root.rsplit("/", 1)[-1]
+            wt = rest.split("/", 1)[0]
+            if len(wt) > 24:
+                wt = wt[:21] + "..."
+            return f"{repo}:wt/{wt}"
     if p in ("~", "/"):
         return p
     parts = p.rstrip("/").split("/")
