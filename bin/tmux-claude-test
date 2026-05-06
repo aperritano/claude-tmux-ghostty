@@ -780,6 +780,158 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── claude-dirty ─────────────────────────────────────
+section "claude-dirty"
+if [[ -x "$HOME/bin/claude-dirty" ]]; then
+  if bash -n "$HOME/bin/claude-dirty"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Outside a git repo → exits non-zero with a message
+  out=$(cd /tmp && "$HOME/bin/claude-dirty" 2>&1 || true)
+  if echo "$out" | grep -q "not in a git repo"; then
+    test_pass "outside-git error message"
+  else
+    test_fail "outside-git error" "expected 'not in a git repo', got: $out"
+  fi
+  # Clean repo → "all clean"
+  _DT=$(mktemp -d /tmp/claude-dirty-test-XXXX)
+  (
+    cd "$_DT"
+    git init -q -b main
+    git commit --allow-empty -q -m init 2>/dev/null
+  )
+  out=$(cd "$_DT" && "$HOME/bin/claude-dirty" 2>&1)
+  rm -rf "$_DT"
+  if echo "$out" | grep -q "all clean"; then
+    test_pass "clean repo reports 'all clean'"
+  else
+    test_fail "clean repo" "expected 'all clean', got: $out"
+  fi
+  # Dirty repo → shows '!' marker
+  _DT=$(mktemp -d /tmp/claude-dirty-test-XXXX)
+  (
+    cd "$_DT"
+    git init -q -b main
+    echo init > file.txt && git add file.txt
+    git commit -q -m init 2>/dev/null
+    echo modified >> file.txt
+  )
+  out=$(cd "$_DT" && "$HOME/bin/claude-dirty" 2>&1)
+  rm -rf "$_DT"
+  if echo "$out" | grep -q "!"; then
+    test_pass "dirty repo shows '!' marker"
+  else
+    test_fail "dirty detection" "expected '!' in output, got: $out"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/claude-dirty missing"
+fi
+
+# ─── claude-pin ───────────────────────────────────────
+section "claude-pin"
+if [[ -x "$HOME/bin/claude-pin" ]]; then
+  if bash -n "$HOME/bin/claude-pin"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # No args → exit non-zero (usage)
+  if "$HOME/bin/claude-pin" >/dev/null 2>&1; then
+    test_fail "no-args exit code" "expected exit 1, got 0"
+  else
+    test_pass "no args exits non-zero"
+  fi
+  # Short prefix (<4 chars) → error
+  out=$("$HOME/bin/claude-pin" abc 2>&1 || true)
+  if echo "$out" | grep -q "prefix must be"; then
+    test_pass "short prefix (<4) rejected with error"
+  else
+    test_fail "short prefix rejection" "expected prefix error, got: $out"
+  fi
+  # File-system tests via isolated CLAUDE_PROJECTS dir
+  _PP=$(mktemp -d /tmp/claude-pin-test-XXXX)
+  mkdir -p "$_PP/proj-a"
+  # --list with no pins → empty state
+  out=$(CLAUDE_PROJECTS="$_PP" "$HOME/bin/claude-pin" --list 2>&1)
+  if echo "$out" | grep -q "no pinned sessions"; then
+    test_pass "--list with no pins shows empty state"
+  else
+    test_fail "--list empty" "expected 'no pinned sessions', got: $out"
+  fi
+  # Pin a synthetic session
+  _SID="abcd1234-test-0000-0000-000000000000"
+  touch "$_PP/proj-a/${_SID}.jsonl"
+  out=$(CLAUDE_PROJECTS="$_PP" "$HOME/bin/claude-pin" abcd1234 2>&1)
+  if echo "$out" | grep -q "pinned"; then
+    test_pass "pin session reports 'pinned'"
+  else
+    test_fail "pin" "expected 'pinned' in output, got: $out"
+  fi
+  if [[ -f "$_PP/proj-a/${_SID}.pinned" ]]; then
+    test_pass "pin creates .pinned sibling file"
+  else
+    test_fail "pinned file" ".pinned file not created at $_PP/proj-a/${_SID}.pinned"
+  fi
+  # Pinning again → "already pinned"
+  out=$(CLAUDE_PROJECTS="$_PP" "$HOME/bin/claude-pin" abcd1234 2>&1)
+  if echo "$out" | grep -q "already pinned"; then
+    test_pass "double-pin reports 'already pinned'"
+  else
+    test_fail "double-pin" "expected 'already pinned', got: $out"
+  fi
+  # --list shows pinned session
+  out=$(CLAUDE_PROJECTS="$_PP" "$HOME/bin/claude-pin" --list 2>&1)
+  if echo "$out" | grep -q "abcd1234"; then
+    test_pass "--list shows pinned session id"
+  else
+    test_fail "--list after pin" "expected session id in list, got: $out"
+  fi
+  # --unpin removes .pinned file
+  CLAUDE_PROJECTS="$_PP" "$HOME/bin/claude-pin" --unpin abcd1234 >/dev/null 2>&1
+  if [[ ! -f "$_PP/proj-a/${_SID}.pinned" ]]; then
+    test_pass "--unpin removes .pinned file"
+  else
+    test_fail "--unpin" ".pinned file still exists after unpin"
+  fi
+  rm -rf "$_PP"
+else
+  test_fail "executable present" "$HOME/bin/claude-pin missing"
+fi
+
+# ─── cc-lock-stop-hook ────────────────────────────────
+section "cc-lock-stop-hook"
+if [[ -x "$HOME/bin/cc-lock-stop-hook" ]]; then
+  if bash -n "$HOME/bin/cc-lock-stop-hook"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # JSON without session_id → silent exit 0 (no cc-lock call)
+  out=$(printf '{"event":"Stop"}\n' | "$HOME/bin/cc-lock-stop-hook" 2>&1)
+  if [[ -z "$out" ]]; then
+    test_pass "JSON without session_id → silent (no output)"
+  else
+    test_fail "missing session_id output" "unexpected: $out"
+  fi
+  # JSON with session_id → cc-lock release-by-session runs (round-trip test)
+  if [[ -x "$HOME/bin/cc-lock" ]]; then
+    rm -rf /tmp/cc-locks
+    "$HOME/bin/cc-lock" acquire stopHookSess /tmp/cc-stophook-lock 2>/dev/null
+    printf '{"session_id":"stopHookSess"}\n' | "$HOME/bin/cc-lock-stop-hook" >/dev/null 2>&1
+    if "$HOME/bin/cc-lock" acquire reacquirer /tmp/cc-stophook-lock 2>/dev/null; then
+      test_pass "stop-hook releases locks (re-acquire succeeds after hook)"
+      "$HOME/bin/cc-lock" release-by-session reacquirer 2>/dev/null
+    else
+      test_fail "stop-hook release" "lock still held after hook ran"
+      "$HOME/bin/cc-lock" release-by-session stopHookSess 2>/dev/null
+    fi
+  fi
+else
+  test_fail "executable present" "$HOME/bin/cc-lock-stop-hook missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"

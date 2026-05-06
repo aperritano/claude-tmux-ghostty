@@ -15,7 +15,7 @@
 
 set -uo pipefail
 
-PROJECTS="$HOME/.claude/projects"
+PROJECTS="${CLAUDE_PROJECTS:-$HOME/.claude/projects}"
 
 G="\033[32m"
 R="\033[31m"
