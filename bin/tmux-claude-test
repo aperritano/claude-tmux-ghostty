@@ -264,12 +264,26 @@ fi
 # ─── tmux-window-cell daemon-backed reader ────────────
 section "tmux-window-cell (reader)"
 if [[ -x "$HOME/bin/tmux-window-cell" ]]; then
+  if bash -n "$HOME/bin/tmux-window-cell" 2>/dev/null; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Portability regression: daemon health check must not call stat -f directly.
+  # After the _mtime() fix it should only appear inside the platform-dispatch case.
+  if ! grep -qF 'stat -f %m "$CACHE"' "$HOME/bin/tmux-window-cell" 2>/dev/null; then
+    test_pass "daemon health check: no raw BSD stat -f (portable)"
+  else
+    test_fail "stat portability" "stat -f %m used directly — breaks on Linux"
+  fi
   out=$("$HOME/bin/tmux-window-cell" 1 0 2>/dev/null)
   if [[ -n "$out" ]]; then
     test_pass "renders cell for window 1"
   else
     test_fail "cell render" "empty output"
   fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-window-cell missing"
 fi
 
 # ─── cc-sound mute behavior ───────────────────────────
