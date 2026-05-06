@@ -42,8 +42,13 @@ def short_label(p: str) -> str:
         return f"{repo}:wt/{wt}"
     if p in ("~", "/"):
         return p
-    parts = [s for s in p.split("/") if s and s != "~"]
-    return "/".join(parts[-2:]) if len(parts) >= 2 else (parts[0] if parts else p)
+    parts = p.rstrip("/").split("/")
+    if len(parts) >= 2:
+        last1, last2 = parts[-1], parts[-2]
+        if last2 in ("", "~"):
+            return f"~/{last1}"
+        return f"{last2}/{last1}"
+    return p or "(unknown)"
 
 
 def fmt_age(seconds: int) -> str:
