@@ -780,6 +780,50 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── tmux-session-list ────────────────────────────────
+section "tmux-session-list"
+if [[ -x "$HOME/bin/tmux-session-list" ]]; then
+  if bash -n "$HOME/bin/tmux-session-list" 2>/dev/null; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax valid" "parse error"
+  fi
+
+  # no tmux server → exits 0, empty output
+  if ! tmux info >/dev/null 2>&1; then
+    out=$("$HOME/bin/tmux-session-list" "" 2>/dev/null)
+    if [[ -z "$out" ]]; then
+      test_pass "no tmux server → exits 0, empty output"
+    else
+      test_fail "no tmux server → empty output" "got non-empty: $out"
+    fi
+  else
+    test_pass "no-tmux empty-output (skipped — tmux server running)"
+  fi
+
+  # regression: session name with a space must render as ONE segment, not two
+  _sl_tmp=$(mktemp -d)
+  cat > "$_sl_tmp/tmux" << 'MOCK'
+#!/bin/bash
+if [[ "$1" == "list-sessions" ]]; then
+  printf 'my project\nother\n'
+fi
+exit 0
+MOCK
+  chmod +x "$_sl_tmp/tmux"
+  out=$(PATH="$_sl_tmp:$PATH" "$HOME/bin/tmux-session-list" "" 2>/dev/null)
+  rm -rf "$_sl_tmp"
+  # Each session contributes exactly one "[fg=" prefix; 2 sessions → 2
+  seg_count=$(printf '%s' "$out" | grep -o '\[fg=' | wc -l | tr -d ' ')
+  if [[ "$seg_count" == "2" ]]; then
+    test_pass "space-in-session-name: rendered as 1 segment (not word-split)"
+  else
+    test_fail "space-in-session-name: word-splitting" "got $seg_count segments, expected 2"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-session-list missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"
