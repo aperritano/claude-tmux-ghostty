@@ -546,6 +546,19 @@ if [[ -x "$HOME/bin/cc-brain-sync" ]]; then
   else
     test_fail "list" "exited non-zero unexpectedly"
   fi
+  # Regression: `list` summary line format — guards the du -b platform fix.
+  # macOS BSD du has no -b flag; the old code silently returned 0 for all file
+  # sizes. The fix uses python3 os.path.getsize instead. When ~/.claude exists
+  # (as it always does on this setup), the summary must end with the canonical
+  # "N files, M KB uncompressed" line with a non-negative integer for N.
+  if [[ -d "$HOME/.claude" ]]; then
+    list_out=$("$HOME/bin/cc-brain-sync" list 2>/dev/null)
+    if echo "$list_out" | grep -qE '^[0-9]+ files, [0-9]+ KB uncompressed'; then
+      test_pass "cc-brain-sync list — summary format (du -b portability fix)"
+    else
+      test_fail "list summary format" "expected 'N files, M KB uncompressed' — check du -b portability"
+    fi
+  fi
   # `push` should fail loudly when age missing (don't actually have age in test env).
   # Capture output with $() rather than a pipeline so that pipefail doesn't
   # propagate cc-brain-sync's non-zero exit code through the grep.
