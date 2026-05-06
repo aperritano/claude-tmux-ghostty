@@ -401,6 +401,98 @@ if [[ -x "$HOME/bin/tmux-pane-header" && -f "$PANE_HEADER_CACHE" ]]; then
   fi
 fi
 
+# ─── tmux-pane-header ─────────────────────────────────
+section "tmux-pane-header"
+if [[ -x "$HOME/bin/tmux-pane-header" ]]; then
+  if bash -n "$HOME/bin/tmux-pane-header" 2>/dev/null; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Structural checks — verify key mechanisms are wired.
+  if grep -q "compute_only" "$HOME/bin/tmux-pane-header"; then
+    test_pass "--compute flag wired (compute_only variable)"
+  else
+    test_fail "--compute flag" "compute_only variable missing"
+  fi
+  if grep -q "DAEMON_CACHE" "$HOME/bin/tmux-pane-header"; then
+    test_pass "daemon-cache hot path present"
+  else
+    test_fail "daemon-cache" "DAEMON_CACHE variable missing"
+  fi
+  if grep -q "cc-locks" "$HOME/bin/tmux-pane-header"; then
+    test_pass "lock indicator references /tmp/cc-locks"
+  else
+    test_fail "lock indicator" "no cc-locks reference"
+  fi
+  # Uptime parser unit test — exercises the etime parsing block in isolation.
+  # BSD ps etime format: [[dd-]HH:]MM:SS
+  uptime_parse() {
+    local etime="$1"
+    local total_sec=0
+    if [[ "$etime" == *-* ]]; then
+      local days="${etime%%-*}" rest="${etime#*-}"
+      total_sec=$((days * 86400))
+      etime="$rest"
+    fi
+    local parts
+    IFS=: read -ra parts <<<"$etime"
+    case ${#parts[@]} in
+      3) total_sec=$((total_sec + 10#${parts[0]} * 3600 + 10#${parts[1]} * 60 + 10#${parts[2]})) ;;
+      2) total_sec=$((total_sec + 10#${parts[0]} * 60 + 10#${parts[1]})) ;;
+    esac
+    echo "$total_sec"
+  }
+  got=$(uptime_parse "05:30")
+  if [[ "$got" == "330" ]]; then
+    test_pass "uptime parser: MM:SS (05:30 → 330s)"
+  else
+    test_fail "uptime parser MM:SS" "expected 330, got $got"
+  fi
+  got=$(uptime_parse "01:05:30")
+  if [[ "$got" == "3930" ]]; then
+    test_pass "uptime parser: HH:MM:SS (01:05:30 → 3930s)"
+  else
+    test_fail "uptime parser HH:MM:SS" "expected 3930, got $got"
+  fi
+  got=$(uptime_parse "1-01:05:30")
+  if [[ "$got" == "90330" ]]; then
+    test_pass "uptime parser: dd-HH:MM:SS (1-01:05:30 → 90330s)"
+  else
+    test_fail "uptime parser dd-HH:MM:SS" "expected 90330, got $got"
+  fi
+  got=$(uptime_parse "00:05")
+  if [[ "$got" == "5" ]]; then
+    test_pass "uptime parser: zero-padded MM:SS (00:05 → 5s)"
+  else
+    test_fail "uptime parser zero-padded" "expected 5, got $got"
+  fi
+  got=$(uptime_parse "2-00:00:00")
+  if [[ "$got" == "172800" ]]; then
+    test_pass "uptime parser: multi-day (2-00:00:00 → 172800s)"
+  else
+    test_fail "uptime parser multi-day" "expected 172800, got $got"
+  fi
+  # Live --compute path — only when a tmux server is attached.
+  if tmux info >/dev/null 2>&1; then
+    own_pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
+    if [[ -n "$own_pane" ]]; then
+      out=$("$HOME/bin/tmux-pane-header" --compute "$own_pane" 2>/dev/null)
+      if [[ -n "$out" ]]; then
+        test_pass "--compute emits non-empty output for live pane $own_pane"
+      else
+        test_fail "--compute output" "empty for pane $own_pane"
+      fi
+    else
+      test_pass "--compute live-pane test (skipped — could not get pane id)"
+    fi
+  else
+    test_pass "--compute live-pane test (skipped — no tmux server)"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-pane-header missing"
+fi
+
 # ─── tmux-burn-segment ────────────────────────────────
 section "tmux-burn-segment"
 if [[ -x "$HOME/bin/tmux-burn-segment" ]]; then

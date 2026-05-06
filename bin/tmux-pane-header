@@ -11,7 +11,7 @@
 #
 # Indicators:
 #   ⚠   cc-attention marker is set for this pane
-#   🔒N this pane's session holds N file locks
+#   🔒N fleet has N active lock(s) across all sessions
 #
 # Git-ish (when pane cwd is in a git repo):
 #   <branch>           on default branch
