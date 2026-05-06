@@ -557,6 +557,14 @@ if [[ -x "$HOME/bin/cc-brain-sync" ]]; then
       test_fail "push-no-age" "should warn about missing age"
     fi
   fi
+  # Regression: list byte-count must use stat -f %z, not du -b.
+  # du -b is Linux-only; on macOS it exits with "illegal option -- b" and the
+  # pipe to awk sees empty input → always reports 0 KB regardless of archive size.
+  if ! grep -q 'du -b' "$HOME/bin/cc-brain-sync"; then
+    test_pass "list byte-count uses stat -f %z (not macOS-broken du -b)"
+  else
+    test_fail "cc-brain-sync du-b regression" "uses 'du -b' which silently produces 0 KB on macOS"
+  fi
 else
   test_fail "executable present" "$HOME/bin/cc-brain-sync missing"
 fi
