@@ -780,6 +780,83 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── claude-touched ───────────────────────────────────
+section "claude-touched"
+if [[ -x "$HOME/bin/claude-touched" ]]; then
+  if python3 -m py_compile "$HOME/bin/claude-touched" 2>/dev/null; then
+    test_pass "python3 syntax valid"
+  else
+    test_fail "python3 syntax" "compile error"
+  fi
+  # Nonexistent CLAUDE_PROJECTS → exits 0 without crash.
+  if CLAUDE_PROJECTS=/nonexistent "$HOME/bin/claude-touched" >/dev/null 2>&1; then
+    test_pass "nonexistent CLAUDE_PROJECTS exits 0"
+  else
+    test_fail "nonexistent CLAUDE_PROJECTS" "exited non-zero"
+  fi
+  # Build a synthetic fixture: one session, three edit calls.
+  _ct_dir=$(mktemp -d)
+  _ct_proj="$_ct_dir/proj-fixture"
+  mkdir -p "$_ct_proj"
+  cat > "$_ct_proj/ct-test-fixture-0001.jsonl" <<'CT_FIXTURE'
+{"cwd":"/tmp/ct-fixture-project"}
+{"message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/tmp/ct-fixture-project/alpha.py"}}]}}
+{"message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/tmp/ct-fixture-project/beta.sh"}}]}}
+{"message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/tmp/ct-fixture-project/alpha.py"}}]}}
+CT_FIXTURE
+  touch "$_ct_proj/ct-test-fixture-0001.jsonl"
+
+  _ct_out=$(CLAUDE_PROJECTS="$_ct_dir" "$HOME/bin/claude-touched" 2>/dev/null)
+  if echo "$_ct_out" | grep -q "alpha.py"; then
+    test_pass "default mode: edited file appears in output"
+  else
+    test_fail "default mode output" "alpha.py missing"
+  fi
+  # alpha.py has 2 edits vs beta.sh's 1 — must rank first (count=2 present).
+  if echo "$_ct_out" | grep -q "Edit.*2\|2.*Edit"; then
+    test_pass "default mode: most-edited file shows count"
+  else
+    test_fail "default mode ranking" "edit count not found in output"
+  fi
+
+  # --by-session: header changes and session ID appears.
+  _ct_bs=$(CLAUDE_PROJECTS="$_ct_dir" "$HOME/bin/claude-touched" --by-session 2>/dev/null)
+  if echo "$_ct_bs" | grep -q "sessions that edited"; then
+    test_pass "--by-session header differs from default"
+  else
+    test_fail "--by-session header" "'sessions that edited' missing"
+  fi
+  if echo "$_ct_bs" | grep -q "ct-test-"; then
+    test_pass "--by-session shows session ID in output"
+  else
+    test_fail "--by-session session ID" "session prefix 'ct-test-' not found"
+  fi
+
+  # --top 1 must suppress the second file.
+  _ct_top=$(CLAUDE_PROJECTS="$_ct_dir" "$HOME/bin/claude-touched" --top 1 2>/dev/null)
+  if echo "$_ct_top" | grep -q "alpha.py" && ! echo "$_ct_top" | grep -q "beta.sh"; then
+    test_pass "--top 1 limits output to highest-ranked file"
+  else
+    test_fail "--top 1" "unexpected output (alpha.py=$(echo "$_ct_top"|grep -c alpha.py) beta.sh=$(echo "$_ct_top"|grep -c beta.sh))"
+  fi
+
+  # Stale JSONL (mtime before today) must be excluded.
+  cat > "$_ct_proj/ct-old-session-0002.jsonl" <<'CT_OLD'
+{"message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/tmp/old-stale.py"}}]}}
+CT_OLD
+  touch -t 200001010000 "$_ct_proj/ct-old-session-0002.jsonl"
+  _ct_fresh=$(CLAUDE_PROJECTS="$_ct_dir" "$HOME/bin/claude-touched" 2>/dev/null)
+  if ! echo "$_ct_fresh" | grep -q "old-stale.py"; then
+    test_pass "stale JSONL excluded from today's output"
+  else
+    test_fail "stale JSONL exclusion" "old-stale.py appeared unexpectedly"
+  fi
+
+  rm -rf "$_ct_dir"
+else
+  test_fail "executable present" "$HOME/bin/claude-touched missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"
