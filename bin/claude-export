@@ -21,7 +21,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-PROJECTS = Path.home() / ".claude" / "projects"
+PROJECTS = Path(os.environ.get("CLAUDE_PROJECTS", str(Path.home() / ".claude" / "projects")))
 
 # ─── OSC 8 link rendering ───────────────────────────────────────────────
 # Mirrors cc-rich's linkify pass. Only applied when stdout is a TTY —
@@ -93,6 +93,8 @@ def linkify(text: str, cwd: str) -> str:
 
 
 def find_session(session_id: str) -> Path | None:
+    if not PROJECTS.is_dir():
+        return None
     for proj in PROJECTS.iterdir():
         if not proj.is_dir():
             continue

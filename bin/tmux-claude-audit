@@ -345,6 +345,32 @@ else
   else emit PASS "shell-integration-features set"; fi
 fi
 
+section "Python script testability (CLAUDE_PROJECTS override)"
+# Guards against re-hardcoding the projects path — regression for the
+# FileNotFoundError crash in claude-export and test-isolation for all three.
+for _ps in claude-stats claude-touched claude-export; do
+  if [[ -x "$HOME/bin/$_ps" ]]; then
+    if grep -q 'CLAUDE_PROJECTS' "$HOME/bin/$_ps"; then
+      emit PASS "$_ps — CLAUDE_PROJECTS env override present"
+    else
+      emit WARN "$_ps" "missing CLAUDE_PROJECTS override — tests cannot isolate fixture"
+    fi
+  else
+    emit WARN "$_ps" "not installed — skipping env-override check"
+  fi
+done
+# Extra crash-guard: claude-export must have an is_dir() guard in find_session
+# so a missing PROJECTS dir returns None instead of raising FileNotFoundError.
+if [[ -x "$HOME/bin/claude-export" ]]; then
+  if grep -q 'PROJECTS.is_dir()' "$HOME/bin/claude-export"; then
+    emit PASS "claude-export — find_session has PROJECTS existence guard"
+  else
+    emit FAIL "claude-export" "missing PROJECTS.is_dir() guard in find_session — crashes with FileNotFoundError"
+  fi
+else
+  emit WARN "claude-export" "not installed — skipping crash-guard check"
+fi
+
 section "Dotfiles git state"
 DOTFILES="$HOME/dev/dotfiles"
 if [[ -d "$DOTFILES/.git" ]]; then

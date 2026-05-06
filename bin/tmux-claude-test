@@ -780,6 +780,143 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── claude-stats ─────────────────────────────────────
+section "claude-stats"
+if [[ -x "$HOME/bin/claude-stats" ]]; then
+  if python3 -c "import py_compile; py_compile.compile('$HOME/bin/claude-stats')" 2>/dev/null; then
+    test_pass "python3 syntax"
+  else
+    test_fail "python3 syntax" "syntax error in claude-stats"
+  fi
+  # no projects dir → exit 0, no output
+  out=$(CLAUDE_PROJECTS=/nonexistent/path python3 "$HOME/bin/claude-stats" 2>&1)
+  st=$?
+  if [[ $st -eq 0 ]]; then
+    test_pass "missing PROJECTS dir exits 0"
+  else
+    test_fail "missing PROJECTS dir exits 0" "exited $st: $out"
+  fi
+  # empty projects dir → "no assistant token data" message
+  _TMP=$(mktemp -d)
+  out=$(CLAUDE_PROJECTS="$_TMP" python3 "$HOME/bin/claude-stats" 2>&1)
+  if echo "$out" | grep -qi "no assistant\|no.*token"; then
+    test_pass "empty dir → no-token message"
+  else
+    test_fail "empty dir → no-token message" "got: $out"
+  fi
+  rm -rf "$_TMP"
+  # synthetic JSONL fixture → token summary rendered
+  _TMP=$(mktemp -d)
+  mkdir -p "$_TMP/proj1"
+  printf '{"type":"assistant","cwd":"/tmp/test","message":{"usage":{"input_tokens":100,"output_tokens":50}}}\n' \
+    > "$_TMP/proj1/abcd1234.jsonl"
+  out=$(CLAUDE_PROJECTS="$_TMP" python3 "$HOME/bin/claude-stats" 2>&1)
+  if echo "$out" | grep -q "token usage"; then
+    test_pass "synthetic fixture renders token summary"
+  else
+    test_fail "synthetic fixture renders token summary" "got: $out"
+  fi
+  rm -rf "$_TMP"
+  # --days flag accepted without error
+  _TMP=$(mktemp -d)
+  CLAUDE_PROJECTS="$_TMP" python3 "$HOME/bin/claude-stats" --days 7 >/dev/null 2>&1
+  st=$?
+  if [[ $st -eq 0 ]]; then
+    test_pass "--days flag accepted"
+  else
+    test_fail "--days flag accepted" "exited $st"
+  fi
+  rm -rf "$_TMP"
+else
+  test_fail "executable present" "$HOME/bin/claude-stats missing"
+fi
+
+# ─── claude-touched ────────────────────────────────────
+section "claude-touched"
+if [[ -x "$HOME/bin/claude-touched" ]]; then
+  if python3 -c "import py_compile; py_compile.compile('$HOME/bin/claude-touched')" 2>/dev/null; then
+    test_pass "python3 syntax"
+  else
+    test_fail "python3 syntax" "syntax error in claude-touched"
+  fi
+  # no projects dir → exit 0, no output
+  out=$(CLAUDE_PROJECTS=/nonexistent/path python3 "$HOME/bin/claude-touched" 2>&1)
+  st=$?
+  if [[ $st -eq 0 ]]; then
+    test_pass "missing PROJECTS dir exits 0"
+  else
+    test_fail "missing PROJECTS dir exits 0" "exited $st: $out"
+  fi
+  # synthetic fixture → files touched section rendered
+  _TMP=$(mktemp -d)
+  mkdir -p "$_TMP/proj1"
+  printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/tmp/foo.py"}}]}}\n' \
+    > "$_TMP/proj1/abcd1234.jsonl"
+  out=$(CLAUDE_PROJECTS="$_TMP" python3 "$HOME/bin/claude-touched" 2>&1)
+  if echo "$out" | grep -q "files Claude edited"; then
+    test_pass "synthetic fixture renders files section"
+  else
+    test_fail "synthetic fixture renders files section" "got: $out"
+  fi
+  rm -rf "$_TMP"
+  # --by-session flag accepted without error
+  _TMP=$(mktemp -d)
+  CLAUDE_PROJECTS="$_TMP" python3 "$HOME/bin/claude-touched" --by-session >/dev/null 2>&1
+  st=$?
+  if [[ $st -eq 0 ]]; then
+    test_pass "--by-session flag accepted"
+  else
+    test_fail "--by-session flag accepted" "exited $st"
+  fi
+  rm -rf "$_TMP"
+else
+  test_fail "executable present" "$HOME/bin/claude-touched missing"
+fi
+
+# ─── claude-export ─────────────────────────────────────
+section "claude-export"
+if [[ -x "$HOME/bin/claude-export" ]]; then
+  if python3 -c "import py_compile; py_compile.compile('$HOME/bin/claude-export')" 2>/dev/null; then
+    test_pass "python3 syntax"
+  else
+    test_fail "python3 syntax" "syntax error in claude-export"
+  fi
+  # no projects dir → exit 1 with friendly error (not a Python traceback)
+  out=$(CLAUDE_PROJECTS=/nonexistent/path python3 "$HOME/bin/claude-export" missingid 2>&1)
+  st=$?
+  if [[ $st -eq 1 ]] && echo "$out" | grep -q "not found"; then
+    test_pass "missing PROJECTS dir → friendly error, exit 1"
+  else
+    test_fail "missing PROJECTS dir → friendly error, exit 1" "exit=$st out=$out"
+  fi
+  # synthetic fixture → markdown output
+  _TMP=$(mktemp -d)
+  mkdir -p "$_TMP/proj1"
+  printf '{"type":"user","cwd":"/tmp","timestamp":"2024-01-01T00:00:00Z","message":{"content":"hello"}}\n' \
+    > "$_TMP/proj1/abcd1234.jsonl"
+  out=$(CLAUDE_PROJECTS="$_TMP" python3 "$HOME/bin/claude-export" abcd1234 2>&1)
+  if echo "$out" | grep -q "Claude Code session"; then
+    test_pass "synthetic fixture renders markdown"
+  else
+    test_fail "synthetic fixture renders markdown" "got: $out"
+  fi
+  rm -rf "$_TMP"
+  # --no-tools flag accepted without error
+  _TMP=$(mktemp -d)
+  mkdir -p "$_TMP/proj1"
+  printf '{"type":"user","message":{"content":"hi"}}\n' > "$_TMP/proj1/test5678.jsonl"
+  CLAUDE_PROJECTS="$_TMP" python3 "$HOME/bin/claude-export" test5678 --no-tools >/dev/null 2>&1
+  st=$?
+  if [[ $st -eq 0 ]]; then
+    test_pass "--no-tools flag accepted"
+  else
+    test_fail "--no-tools flag accepted" "exited $st"
+  fi
+  rm -rf "$_TMP"
+else
+  test_fail "executable present" "$HOME/bin/claude-export missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"
