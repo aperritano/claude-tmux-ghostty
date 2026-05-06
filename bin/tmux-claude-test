@@ -532,6 +532,39 @@ else
   test_fail "executable present" "$HOME/bin/cc-lock-pre-hook missing"
 fi
 
+# ─── cc-lock-stop-hook (Stop / SubagentStop release) ──
+section "cc-lock-stop-hook"
+if [[ -x "$HOME/bin/cc-lock-stop-hook" ]]; then
+  if bash -n "$HOME/bin/cc-lock-stop-hook"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # End-to-end: acquire a lock, feed stop-hook JSON on stdin, verify released.
+  # This mirrors the real SubagentStop / Stop hook flow where Claude pipes its
+  # session JSON to the hook on fd 0. A regression here silently deadlocks
+  # every other agent trying to edit the same file.
+  rm -rf /tmp/cc-locks
+  "$HOME/bin/cc-lock" acquire sStop /tmp/stop-hook-test.go 2>/dev/null
+  echo '{"session_id":"sStop","transcript":[]}' \
+    | "$HOME/bin/cc-lock-stop-hook" 2>/dev/null
+  if "$HOME/bin/cc-lock" acquire sOther /tmp/stop-hook-test.go 2>/dev/null; then
+    test_pass "stop-hook releases lock on session end"
+    "$HOME/bin/cc-lock" release-by-session sOther 2>/dev/null
+  else
+    test_fail "stop-hook lock release" "lock still held after stop-hook"
+    "$HOME/bin/cc-lock" release-by-session sStop 2>/dev/null
+  fi
+  # Null / missing session_id → no-op (should not error or hang)
+  if echo '{}' | "$HOME/bin/cc-lock-stop-hook" 2>/dev/null; then
+    test_pass "null session_id → silent no-op (exit 0)"
+  else
+    test_fail "null session_id handling" "expected silent exit 0"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/cc-lock-stop-hook missing"
+fi
+
 # ─── cc-brain-sync ────────────────────────────────────
 section "cc-brain-sync"
 if [[ -x "$HOME/bin/cc-brain-sync" ]]; then
