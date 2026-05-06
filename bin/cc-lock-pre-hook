@@ -22,7 +22,8 @@ if "$HOME/bin/cc-lock" acquire "$sid" "$path"; then
 fi
 
 # Locked by another live session — emit deny JSON.
-holder=$(head -1 "/tmp/cc-locks/$(echo "$path" | sed 's|/|__|g; s|^__||')" 2>/dev/null | head -c 8)
+# Delegate holder lookup to cc-lock so sanitize_path lives in one place.
+holder=$("$HOME/bin/cc-lock" holder "$path" 2>/dev/null | head -c 8)
 reason="cc-lock: $path is being edited by another Claude session (${holder}…) — retry shortly or coordinate"
 jq -nc --arg r "$reason" '{
   hookSpecificOutput: {
