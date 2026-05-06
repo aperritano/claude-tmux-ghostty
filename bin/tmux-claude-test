@@ -532,6 +532,118 @@ else
   test_fail "executable present" "$HOME/bin/cc-lock-pre-hook missing"
 fi
 
+# ─── cc-lock-stop-hook (Stop / SubagentStop release) ──
+section "cc-lock-stop-hook"
+if [[ -x "$HOME/bin/cc-lock-stop-hook" ]]; then
+  if bash -n "$HOME/bin/cc-lock-stop-hook"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Empty / missing session_id: must exit 0 silently
+  if echo '{}' | "$HOME/bin/cc-lock-stop-hook" 2>/dev/null; then
+    test_pass "empty session_id handled gracefully (exit 0)"
+  else
+    test_fail "empty session_id" "expected silent exit 0"
+  fi
+  # End-to-end: acquire lock as session A, fire stop-hook for A, B should acquire
+  rm -rf /tmp/cc-locks
+  "$HOME/bin/cc-lock" acquire shA /tmp/cc-stop-hook-test 2>/dev/null
+  echo '{"session_id":"shA"}' | "$HOME/bin/cc-lock-stop-hook" 2>/dev/null
+  if "$HOME/bin/cc-lock" acquire shB /tmp/cc-stop-hook-test 2>/dev/null; then
+    test_pass "stop-hook releases held locks (B acquires after A stop-hook)"
+    "$HOME/bin/cc-lock" release-by-session shB 2>/dev/null
+  else
+    test_fail "stop-hook lock release" "B still blocked after A's stop-hook ran"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/cc-lock-stop-hook missing"
+fi
+
+# ─── claude-pin ───────────────────────────────────────
+section "claude-pin"
+if [[ -x "$HOME/bin/claude-pin" ]]; then
+  if bash -n "$HOME/bin/claude-pin"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Short prefix (<4 chars) rejected
+  if "$HOME/bin/claude-pin" abc 2>&1 | grep -q "prefix must be"; then
+    test_pass "rejects prefix shorter than 4 chars"
+  else
+    test_fail "short-prefix guard" "expected 'prefix must be' in stderr"
+  fi
+  # --list exits 0 regardless of whether any pins exist
+  if "$HOME/bin/claude-pin" --list >/dev/null 2>&1; then
+    test_pass "--list exits 0"
+  else
+    test_fail "--list exit code" "expected 0"
+  fi
+  # --unpin short prefix also rejected
+  if "$HOME/bin/claude-pin" --unpin ab 2>&1 | grep -q "prefix must be"; then
+    test_pass "--unpin rejects short prefix"
+  else
+    test_fail "--unpin short-prefix guard" "expected 'prefix must be' in stderr"
+  fi
+  # Round-trip: pin → list → unpin using a temp project dir
+  fix=$(mktemp -d)
+  trap "rm -rf $fix" RETURN
+  mkdir -p "$fix/fake-project"
+  sid="abcd1234-0000-0000-0000-000000000001"
+  touch "$fix/fake-project/${sid}.jsonl"
+  CC_PIN_PROJECTS="$fix" "$HOME/bin/claude-pin" abcd1234 >/dev/null 2>&1
+  if [[ -f "$fix/fake-project/${sid}.pinned" ]]; then
+    test_pass "pin creates .pinned sibling file"
+  else
+    test_fail "pin" ".pinned file not created"
+  fi
+  list_out=$(CC_PIN_PROJECTS="$fix" "$HOME/bin/claude-pin" --list 2>/dev/null)
+  if echo "$list_out" | grep -q "abcd1234"; then
+    test_pass "--list shows pinned session"
+  else
+    test_fail "--list" "pinned session not in listing"
+  fi
+  CC_PIN_PROJECTS="$fix" "$HOME/bin/claude-pin" --unpin abcd1234 >/dev/null 2>&1
+  if [[ ! -f "$fix/fake-project/${sid}.pinned" ]]; then
+    test_pass "--unpin removes .pinned file"
+  else
+    test_fail "--unpin" ".pinned file still present after unpin"
+  fi
+  rm -rf "$fix"
+else
+  test_fail "executable present" "$HOME/bin/claude-pin missing"
+fi
+
+# ─── tmux-mute-indicator ──────────────────────────────
+section "tmux-mute-indicator"
+if [[ -x "$HOME/bin/tmux-mute-indicator" ]]; then
+  was_muted=0
+  [[ -f "$HOME/.claude/.muted" ]] && was_muted=1
+  # Muted: must emit 🔇 format token
+  touch "$HOME/.claude/.muted"
+  out=$("$HOME/bin/tmux-mute-indicator" 2>/dev/null)
+  if echo "$out" | grep -q "🔇"; then
+    test_pass "emits mute glyph when .muted present"
+  else
+    test_fail "mute glyph" "expected 🔇 in output"
+  fi
+  # Unmuted: must produce no output
+  rm -f "$HOME/.claude/.muted"
+  out=$("$HOME/bin/tmux-mute-indicator" 2>/dev/null)
+  if [[ -z "$out" ]]; then
+    test_pass "silent when not muted"
+  else
+    test_fail "silent path" "expected empty output, got: $out"
+  fi
+  # Restore original mute state
+  if [[ $was_muted -eq 1 ]]; then
+    touch "$HOME/.claude/.muted"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-mute-indicator missing"
+fi
+
 # ─── cc-brain-sync ────────────────────────────────────
 section "cc-brain-sync"
 if [[ -x "$HOME/bin/cc-brain-sync" ]]; then
