@@ -780,6 +780,229 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── cc-lock-stop-hook ────────────────────────────────
+section "cc-lock-stop-hook"
+if [[ -x "$HOME/bin/cc-lock-stop-hook" ]]; then
+  if bash -n "$HOME/bin/cc-lock-stop-hook"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  if command -v jq >/dev/null 2>&1 && [[ -x "$HOME/bin/cc-lock" ]]; then
+    rm -rf /tmp/cc-locks
+    # Acquire lock then release via stop-hook
+    "$HOME/bin/cc-lock" acquire stophook-A /tmp/cc-lock-stophook-test 2>/dev/null
+    echo '{"session_id":"stophook-A"}' | "$HOME/bin/cc-lock-stop-hook" 2>/dev/null
+    if "$HOME/bin/cc-lock" acquire stophook-B /tmp/cc-lock-stophook-test 2>/dev/null; then
+      test_pass "hook releases lock: successor acquires after hook fires"
+    else
+      test_fail "hook release" "successor still blocked — hook did not release lock"
+    fi
+    "$HOME/bin/cc-lock" release-by-session stophook-B 2>/dev/null
+    # Missing session_id in JSON → silent exit 0
+    out=$(echo '{"tool_name":"Edit"}' | "$HOME/bin/cc-lock-stop-hook" 2>/dev/null)
+    if [[ -z "$out" ]]; then
+      test_pass "missing session_id → silent exit"
+    else
+      test_fail "missing session_id" "unexpected output: $out"
+    fi
+  else
+    test_pass "cc-lock-stop-hook integration (skipped — jq or cc-lock not available)"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/cc-lock-stop-hook missing"
+fi
+
+# ─── tmux-mute-indicator ──────────────────────────────
+section "tmux-mute-indicator"
+if [[ -x "$HOME/bin/tmux-mute-indicator" ]]; then
+  # Save original mute state
+  was_muted=0
+  [[ -f "$HOME/.claude/.muted" ]] && was_muted=1
+
+  mkdir -p "$HOME/.claude"
+  touch "$HOME/.claude/.muted"
+  out=$("$HOME/bin/tmux-mute-indicator" 2>/dev/null)
+  if echo "$out" | grep -q '🔇'; then
+    test_pass "muted state → emits 🔇 indicator"
+  else
+    test_fail "muted indicator" "expected 🔇 in output, got: $out"
+  fi
+
+  rm -f "$HOME/.claude/.muted"
+  out=$("$HOME/bin/tmux-mute-indicator" 2>/dev/null)
+  if [[ -z "$out" ]]; then
+    test_pass "unmuted state → empty output"
+  else
+    test_fail "unmuted output" "expected empty, got: $out"
+  fi
+
+  # Restore original state
+  if [[ $was_muted -eq 1 ]]; then
+    touch "$HOME/.claude/.muted"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-mute-indicator missing"
+fi
+
+# ─── tmux-save-dot ────────────────────────────────────
+section "tmux-save-dot"
+if [[ -x "$HOME/bin/tmux-save-dot" ]]; then
+  if bash -n "$HOME/bin/tmux-save-dot"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  out=$("$HOME/bin/tmux-save-dot" 2>/dev/null)
+  if echo "$out" | grep -q '#\['; then
+    test_pass "always emits tmux format tokens"
+  else
+    test_fail "format tokens" "expected #[...] in output, got: $out"
+  fi
+  # No-save path: check dim dot only when last symlink is absent
+  if [[ ! -L "$HOME/.tmux/resurrect/last" ]]; then
+    if echo "$out" | grep -q 'colour8'; then
+      test_pass "no-save path → dim dot (colour8)"
+    else
+      test_fail "no-save indicator" "expected colour8 dot, got: $out"
+    fi
+  else
+    test_pass "no-save path (skipped — resurrect/last exists)"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-save-dot missing"
+fi
+
+# ─── tmux-pane-label ──────────────────────────────────
+section "tmux-pane-label"
+if [[ -x "$HOME/bin/tmux-pane-label" ]]; then
+  if bash -n "$HOME/bin/tmux-pane-label"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Non-git path → emits basename
+  out=$("$HOME/bin/tmux-pane-label" /tmp 2>/dev/null)
+  if [[ "$out" == "tmp" ]]; then
+    test_pass "non-git path → basename"
+  else
+    test_fail "non-git fallback" "expected 'tmp', got: $out"
+  fi
+  # Git repo → emits 'label  branch' format
+  if [[ -d "$HOME/dev/dotfiles/.git" ]]; then
+    out=$("$HOME/bin/tmux-pane-label" "$HOME/dev/dotfiles" 2>/dev/null)
+    if echo "$out" | grep -qE '.+  .+'; then
+      test_pass "git repo → 'label  branch' format"
+    else
+      test_fail "git repo format" "expected 'label  branch', got: $out"
+    fi
+  else
+    test_pass "git repo test (skipped — ~/dev/dotfiles not present)"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-pane-label missing"
+fi
+
+# ─── tmux-resurrect-housekeep ─────────────────────────
+section "tmux-resurrect-housekeep"
+if [[ -x "$HOME/bin/tmux-resurrect-housekeep" ]]; then
+  if bash -n "$HOME/bin/tmux-resurrect-housekeep"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Missing resurrect dir → exits 0 without error
+  if HOME=/nonexistent "$HOME/bin/tmux-resurrect-housekeep" 2>/dev/null; then
+    test_pass "missing resurrect dir → exits 0"
+  else
+    test_fail "missing dir exit code" "expected 0 when dir absent"
+  fi
+  # Prune behavior: create N+extra snapshots, run with KEEP=N, verify N survive.
+  fix=$(mktemp -d)
+  trap "rm -rf $fix" RETURN
+  fake_dir="$fix/.tmux/resurrect"
+  mkdir -p "$fake_dir"
+  for i in $(seq 1 5); do
+    touch "$fake_dir/tmux_resurrect_2025-01-0${i}_12:00:00.txt"
+  done
+  # Run with KEEP=3; 2 oldest should be deleted
+  HOME="$fix" VERBOSE=1 "$HOME/bin/tmux-resurrect-housekeep" 3 2>/dev/null
+  remaining=$(find "$fake_dir" -name 'tmux_resurrect_*.txt' | wc -l | tr -d ' ')
+  if [[ "$remaining" == "3" ]]; then
+    test_pass "prune keeps exactly KEEP snapshots (5 → 3)"
+  else
+    test_fail "prune count" "expected 3 remaining, got $remaining"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-resurrect-housekeep missing"
+fi
+
+# ─── claude-dirty ─────────────────────────────────────
+section "claude-dirty"
+if [[ -x "$HOME/bin/claude-dirty" ]]; then
+  if bash -n "$HOME/bin/claude-dirty"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Non-git dir → exits non-zero with descriptive error
+  out=$(cd /tmp && "$HOME/bin/claude-dirty" 2>&1)
+  if echo "$out" | grep -q "not in a git repo"; then
+    test_pass "non-git path → 'not in a git repo' error"
+  else
+    test_fail "non-git error" "expected 'not in a git repo' message, got: $out"
+  fi
+  # Git repo → exits 0 and renders header
+  if [[ -d "$HOME/dev/dotfiles/.git" ]]; then
+    out=$(cd "$HOME/dev/dotfiles" && "$HOME/bin/claude-dirty" 2>/dev/null)
+    if echo "$out" | grep -qE "dirty worktrees in|all clean"; then
+      test_pass "git repo → renders worktree status header"
+    else
+      test_fail "dirty output" "expected header or 'all clean', got: $out"
+    fi
+  else
+    test_pass "git repo test (skipped — ~/dev/dotfiles not present)"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/claude-dirty missing"
+fi
+
+# ─── claude-pin ───────────────────────────────────────
+section "claude-pin"
+if [[ -x "$HOME/bin/claude-pin" ]]; then
+  if bash -n "$HOME/bin/claude-pin"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # No args → exits non-zero (usage error)
+  if "$HOME/bin/claude-pin" 2>/dev/null; then
+    test_fail "no-args exit code" "expected non-zero, got 0"
+  else
+    test_pass "no args → exits non-zero (usage)"
+  fi
+  # --help → exits 0
+  if "$HOME/bin/claude-pin" --help 2>/dev/null; then
+    test_pass "--help exits 0"
+  else
+    test_fail "--help exit code" "expected 0"
+  fi
+  # --list → exits 0 even with no pinned sessions
+  if "$HOME/bin/claude-pin" --list 2>/dev/null; then
+    test_pass "--list exits 0 with no pins"
+  else
+    test_fail "--list exit code" "expected 0 even with no pins"
+  fi
+  # Short prefix (<4 chars) → rejected
+  if "$HOME/bin/claude-pin" abc 2>/dev/null; then
+    test_fail "short-prefix guard" "should reject prefix shorter than 4 chars"
+  else
+    test_pass "short prefix (<4 chars) → exits non-zero"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/claude-pin missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"
