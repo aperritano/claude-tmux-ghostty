@@ -22,7 +22,7 @@ if "$HOME/bin/cc-lock" acquire "$sid" "$path"; then
 fi
 
 # Locked by another live session — emit deny JSON.
-holder=$(head -1 "/tmp/cc-locks/$(echo "$path" | sed 's|/|__|g; s|^__||')" 2>/dev/null | head -c 8)
+holder=$(head -1 "/tmp/cc-locks/$(echo "$path" | sed 's|/|__|g; s|^__||; s|^\.|DOT|')" 2>/dev/null | head -c 8)
 reason="cc-lock: $path is being edited by another Claude session (${holder}…) — retry shortly or coordinate"
 jq -nc --arg r "$reason" '{
   hookSpecificOutput: {

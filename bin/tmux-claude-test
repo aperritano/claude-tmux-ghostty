@@ -528,6 +528,25 @@ if [[ -x "$HOME/bin/cc-lock-pre-hook" ]]; then
     test_fail "deny-JSON" "unexpected output: $out"
   fi
   "$HOME/bin/cc-lock" release-by-session sA 2>/dev/null
+  # Dotfile path regression: paths starting with '.' use a different sanitized
+  # key (DOTenv not .env). Before the fix the inline sed in cc-lock-pre-hook was
+  # missing '; s|^\.|DOT|', so the holder lookup read the wrong file and emitted
+  # an empty holder name in the deny reason.
+  rm -f /tmp/cc-locks/DOTenv /tmp/cc-locks/.env
+  "$HOME/bin/cc-lock" acquire sX .env 2>/dev/null
+  out=$(echo '{"session_id":"sY","tool_name":"Edit","tool_input":{"file_path":".env"}}' \
+        | "$HOME/bin/cc-lock-pre-hook" 2>/dev/null)
+  if echo "$out" | grep -q '"permissionDecision":"deny"'; then
+    test_pass "dotfile path (.env): second holder blocked"
+  else
+    test_fail "dotfile deny JSON" "expected deny for .env; got: $out"
+  fi
+  if echo "$out" | grep -q 'sX'; then
+    test_pass "dotfile path (.env): holder id (sX) named in deny reason"
+  else
+    test_fail "dotfile holder naming" "holder sX not in deny reason — sanitize mismatch"
+  fi
+  "$HOME/bin/cc-lock" release-by-session sX 2>/dev/null
 else
   test_fail "executable present" "$HOME/bin/cc-lock-pre-hook missing"
 fi
