@@ -401,6 +401,29 @@ if [[ -x "$HOME/bin/tmux-pane-header" && -f "$PANE_HEADER_CACHE" ]]; then
   fi
 fi
 
+# ─── tmux-pane-header: lock indicator ─────────────────
+section "tmux-pane-header (lock indicator)"
+if [[ -x "$HOME/bin/tmux-pane-header" ]]; then
+  if bash -n "$HOME/dev/dotfiles/bin/tmux-pane-header" 2>/dev/null; then
+    test_pass "bash syntax"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Regression: the old implementation used 'ls /tmp/cc-locks | wc -l' which
+  # counted ALL sessions' lock files — misleading when multiple Claude agents
+  # share /tmp/cc-locks (multi-agent scenario). The fix reads each lock file's
+  # first line and matches against the session_id derived from the pane's cwd,
+  # so each pane header shows only its own session's lock count.
+  if grep -q 'ls /tmp/cc-locks' "$HOME/dev/dotfiles/bin/tmux-pane-header" 2>/dev/null; then
+    test_fail "lock indicator per-session" \
+      "still uses 'ls /tmp/cc-locks' count — shows total across all sessions"
+  else
+    test_pass "lock indicator: no global ls count (per-session filtering by session_id)"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-pane-header missing"
+fi
+
 # ─── tmux-burn-segment ────────────────────────────────
 section "tmux-burn-segment"
 if [[ -x "$HOME/bin/tmux-burn-segment" ]]; then
