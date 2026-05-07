@@ -780,6 +780,53 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── tmux-short-path ──────────────────────────────────
+section "tmux-short-path"
+if [[ -x "$HOME/bin/tmux-short-path" ]]; then
+  test_pass "executable present"
+  if command -v zsh >/dev/null 2>&1; then
+    if zsh -n "$HOME/bin/tmux-short-path" 2>/dev/null; then
+      test_pass "zsh syntax valid"
+    else
+      test_fail "zsh syntax" "parse error"
+    fi
+    # Short home path (3 components) — shown as-is after HOME→~ substitution
+    got=$(zsh "$HOME/bin/tmux-short-path" "$HOME/projects/myrepo" 2>/dev/null)
+    if [[ "$got" == "~/projects/myrepo" ]]; then
+      test_pass "short home path shown as-is"
+    else
+      test_fail "short home path" "expected '~/projects/myrepo', got '$got'"
+    fi
+    # Deep home path — must abbreviate with ~/…/ prefix
+    got=$(zsh "$HOME/bin/tmux-short-path" "$HOME/projects/very/deep/nested" 2>/dev/null)
+    if [[ "$got" == "~/…/"* ]]; then
+      test_pass "deep home path abbreviated with ~/…/"
+    else
+      test_fail "deep home path" "expected ~/…/… prefix, got '$got'"
+    fi
+    # Regression: absolute path not under HOME must get /…/ not ~/…/ prefix
+    got=$(zsh "$HOME/bin/tmux-short-path" "/usr/local/share/openssl" 2>/dev/null)
+    if [[ "$got" == "~/…/"* ]]; then
+      test_fail "abs-path prefix regression" "absolute path got ~/… prefix: '$got'"
+    elif [[ "$got" == "/…/"* ]]; then
+      test_pass "absolute path uses /…/ prefix (not ~/…/)"
+    else
+      test_fail "abs-path prefix" "unexpected output for /usr/local/share/openssl: '$got'"
+    fi
+    # Worktree path → wt:<name>
+    got=$(zsh "$HOME/bin/tmux-short-path" "$HOME/dev/repo/.worktrees/feature-login" 2>/dev/null)
+    if [[ "$got" == "wt:feature-login" ]]; then
+      test_pass "worktree path → wt:<name>"
+    else
+      test_fail "worktree path" "expected 'wt:feature-login', got '$got'"
+    fi
+  else
+    test_pass "functional tests skipped — zsh not on PATH"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-short-path missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"
