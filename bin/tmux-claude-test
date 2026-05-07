@@ -532,6 +532,32 @@ else
   test_fail "executable present" "$HOME/bin/cc-lock-pre-hook missing"
 fi
 
+# ─── cc-lock gc (stale-lock pruning) ─────────────────
+section "cc-lock gc"
+_CCLOCK="$HOME/bin/cc-lock"
+[[ -x "$_CCLOCK" ]] || _CCLOCK="$(dirname "$0")/cc-lock"
+if [[ -x "$_CCLOCK" ]]; then
+  rm -rf /tmp/cc-locks && mkdir -p /tmp/cc-locks
+  # Stale lock: timestamp > TTL=3600s in the past
+  printf 'stale_sess\n%s\n' "$(( $(date +%s) - 4000 ))" > /tmp/cc-locks/_gctest_stale
+  # Fresh lock: timestamp = now
+  printf 'fresh_sess\n%s\n' "$(date +%s)" > /tmp/cc-locks/_gctest_fresh
+  bash "$_CCLOCK" gc 2>/dev/null
+  if [[ ! -e /tmp/cc-locks/_gctest_stale ]]; then
+    test_pass "gc: stale lock (age>TTL) pruned"
+  else
+    test_fail "gc: stale lock pruned" "file still present after gc"
+  fi
+  if [[ -e /tmp/cc-locks/_gctest_fresh ]]; then
+    test_pass "gc: fresh lock (age<TTL) preserved"
+  else
+    test_fail "gc: fresh lock preserved" "file removed by gc"
+  fi
+  rm -f /tmp/cc-locks/_gctest_fresh
+else
+  test_fail "executable present" "$HOME/bin/cc-lock missing"
+fi
+
 # ─── cc-brain-sync ────────────────────────────────────
 section "cc-brain-sync"
 if [[ -x "$HOME/bin/cc-brain-sync" ]]; then
