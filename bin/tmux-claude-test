@@ -780,6 +780,40 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── tmux-tile-session ────────────────────────────────
+section "tmux-tile-session"
+# Static portability check: tail -r is macOS-only and silently fails on Linux.
+# Run against installed script if present, else fall back to the repo source.
+_tile_src="$HOME/bin/tmux-tile-session"
+if [[ ! -f "$_tile_src" ]]; then
+  _tile_src="$(cd "$(dirname "$0")" && pwd)/tmux-tile-session"
+fi
+if [[ -f "$_tile_src" ]]; then
+  # Match the command pipe pattern specifically; avoid matching comments that mention it
+  if ! grep -E '\| tail -r' "$_tile_src" >/dev/null 2>&1; then
+    test_pass "no BSD-only '| tail -r' (portable awk reversal used)"
+  else
+    test_fail "tail -r present" "| tail -r is macOS-only; replace with awk reversal"
+  fi
+fi
+if [[ -x "$HOME/bin/tmux-tile-session" ]]; then
+  if bash -n "$HOME/bin/tmux-tile-session"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Without a tmux server the script exits non-zero on the first tmux call
+  if ! tmux info >/dev/null 2>&1; then
+    if ! "$HOME/bin/tmux-tile-session" 2>/dev/null; then
+      test_pass "no tmux server → exits non-zero (expected)"
+    else
+      test_fail "no-tmux exit" "expected non-zero when no server attached"
+    fi
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-tile-session missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"
