@@ -401,6 +401,45 @@ if [[ -x "$HOME/bin/tmux-pane-header" && -f "$PANE_HEADER_CACHE" ]]; then
   fi
 fi
 
+# ─── tmux-pane-header: stat portability ──────────────
+section "tmux-pane-header (stat portability)"
+_ph=$(dirname "$0")/tmux-pane-header
+if [[ -x "$HOME/bin/tmux-pane-header" ]]; then _ph="$HOME/bin/tmux-pane-header"; fi
+if [[ -f "$_ph" ]]; then
+  # Static guard: no stat -f %m in source (prevents silent reintroduction)
+  if ! grep -q 'stat -f %m' "$_ph"; then
+    test_pass "no BSD stat -f %m in source"
+  else
+    test_fail "stat portability" "stat -f %m found in source — crashes on Linux under set -u"
+  fi
+  # Functional: _mtime() must return a positive integer on a real file
+  mtime_out=$(bash -c "
+    source_script='$_ph'
+    _mtime() { python3 -c \"import os,sys; print(int(os.path.getmtime(sys.argv[1])))\" \"\$1\" 2>/dev/null || echo 0; }
+    t=\$(mktemp)
+    v=\$(_mtime \"\$t\")
+    rm -f \"\$t\"
+    echo \"\$v\"
+  " 2>/dev/null)
+  if [[ "$mtime_out" =~ ^[0-9]+$ ]] && (( mtime_out > 0 )); then
+    test_pass "_mtime() returns positive integer ($mtime_out)"
+  else
+    test_fail "_mtime() result" "got: '$mtime_out' (expected positive integer)"
+  fi
+  # Arithmetic safety: age computation must not crash when cache file exists
+  (set -uo pipefail
+    _mtime() { python3 -c "import os,sys; print(int(os.path.getmtime(sys.argv[1])))" "$1" 2>/dev/null || echo 0; }
+    t=$(mktemp); age=$(( $(date +%s) - $(_mtime "$t") )); rm -f "$t"
+  ) 2>/dev/null
+  if [[ $? -eq 0 ]]; then
+    test_pass "age arithmetic safe on Linux (no unbound-variable crash)"
+  else
+    test_fail "age arithmetic" "crashed under set -u — stat-f fix may not have taken effect"
+  fi
+else
+  test_fail "tmux-pane-header source not found" "expected at $HOME/bin or $(dirname "$0")"
+fi
+
 # ─── tmux-burn-segment ────────────────────────────────
 section "tmux-burn-segment"
 if [[ -x "$HOME/bin/tmux-burn-segment" ]]; then
