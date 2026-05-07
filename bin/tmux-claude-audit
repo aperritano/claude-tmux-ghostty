@@ -95,6 +95,31 @@ for s in claude-tmux claude-sessions-list claude-search claude-grep claude-workt
   else emit FAIL "$s" "missing or not executable"; fi
 done
 
+section "Script portability"
+# BSD-only commands that fail silently on Linux under set -euo pipefail.
+# We check the installed copy (~/bin/) since that's what actually runs.
+# tail -r: BSD/macOS only. In a $() subshell under set -euo pipefail, a
+# non-zero exit propagates and silently clears the variable, causing
+# tmux-tile-session to skip all windows past the first during tile().
+for s in tmux-tile-session; do
+  if [[ -x "$HOME/bin/$s" ]]; then
+    if grep -q 'tail -r' "$HOME/bin/$s"; then
+      emit FAIL "$s: BSD-only tail -r" "replace with awk reverse — fails silently on Linux"
+    else
+      emit PASS "$s: no BSD-only tail -r"
+    fi
+    # tmux show-option -pqv exits non-zero for unset pane options.
+    # Without || true, set -euo pipefail aborts untile() before any pane is
+    # broken out, leaving users stuck in tiled mode with no error message.
+    unguarded=$(grep 'show-option -pqv' "$HOME/bin/$s" | grep -v '|| true' || true)
+    if [[ -z "$unguarded" ]]; then
+      emit PASS "$s: show-option reads guarded with || true"
+    else
+      emit FAIL "$s: show-option unguarded" "add '|| true' to prevent set -e exit on unset opts"
+    fi
+  fi
+done
+
 section "Claude settings (~/.claude/settings.json)"
 if ! python3 -c "import json; json.load(open('$HOME/.claude/settings.json'))" 2>/dev/null; then
   emit FAIL "settings.json parses" "invalid JSON"

@@ -780,6 +780,50 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── tmux-tile-session ────────────────────────────────
+section "tmux-tile-session"
+if [[ -x "$HOME/bin/tmux-tile-session" ]]; then
+  # Syntax check — runs in CI (no tmux needed)
+  src="$HOME/dev/dotfiles/bin/tmux-tile-session"
+  [[ ! -r "$src" ]] && src="$HOME/bin/tmux-tile-session"
+  if bash -n "$src" 2>/dev/null; then
+    test_pass "bash syntax clean"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Regression guard: tail -r is BSD-only; awk reverse must replace it.
+  # Under set -euo pipefail the BSD variant exits non-zero on Linux, silently
+  # setting other_indices="" so tile() skips all windows past the first.
+  if grep -q 'tail -r' "$src" 2>/dev/null; then
+    test_fail "no BSD-only tail -r" "use awk reverse — tail -r fails silently on Linux"
+  else
+    test_pass "no BSD-only tail -r (portability)"
+  fi
+  # Regression guard: tmux show-option -pqv exits non-zero for unset pane
+  # options. Without || true, set -euo pipefail aborts untile() silently
+  # before any pane is broken out, leaving the user stuck in tiled mode.
+  unguarded=$(grep 'show-option -pqv' "$src" 2>/dev/null | grep -v '|| true' || true)
+  if [[ -z "$unguarded" ]]; then
+    test_pass "show-option -pqv reads all guarded with || true"
+  else
+    test_fail "show-option -pqv unguarded" "add '|| true': $unguarded"
+  fi
+  # Bad-action path — requires a live tmux server since tmux display-message
+  # is called at script top before reaching the case statement.
+  if tmux info >/dev/null 2>&1; then
+    out=$("$HOME/bin/tmux-tile-session" _bad_action_ 2>&1); rc=$?
+    if [[ $rc -ne 0 && "$out" == *"Usage"* ]]; then
+      test_pass "bad action: exits non-zero with usage"
+    else
+      test_fail "bad action exit" "rc=$rc out=$out"
+    fi
+  else
+    test_pass "tmux-tile-session bad-action (skipped — no tmux server)"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-tile-session missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"
