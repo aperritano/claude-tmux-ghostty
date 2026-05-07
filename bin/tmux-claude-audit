@@ -90,7 +90,7 @@ section "Helper scripts (~/bin)"
 # README documenting the script suite
 if [[ -r "$HOME/dev/dotfiles/bin/README.md" ]]; then emit PASS "bin/README.md (documentation)"
 else emit WARN "bin/README.md" "missing — scripts undocumented"; fi
-for s in claude-tmux claude-sessions-list claude-search claude-grep claude-worktrees claude-prune-worktrees claude-tail claude-today claude-touched claude-stats claude-dirty claude-export claude-pin claude-running claude-jump cc-attention cc-config-sync cc-burn-rate cc-lock cc-lock-pre-hook cc-lock-stop-hook cc-brain-sync tmux-claude-state tmux-claude-resurrect-restore tmux-claude-prune tmux-claude-test tmux-window-cell tmux-save-dot tmux-cell-daemon tmux-fleet-count tmux-mute-indicator tmux-resurrect-housekeep tmux-git-info tmux-claude-session tmux-tile-session tmux-pane-header tmux-burn-segment cc-rich-shim cc-rich-sidebar cc-replay-shim; do
+for s in claude-tmux claude-sessions-list claude-search claude-grep claude-worktrees claude-prune-worktrees claude-tail claude-today claude-touched claude-stats claude-dirty claude-export claude-pin claude-running claude-jump cc-attention cc-config-sync cc-burn-rate cc-lock cc-lock-pre-hook cc-lock-stop-hook cc-brain-sync tmux-claude-state tmux-claude-resurrect-restore tmux-claude-prune tmux-claude-test tmux-window-cell tmux-save-dot tmux-cell-daemon tmux-fleet-count tmux-mute-indicator tmux-resurrect-housekeep tmux-git-info tmux-claude-session tmux-tile-session tmux-pane-header tmux-burn-segment cc-rich-shim cc-rich-sidebar cc-replay-shim tmux-pane-label tmux-session-list tmux-short-path tmux-kill-teammate-pane; do
   if [[ -x "$HOME/bin/$s" ]]; then emit PASS "$s"
   else emit FAIL "$s" "missing or not executable"; fi
 done
