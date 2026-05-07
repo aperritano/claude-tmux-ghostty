@@ -540,11 +540,19 @@ if [[ -x "$HOME/bin/cc-brain-sync" ]]; then
   else
     test_fail "bash syntax" "parse error"
   fi
-  # `list` works without age, without key
-  if "$HOME/bin/cc-brain-sync" list >/dev/null 2>&1; then
+  # `list` works without age, without key; output must include the summary line.
+  # cc-brain-sync historically used `du -b` (GNU/Linux-only) for byte count;
+  # the fix uses `stat -f %z` (macOS). Guard: "N files, M KB uncompressed".
+  listout=$("$HOME/bin/cc-brain-sync" list 2>/dev/null || true)
+  if echo "$listout" | grep -qE '^---$'; then
     test_pass "list works without age installed"
+    if echo "$listout" | grep -qE '^[0-9]+ files, [0-9]+ KB uncompressed$'; then
+      test_pass "list output format: 'N files, M KB uncompressed'"
+    else
+      test_fail "list output format" "expected 'N files, M KB uncompressed' as last line; got: $(echo "$listout" | tail -1)"
+    fi
   else
-    test_fail "list" "exited non-zero unexpectedly"
+    test_fail "list" "output missing '---' separator — unexpected format"
   fi
   # `push` should fail loudly when age missing (don't actually have age in test env).
   # Capture output with $() rather than a pipeline so that pipefail doesn't
