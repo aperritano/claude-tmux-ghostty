@@ -135,6 +135,49 @@ if [[ -x "$HOME/bin/claude-today" ]]; then
 else
   test_fail "executable present" "$HOME/bin/claude-today missing"
 fi
+# Regression: short_label must handle /.claude/worktrees/ (agent-managed).
+# Uses repo-path fallback so static + functional checks fire in CI too.
+_today_src="$HOME/bin/claude-today"
+[[ ! -f "$_today_src" ]] && _today_src="$(dirname "$0")/claude-today"
+if [[ -f "$_today_src" ]]; then
+  if grep -q '\.claude/worktrees' "$_today_src"; then
+    test_pass "claude-today short_label handles /.claude/worktrees/ path"
+  else
+    test_fail "claude-today short_label worktree" "/.claude/worktrees/ not handled — agent worktrees render as .claude/<branch>"
+  fi
+  if python3 - "$_today_src" <<'PYEOF' 2>/dev/null
+import sys, ast, types, os
+src_path = sys.argv[1]
+HOME = os.path.expanduser("~")
+src = open(src_path).read()
+tree = ast.parse(src)
+mod = types.ModuleType("m")
+mod.HOME = HOME
+for node in tree.body:
+    if isinstance(node, ast.FunctionDef) and node.name == "short_label":
+        exec(compile(ast.Module(body=[node], type_ignores=[]), src_path, "exec"), mod.__dict__)
+        break
+fn = getattr(mod, "short_label", None)
+if fn is None:
+    print("short_label not found", file=sys.stderr)
+    sys.exit(1)
+cases = [
+    (HOME + "/proj/.claude/worktrees/feat-x", "proj:wt/feat-x"),
+    (HOME + "/proj/.worktrees/feat-x",        "proj:wt/feat-x"),
+    (HOME + "/proj/src",                       "proj/src"),
+]
+for path, want in cases:
+    got = fn(path)
+    if got != want:
+        print(f"FAIL short_label({path!r}): got {got!r} expected {want!r}", file=sys.stderr)
+        sys.exit(1)
+PYEOF
+  then
+    test_pass "claude-today short_label: .claude/worktrees renders as repo:wt/name"
+  else
+    test_fail "claude-today short_label functional" "wrong label for /.claude/worktrees/ path"
+  fi
+fi
 
 # ─── tmux-claude-audit ────────────────────────────────
 section "tmux-claude-audit"
