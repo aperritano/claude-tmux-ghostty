@@ -780,6 +780,111 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── tmux-pane-label ──────────────────────────────────
+section "tmux-pane-label"
+if [[ -x "$HOME/bin/tmux-pane-label" ]]; then
+  if bash -n "$HOME/dev/dotfiles/bin/tmux-pane-label"; then
+    test_pass "bash syntax"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Non-git path: basename of the directory is the expected output.
+  out=$("$HOME/bin/tmux-pane-label" /tmp 2>/dev/null)
+  if [[ "$out" == "tmp" ]]; then
+    test_pass "non-git path: outputs basename (/tmp → tmp)"
+  else
+    test_fail "non-git path output" "expected 'tmp', got '${out}'"
+  fi
+  # Git path: must produce non-empty output (repo name + branch or fallback).
+  out=$("$HOME/bin/tmux-pane-label" "$HOME/dev/dotfiles" 2>/dev/null)
+  if [[ -n "$out" ]]; then
+    test_pass "git path: non-empty output"
+  else
+    test_fail "git path output" "empty stdout"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-pane-label missing"
+fi
+
+# ─── tmux-session-list ────────────────────────────────
+section "tmux-session-list"
+if [[ -x "$HOME/bin/tmux-session-list" ]]; then
+  if bash -n "$HOME/dev/dotfiles/bin/tmux-session-list"; then
+    test_pass "bash syntax"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Must exit 0 whether or not a tmux server is running.
+  "$HOME/bin/tmux-session-list" "" >/dev/null 2>&1
+  if [[ $? -eq 0 ]]; then
+    test_pass "exits 0 with empty session name (no tmux or live server)"
+  else
+    test_fail "exit code" "non-zero — expected 0 even without tmux"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-session-list missing"
+fi
+
+# ─── tmux-kill-teammate-pane ──────────────────────────
+section "tmux-kill-teammate-pane"
+if [[ -x "$HOME/bin/tmux-kill-teammate-pane" ]]; then
+  if bash -n "$HOME/dev/dotfiles/bin/tmux-kill-teammate-pane"; then
+    test_pass "bash syntax"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Safety guard at the top of the script exits 0 when not in tmux.
+  # Run under bash (ignores the #!/bin/zsh shebang) so this test does not
+  # depend on /bin/zsh being present in the test environment.
+  TMUX="" bash "$HOME/bin/tmux-kill-teammate-pane" 2>/dev/null
+  if [[ $? -eq 0 ]]; then
+    test_pass "exits 0 when not in tmux (safety guard)"
+  else
+    test_fail "not-in-tmux exit code" "expected 0 from the \$TMUX guard"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-kill-teammate-pane missing"
+fi
+
+# ─── tmux-short-path ──────────────────────────────────
+section "tmux-short-path"
+if [[ -x "$HOME/bin/tmux-short-path" ]]; then
+  if bash -n "$HOME/dev/dotfiles/bin/tmux-short-path"; then
+    test_pass "bash syntax check (zsh-specific expansions skipped at parse time)"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Functional tests require zsh (the script uses #!/bin/zsh and zsh-only
+  # parameter expansions). Skip gracefully when zsh is not on PATH.
+  if command -v zsh >/dev/null 2>&1; then
+    # Long nested path → should be abbreviated with ellipsis
+    out=$(zsh "$HOME/dev/dotfiles/bin/tmux-short-path" "$HOME/a/b/c/d" 2>/dev/null)
+    if [[ "$out" == *"…"* ]]; then
+      test_pass "long path: abbreviated with ellipsis"
+    else
+      test_fail "long path abbreviation" "expected '…', got '${out}'"
+    fi
+    # $HOME → ~
+    out=$(zsh "$HOME/dev/dotfiles/bin/tmux-short-path" "$HOME" 2>/dev/null)
+    if [[ "$out" == "~" ]]; then
+      test_pass "\$HOME path: abbreviates to ~"
+    else
+      test_fail "\$HOME path" "expected '~', got '${out}'"
+    fi
+    # Worktree path → wt:<name>
+    out=$(zsh "$HOME/dev/dotfiles/bin/tmux-short-path" "$HOME/dev/dotfiles/.worktrees/feat-abc" 2>/dev/null)
+    if [[ "$out" == "wt:feat-abc" ]]; then
+      test_pass "worktree path: outputs wt:<name>"
+    else
+      test_fail "worktree path" "expected 'wt:feat-abc', got '${out}'"
+    fi
+  else
+    test_pass "functional tests skipped (zsh not found)"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-short-path missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"
