@@ -22,6 +22,12 @@ DIR="/tmp/cc-attention"
 TTL=3600  # seconds — stale markers ignored after this
 mkdir -p "$DIR"
 
+# stat -f %m is BSD-only; on Linux it exits 0 with filesystem metadata, which
+# breaks arithmetic under set -u. python3 is a hard dep of the whole stack.
+_mtime() {
+  python3 -c "import os,sys; print(int(os.path.getmtime(sys.argv[1])))" "$1" 2>/dev/null || echo 0
+}
+
 cmd="${1:-}"
 
 key_for_pane() {
@@ -44,7 +50,7 @@ case "$cmd" in
     now=$(date +%s)
     for f in "$DIR"/*; do
       [[ -e "$f" ]] || continue
-      mtime=$(stat -f %m "$f")
+      mtime=$(_mtime "$f")
       age=$((now - mtime))
       printf '%%%s  %ds ago\n' "$(basename "$f")" "$age"
     done
@@ -59,7 +65,7 @@ case "$cmd" in
     out=""
     for f in "$DIR"/*; do
       [[ -e "$f" ]] || continue
-      mtime=$(stat -f %m "$f")
+      mtime=$(_mtime "$f")
       if (( now - mtime > TTL )); then
         rm -f "$f"
         continue
@@ -85,7 +91,7 @@ case "$cmd" in
     pruned=0
     for f in "$DIR"/*; do
       [[ -e "$f" ]] || continue
-      mtime=$(stat -f %m "$f")
+      mtime=$(_mtime "$f")
       if (( now - mtime > TTL )); then
         rm -f "$f"
         pruned=$((pruned + 1))
