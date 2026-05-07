@@ -392,6 +392,54 @@ func TestConversationFooterShowsScrollPosition(t *testing.T) {
 	}
 }
 
+// WheelDown must scroll the viewport down; WheelUp must scroll it back.
+// Feature added in commit 906236a; forwarded via m.vp.Update(msg) at
+// conversation.go:437 — this test pins that the forwarding actually works.
+func TestConversationMouseWheelScrolls(t *testing.T) {
+	msgs := make([]*sessiontree.Message, 30)
+	for i := range msgs {
+		msgs[i] = &sessiontree.Message{
+			UUID:      fmt.Sprintf("u-%02d", i),
+			Role:      "user",
+			Timestamp: time.Now(),
+			Content:   []sessiontree.Block{{Type: "text", Text: fmt.Sprintf("msg-%02d", i)}},
+		}
+	}
+	m := NewConversation("", msgs)
+
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
+	conv := model.(ConversationModel)
+
+	if !strings.Contains(conv.View(), "msg-00") {
+		t.Fatal("precondition: msg-00 not visible in initial view")
+	}
+
+	// Ten WheelDown events (each moves 3 lines in the viewport) must scroll
+	// far enough that the first message is no longer in the visible window.
+	for i := 0; i < 10; i++ {
+		model, _ = conv.Update(tea.MouseMsg{
+			Button: tea.MouseButtonWheelDown,
+			Action: tea.MouseActionPress,
+		})
+		conv = model.(ConversationModel)
+	}
+	if strings.Contains(conv.View(), "msg-00") {
+		t.Errorf("WheelDown did not scroll viewport: msg-00 still visible after 10 wheel-down events")
+	}
+
+	// Ten WheelUp events must restore the view back to the top.
+	for i := 0; i < 10; i++ {
+		model, _ = conv.Update(tea.MouseMsg{
+			Button: tea.MouseButtonWheelUp,
+			Action: tea.MouseActionPress,
+		})
+		conv = model.(ConversationModel)
+	}
+	if !strings.Contains(conv.View(), "msg-00") {
+		t.Errorf("WheelUp did not restore viewport: msg-00 not visible after 10 wheel-up events")
+	}
+}
+
 // Right-click on the conversation area must open the context menu overlay.
 // The overlay embeds ANSI cursor-positioning sequences in View() output.
 // We verify directly via Update+View rather than through teatest.FinalOutput,
