@@ -780,6 +780,69 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── stat -f portability: tmux-window-cell ────────────
+section "tmux-window-cell (stat portability)"
+WINDOW_CELL_SRC="$(dirname "$0")/tmux-window-cell"
+if [[ -f "$WINDOW_CELL_SRC" ]]; then
+  # Regression guard: BSD stat -f must not appear in source
+  if ! grep -q 'stat -f %m' "$WINDOW_CELL_SRC"; then
+    test_pass "no BSD stat -f %m in source"
+  else
+    test_fail "stat -f portability" "stat -f %m still present — will crash on Linux"
+  fi
+  # Functional: _mtime() must return a positive integer for a real file
+  tmp_mtime=$(mktemp)
+  result=$(bash -c "
+    $(grep -A3 '_mtime()' "$WINDOW_CELL_SRC" | head -4)
+    _mtime '$tmp_mtime'
+  " 2>/dev/null)
+  rm -f "$tmp_mtime"
+  if [[ "$result" =~ ^[0-9]+$ ]] && (( result > 0 )); then
+    test_pass "_mtime() returns positive integer for existing file"
+  else
+    test_fail "_mtime() output" "expected positive int, got: '$result'"
+  fi
+else
+  test_fail "source readable" "$WINDOW_CELL_SRC missing"
+fi
+
+# ─── stat -f portability: tmux-fleet-count ────────────
+section "tmux-fleet-count (stat portability)"
+FLEET_SRC="$(dirname "$0")/tmux-fleet-count"
+if [[ -f "$FLEET_SRC" ]]; then
+  if bash -n "$FLEET_SRC"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  if ! grep -q 'stat -f %m' "$FLEET_SRC"; then
+    test_pass "no BSD stat -f %m in source"
+  else
+    test_fail "stat -f portability" "stat -f %m still present — will crash on Linux"
+  fi
+else
+  test_fail "source readable" "$FLEET_SRC missing"
+fi
+
+# ─── stat -f portability: tmux-burn-segment ───────────
+section "tmux-burn-segment (stat portability)"
+BURN_SRC="$(dirname "$0")/tmux-burn-segment"
+if [[ -f "$BURN_SRC" ]]; then
+  if ! grep -q 'stat -f %m' "$BURN_SRC"; then
+    test_pass "no BSD stat -f %m in source"
+  else
+    test_fail "stat -f portability" "stat -f %m still present — will crash on Linux"
+  fi
+  # _mtime helper: verify it's defined in all 3 scripts consistently
+  if grep -q '_mtime()' "$BURN_SRC" && grep -q '_mtime()' "$FLEET_SRC" && grep -q '_mtime()' "$WINDOW_CELL_SRC"; then
+    test_pass "_mtime() helper present in all 3 statusline scripts"
+  else
+    test_fail "_mtime helper" "missing from one or more statusline scripts"
+  fi
+else
+  test_fail "source readable" "$BURN_SRC missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"

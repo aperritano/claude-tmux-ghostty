@@ -7,6 +7,12 @@
 
 set -uo pipefail
 
+# BSD stat -f is macOS-only; on Linux stat -f outputs filesystem metadata
+# (exit 0), breaking arithmetic.  Use python3 which is already a hard dep.
+_mtime() {
+  python3 -c "import os,sys; print(int(os.path.getmtime(sys.argv[1])))" "$1" 2>/dev/null || echo 0
+}
+
 if ! tmux info >/dev/null 2>&1; then
   exit 0
 fi
@@ -14,7 +20,7 @@ fi
 # Cache (4s TTL — jitter prevention)
 CACHE="/tmp/tmux-fleet-count-$UID"
 if [[ -f "$CACHE" ]]; then
-  age=$(( $(date +%s) - $(stat -f %m "$CACHE" 2>/dev/null || echo 0) ))
+  age=$(( $(date +%s) - $(_mtime "$CACHE") ))
   if (( age < 4 )); then
     cat "$CACHE"
     exit 0
