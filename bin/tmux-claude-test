@@ -780,6 +780,40 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── tmux-resurrect-housekeep ─────────────────────────
+section "tmux-resurrect-housekeep"
+_rh_script="$HOME/bin/tmux-resurrect-housekeep"
+[[ -x "$_rh_script" ]] || _rh_script="$(dirname "$0")/tmux-resurrect-housekeep"
+if [[ -x "$_rh_script" ]]; then
+  if bash -n "$_rh_script"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Static regression guard: BSD-only stat -f must not reappear
+  if grep -qF 'stat -f' "$_rh_script"; then
+    test_fail "no BSD-only stat -f" "found 'stat -f' in script — breaks on Linux"
+  else
+    test_pass "no BSD-only stat -f (portable)"
+  fi
+  # Functional: 5 fake resurrect files, KEEP=3 → 2 oldest deleted, 3 survive
+  _rh_home="/tmp/housekeep-home-$$"
+  mkdir -p "$_rh_home/.tmux/resurrect"
+  for _i in 1 2 3 4 5; do
+    touch "$_rh_home/.tmux/resurrect/tmux_resurrect_file${_i}.txt"
+  done
+  HOME="$_rh_home" bash "$_rh_script" 3 >/dev/null 2>&1
+  _rh_left=$(find "$_rh_home/.tmux/resurrect" -name "tmux_resurrect_*.txt" 2>/dev/null | wc -l | tr -d ' ')
+  rm -rf "$_rh_home"
+  if [[ "$_rh_left" == "3" ]]; then
+    test_pass "prunes to KEEP: 5 files → 3 survive"
+  else
+    test_fail "prune count" "expected 3 remaining, got $_rh_left"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-resurrect-housekeep missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"
