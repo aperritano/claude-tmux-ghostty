@@ -780,6 +780,107 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── tmux-mute-indicator ──────────────────────────────
+section "tmux-mute-indicator"
+if [[ -x "$HOME/bin/tmux-mute-indicator" ]]; then
+  # Save original mute state
+  was_muted=0
+  [[ -f "$HOME/.claude/.muted" ]] && was_muted=1
+
+  touch "$HOME/.claude/.muted"
+  out=$("$HOME/bin/tmux-mute-indicator" 2>/dev/null)
+  if [[ "$out" == *"🔇"* ]]; then
+    test_pass "muted → emits 🔇 indicator"
+  else
+    test_fail "muted indicator" "expected 🔇 in output, got: $out"
+  fi
+
+  rm -f "$HOME/.claude/.muted"
+  out=$("$HOME/bin/tmux-mute-indicator" 2>/dev/null)
+  if [[ -z "$out" ]]; then
+    test_pass "unmuted → empty output"
+  else
+    test_fail "unmuted output" "expected empty, got: $out"
+  fi
+
+  [[ $was_muted -eq 1 ]] && touch "$HOME/.claude/.muted"
+else
+  test_fail "executable present" "$HOME/bin/tmux-mute-indicator missing"
+fi
+
+# ─── tmux-pane-label ──────────────────────────────────
+section "tmux-pane-label"
+if [[ -x "$HOME/bin/tmux-pane-label" ]]; then
+  # Non-git path → falls back to basename
+  out=$("$HOME/bin/tmux-pane-label" /tmp 2>/dev/null)
+  if [[ "$out" == "tmp" ]]; then
+    test_pass "non-git path → directory basename"
+  else
+    test_fail "non-git fallback" "expected 'tmp', got: $out"
+  fi
+
+  # Git repo → output includes branch name
+  PLTEST="/tmp/test-pane-label-$$"
+  rm -rf "$PLTEST"
+  mkdir -p "$PLTEST"
+  (
+    cd "$PLTEST"
+    git init -q -b main 2>/dev/null || git init -q
+    git commit --allow-empty -q -m initial
+  )
+  out=$("$HOME/bin/tmux-pane-label" "$PLTEST" 2>/dev/null)
+  rm -rf "$PLTEST"
+  if echo "$out" | grep -q "main"; then
+    test_pass "git repo → branch name in output"
+  else
+    test_fail "git repo label" "expected branch 'main' in: $out"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-pane-label missing"
+fi
+
+# ─── claude-dirty ─────────────────────────────────────
+section "claude-dirty"
+if [[ -x "$HOME/bin/claude-dirty" ]]; then
+  # Clean repo → "all clean"
+  CDTEST="/tmp/test-dirty-$$"
+  rm -rf "$CDTEST"
+  mkdir -p "$CDTEST"
+  (
+    cd "$CDTEST"
+    git init -q -b main 2>/dev/null || git init -q
+    git commit --allow-empty -q -m initial
+  )
+  out=$(cd "$CDTEST" && "$HOME/bin/claude-dirty" 2>/dev/null)
+  rm -rf "$CDTEST"
+  if echo "$out" | grep -q "all clean"; then
+    test_pass "clean repo → 'all clean'"
+  else
+    test_fail "clean repo" "expected 'all clean' in output, got: $out"
+  fi
+
+  # Dirty repo → reports dirty with "!" marker
+  CDTEST2="/tmp/test-dirty2-$$"
+  rm -rf "$CDTEST2"
+  mkdir -p "$CDTEST2"
+  (
+    cd "$CDTEST2"
+    git init -q -b main 2>/dev/null || git init -q
+    git commit --allow-empty -q -m initial
+    echo "change" > dirty-file.txt
+    git add dirty-file.txt
+  )
+  out=$(cd "$CDTEST2" && "$HOME/bin/claude-dirty" 2>/dev/null)
+  rm -rf "$CDTEST2"
+  if echo "$out" | grep -q "!"; then
+    test_pass "dirty repo → reports dirty worktree"
+  else
+    test_fail "dirty repo" "expected '!' marker in output, got: $out"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/claude-dirty missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"
