@@ -170,6 +170,25 @@ fi
 
 # ─── tmux-claude-prune ────────────────────────────────
 section "tmux-claude-prune"
+PRUNE_BIN="$HOME/bin/tmux-claude-prune"
+[[ ! -x "$PRUNE_BIN" ]] && PRUNE_BIN="$(dirname "$0")/tmux-claude-prune"
+if [[ -x "$PRUNE_BIN" ]]; then
+  if bash -n "$PRUNE_BIN" 2>/dev/null; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  if ! grep -q 'stat -f' "$PRUNE_BIN"; then
+    test_pass "no BSD stat -f (portability regression guard)"
+  else
+    test_fail "BSD stat -f present" "should use _mtime/_fsize helpers"
+  fi
+  if ! grep -q 'date -r ' "$PRUNE_BIN"; then
+    test_pass "no BSD date -r (portability regression guard)"
+  else
+    test_fail "BSD date -r present" "should use awk strftime"
+  fi
+fi
 if [[ -x "$HOME/bin/tmux-claude-prune" ]]; then
   out=$("$HOME/bin/tmux-claude-prune" 90 2>&1)
   # Either reports "No sessions older than..." or "DRY RUN — would archive"
@@ -778,6 +797,25 @@ if [[ -x "$HOME/bin/cc-rich" ]]; then
   fi
 else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
+fi
+
+# ─── tmux-claude-session (stat portability) ───────────
+section "tmux-claude-session (stat portability)"
+SESSION_BIN="$HOME/bin/tmux-claude-session"
+[[ ! -x "$SESSION_BIN" ]] && SESSION_BIN="$(dirname "$0")/tmux-claude-session"
+if [[ -x "$SESSION_BIN" ]]; then
+  if command -v zsh >/dev/null 2>&1; then
+    if zsh -n "$SESSION_BIN" 2>/dev/null; then
+      test_pass "zsh syntax valid"
+    else
+      test_fail "zsh syntax" "parse error"
+    fi
+  fi
+  if ! grep -q 'stat -f' "$SESSION_BIN"; then
+    test_pass "no BSD stat -f (sub-agent detection portability)"
+  else
+    test_fail "BSD stat -f in tmux-claude-session" "sub-agents never counted as active on Linux"
+  fi
 fi
 
 # ─── Summary ──────────────────────────────────────────

@@ -16,6 +16,8 @@
 #   tmux-claude-prune 90 delete          # delete sessions older than 90 days
 
 set -uo pipefail
+_mtime() { python3 -c "import os,sys; print(int(os.path.getmtime(sys.argv[1])))" "$1" 2>/dev/null || echo 0; }
+_fsize() { python3 -c "import os,sys; print(int(os.path.getsize(sys.argv[1])))" "$1" 2>/dev/null || echo 0; }
 
 CUTOFF_DAYS="${1:-30}"
 MODE="${2:-dry-run}"
@@ -54,7 +56,7 @@ fi
 # Total disk freed.
 TOTAL_BYTES=0
 for f in "${CANDIDATES[@]}"; do
-  sz=$(stat -f '%z' "$f" 2>/dev/null || echo 0)
+  sz=$(_fsize "$f")
   TOTAL_BYTES=$((TOTAL_BYTES + sz))
 done
 TOTAL_MB=$((TOTAL_BYTES / 1024 / 1024))
@@ -65,11 +67,11 @@ case "$MODE" in
     printf '  Cutoff: older than %d days\n\n' "$CUTOFF_DAYS"
     printf '  Top 10 candidates by oldest first:\n'
     for f in "${CANDIDATES[@]}"; do
-      mtime=$(stat -f '%m' "$f")
+      mtime=$(_mtime "$f")
       printf '%d\t%s\n' "$mtime" "$f"
     done | sort -n | head -10 | while IFS=$'\t' read -r m p; do
-      d=$(date -r "$m" '+%Y-%m-%d')
-      sz=$(stat -f '%z' "$p")
+      d=$(awk 'BEGIN{print strftime("%Y-%m-%d", m)}' m="$m")
+      sz=$(_fsize "$p")
       sz_kb=$((sz / 1024))
       printf '    %s  %5d KB  %s\n' "$d" "$sz_kb" "${p#$PROJECTS/}"
     done

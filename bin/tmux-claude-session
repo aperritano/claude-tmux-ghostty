@@ -62,7 +62,7 @@ if [[ -d "$subagents_dir" ]]; then
     [[ ! -f "$jsonl" ]] && continue
 
     # Check if sub-agent JSONL was modified recently (active)
-    mod=$(stat -f %m "$jsonl" 2>/dev/null)
+    mod=$(python3 -c "import os,sys; print(int(os.path.getmtime(sys.argv[1])))" "$jsonl" 2>/dev/null)
     [[ -z "$mod" ]] && continue
 
     age=$(( now - mod ))
