@@ -361,6 +361,22 @@ else
   emit WARN "dotfiles repo" "~/dev/dotfiles not a git repo"
 fi
 
+section "Python short_label worktree compat"
+# Both claude-sessions-list and claude-stats have a short_label() function
+# that must handle /.claude/worktrees/ (Claude Code managed) in addition to
+# /.worktrees/ (bare git). Without the fix, Claude Code worktree sessions
+# show raw paths instead of the compact repo:wt/<branch> label.
+for _sl_script in claude-sessions-list claude-stats; do
+  _sl_path="$HOME/bin/$_sl_script"
+  if [[ ! -x "$_sl_path" ]]; then
+    emit WARN "$_sl_script short_label: .claude/worktrees" "script not installed (existence checked above)"
+  elif grep -q '\.claude/worktrees' "$_sl_path"; then
+    emit PASS "$_sl_script short_label: .claude/worktrees"
+  else
+    emit FAIL "$_sl_script short_label: .claude/worktrees" "only /.worktrees/ checked — Claude Code worktrees show raw paths"
+  fi
+done
+
 # ─── Summary ────────────────────────────────────────
 printf '\n%s──────────────────────────────────────────────────%s\n' "$C" "$N"
 total=$((PASS_N + WARN_N + FAIL_N))
