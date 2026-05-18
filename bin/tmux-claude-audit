@@ -361,6 +361,20 @@ else
   emit WARN "dotfiles repo" "~/dev/dotfiles not a git repo"
 fi
 
+section "cc-brain-sync macOS compat"
+# du -b is Linux-only; on macOS it exits with "illegal option -- b" and the
+# byte total is silently zero. Must use stat -f %z (BSD stat, consistent with
+# the rest of the codebase: cc-attention, tmux-window-cell, tmux-fleet-count).
+if [[ -x "$HOME/bin/cc-brain-sync" ]]; then
+  if grep -q 'du -b' "$HOME/bin/cc-brain-sync"; then
+    emit FAIL "cc-brain-sync list byte-count" "'du -b' is Linux-only — list always shows 0 KB on macOS; replace with 'stat -f %z'"
+  else
+    emit PASS "cc-brain-sync list uses stat -f %z (macOS-safe byte count)"
+  fi
+else
+  emit WARN "cc-brain-sync" "not installed — skip macOS compat check"
+fi
+
 # ─── Summary ────────────────────────────────────────
 printf '\n%s──────────────────────────────────────────────────%s\n' "$C" "$N"
 total=$((PASS_N + WARN_N + FAIL_N))
