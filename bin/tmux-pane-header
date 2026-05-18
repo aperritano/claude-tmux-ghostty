@@ -134,8 +134,27 @@ if [[ -e "/tmp/cc-attention/${pane_id#%}" ]]; then
 fi
 lock=""
 if [[ "$role" != "$" && -d /tmp/cc-locks ]]; then
-  n=$(ls /tmp/cc-locks 2>/dev/null | wc -l | tr -d ' ')
-  (( n > 0 )) && lock=" #[fg=colour6]🔒${n}#[default]"
+  # Count only locks held by THIS pane's Claude session, not the global total.
+  # In multi-agent runs every pane shares /tmp/cc-locks; showing a total would
+  # give each pane a misleadingly high count.  Derive session_id from
+  # cwd → project path → newest jsonl (same mapping as tmux-claude-session).
+  lock_n=0
+  if [[ -n "$cwd" ]]; then
+    sess_proj="${cwd//\//-}"
+    sess_proj="${sess_proj//./-}"
+    sess_proj_path="$HOME/.claude/projects/$sess_proj"
+    if [[ -d "$sess_proj_path" ]]; then
+      sess_latest=$(ls -t "$sess_proj_path"/*.jsonl 2>/dev/null | head -1)
+      if [[ -n "$sess_latest" ]]; then
+        sess_id="${sess_latest##*/}"; sess_id="${sess_id%.jsonl}"
+        for lf in /tmp/cc-locks/*; do
+          [[ -e "$lf" ]] || continue
+          [[ "$(head -1 "$lf" 2>/dev/null)" == "$sess_id" ]] && lock_n=$((lock_n + 1))
+        done
+      fi
+    fi
+  fi
+  (( lock_n > 0 )) && lock=" #[fg=colour6]🔒${lock_n}#[default]"
 fi
 
 # Git: branch, dirty, ahead/behind, worktree shorthand. Wrap the whole
