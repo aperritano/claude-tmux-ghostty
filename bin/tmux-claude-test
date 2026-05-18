@@ -532,6 +532,51 @@ else
   test_fail "executable present" "$HOME/bin/cc-lock-pre-hook missing"
 fi
 
+# ─── cc-lock-stop-hook (Stop / SubagentStop release) ─
+section "cc-lock-stop-hook"
+if [[ -x "$HOME/bin/cc-lock-stop-hook" ]]; then
+  if bash -n "$HOME/bin/cc-lock-stop-hook"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Delegation contract: must call cc-lock release-by-session
+  if grep -q "release-by-session" "$HOME/bin/cc-lock-stop-hook"; then
+    test_pass "delegates to cc-lock release-by-session"
+  else
+    test_fail "delegation" "no release-by-session reference"
+  fi
+  # End-to-end: acquire a lock as a known session, fire the stop-hook JSON,
+  # verify all locks for that session are gone.
+  rm -rf /tmp/cc-locks
+  "$HOME/bin/cc-lock" acquire "stophook-sid" /tmp/stophook-target 2>/dev/null
+  pre=$(ls /tmp/cc-locks 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$pre" -gt 0 ]]; then
+    echo '{"session_id":"stophook-sid"}' \
+      | "$HOME/bin/cc-lock-stop-hook" 2>/dev/null
+    post=$(ls /tmp/cc-locks 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$post" == "0" ]]; then
+      test_pass "stop hook releases all locks for the session"
+    else
+      test_fail "stop-hook release" "$post lock(s) remain after stop-hook fired"
+    fi
+  else
+    test_fail "precondition: lock acquire" "cc-lock acquire did not create a lock file"
+  fi
+  # Null-session guard: JSON with no session_id → silent no-op, other locks preserved
+  "$HOME/bin/cc-lock" acquire "other-sid" /tmp/stophook-other 2>/dev/null
+  echo '{}' | "$HOME/bin/cc-lock-stop-hook" >/dev/null 2>&1
+  still=$(ls /tmp/cc-locks 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$still" -gt 0 ]]; then
+    test_pass "missing session_id → silent no-op (other locks preserved)"
+  else
+    test_fail "null-session guard" "lock incorrectly released with empty session_id"
+  fi
+  "$HOME/bin/cc-lock" release-by-session "other-sid" 2>/dev/null
+else
+  test_fail "executable present" "$HOME/bin/cc-lock-stop-hook missing"
+fi
+
 # ─── cc-brain-sync ────────────────────────────────────
 section "cc-brain-sync"
 if [[ -x "$HOME/bin/cc-brain-sync" ]]; then
