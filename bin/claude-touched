@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
 
-PROJECTS = Path.home() / ".claude" / "projects"
+PROJECTS = Path(os.environ.get("CLAUDE_PROJECTS", str(Path.home() / ".claude" / "projects")))
 HOME = str(Path.home())
 
 C = "\033[36m"
@@ -84,6 +85,8 @@ def main() -> int:
     file_counter = Counter()
     file_to_sessions: dict[str, set[str]] = defaultdict(set)
     file_to_tools: dict[str, Counter] = defaultdict(Counter)
+    session_files: dict[str, Counter] = defaultdict(Counter)
+    session_cwd: dict[str, str] = {}
     sessions_scanned = 0
     edits_total = 0
 
@@ -95,11 +98,29 @@ def main() -> int:
         if mtime < cutoff:
             continue
         sessions_scanned += 1
+        sid = jsonl.stem[:8]
         for fp, tool in extract_edits(jsonl):
             file_counter[fp] += 1
-            file_to_sessions[fp].add(jsonl.stem[:8])
+            file_to_sessions[fp].add(sid)
             file_to_tools[fp][tool] += 1
+            session_files[sid][fp] += 1
             edits_total += 1
+        # Read cwd for --by-session display (single pass, stops at first hit)
+        if args.by_session and sid not in session_cwd:
+            try:
+                with jsonl.open(encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if obj.get("cwd"):
+                            session_cwd[sid] = obj["cwd"]
+                            break
+            except OSError:
+                pass
 
     if not file_counter:
         label = "today" if args.days == 1 else f"last {args.days} days"
@@ -107,15 +128,25 @@ def main() -> int:
         return 0
 
     days_label = "today" if args.days == 1 else f"last {args.days} days"
-    print(f"{C}── files Claude edited — {days_label} ──{N}")
-    print(f"  {edits_total} edits across {len(file_counter)} files in {sessions_scanned} sessions\n")
 
-    for fp, count in file_counter.most_common(args.top):
-        sessions = len(file_to_sessions[fp])
-        tools = file_to_tools[fp]
-        # most-used tool
-        tool_summary = ", ".join(f"{t}×{c}" for t, c in tools.most_common(3))
-        print(f"  {Y}{count:>3}{N}  {short_path(fp)[:80]:<80}  {DIM}{sessions} session(s)  {tool_summary}{N}")
+    if args.by_session:
+        print(f"{C}── sessions that edited files — {days_label} ──{N}")
+        print(f"  {edits_total} edits across {len(session_files)} session(s)\n")
+        ranked = sorted(session_files.items(), key=lambda kv: -sum(kv[1].values()))[:args.top]
+        for sid, fc in ranked:
+            total = sum(fc.values())
+            cwd_label = short_path(session_cwd.get(sid, "")) or "(unknown)"
+            print(f"  {Y}{total:>3}{N}  {sid}  {DIM}{cwd_label}{N}")
+            for fp, cnt in fc.most_common(5):
+                print(f"        {cnt}  {short_path(fp)[:72]}")
+    else:
+        print(f"{C}── files Claude edited — {days_label} ──{N}")
+        print(f"  {edits_total} edits across {len(file_counter)} files in {sessions_scanned} sessions\n")
+        for fp, count in file_counter.most_common(args.top):
+            sessions_n = len(file_to_sessions[fp])
+            tools = file_to_tools[fp]
+            tool_summary = ", ".join(f"{t}×{c}" for t, c in tools.most_common(3))
+            print(f"  {Y}{count:>3}{N}  {short_path(fp)[:80]:<80}  {DIM}{sessions_n} session(s)  {tool_summary}{N}")
 
     return 0
 
