@@ -780,6 +780,140 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── claude-pin ───────────────────────────────────────
+section "claude-pin"
+if [[ -x "$HOME/bin/claude-pin" ]]; then
+  if bash -n "$HOME/bin/claude-pin"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # --help exits 0
+  if "$HOME/bin/claude-pin" --help >/dev/null 2>&1; then
+    test_pass "--help exits 0"
+  else
+    test_fail "--help" "exited non-zero"
+  fi
+  # Synthetic project dir so tests are hermetic (hardcoded PROJECTS path in script).
+  # Prefix "test" contains 't' — not a hex char — so it can NEVER match a real
+  # Claude session UUID (which are hex-only), making this collision-safe.
+  _pin_proj="$HOME/.claude/projects/test-pin-$$"
+  _pin_sid="test-$$-0000-0000-000000000001"
+  _pin_prefix="test"
+  mkdir -p "$_pin_proj"
+  touch "$_pin_proj/${_pin_sid}.jsonl"
+  # --list with no pins → "(no pinned sessions)"
+  _pin_list=$("$HOME/bin/claude-pin" --list 2>&1)
+  if echo "$_pin_list" | grep -q "no pinned"; then
+    test_pass "--list empty state shows 'no pinned sessions'"
+  else
+    test_fail "--list empty state" "got: $_pin_list"
+  fi
+  # Short prefix guard (< 4 chars) → exit non-zero
+  if "$HOME/bin/claude-pin" abc >/dev/null 2>&1; then
+    test_fail "short-prefix guard" "should reject prefix shorter than 4 chars"
+  else
+    test_pass "short-prefix guard rejects < 4-char prefix"
+  fi
+  # Pin creates .pinned sibling file
+  "$HOME/bin/claude-pin" "$_pin_prefix" >/dev/null 2>&1
+  if [[ -f "$_pin_proj/${_pin_sid}.pinned" ]]; then
+    test_pass "pin creates .pinned sibling file"
+  else
+    test_fail "pin creates .pinned" ".pinned not found at $_pin_proj/${_pin_sid}.pinned"
+  fi
+  # --list after pin shows the pinned session
+  _pin_list=$("$HOME/bin/claude-pin" --list 2>&1)
+  if echo "$_pin_list" | grep -q "$_pin_prefix"; then
+    test_pass "--list after pin shows pinned session"
+  else
+    test_fail "--list after pin" "session not listed: $_pin_list"
+  fi
+  # --unpin removes the .pinned file
+  "$HOME/bin/claude-pin" --unpin "$_pin_prefix" >/dev/null 2>&1
+  if [[ ! -f "$_pin_proj/${_pin_sid}.pinned" ]]; then
+    test_pass "--unpin removes .pinned file"
+  else
+    test_fail "--unpin removes .pinned" ".pinned still exists"
+    rm -f "$_pin_proj/${_pin_sid}.pinned"
+  fi
+  # --unpin a not-pinned session → exit non-zero
+  if "$HOME/bin/claude-pin" --unpin "$_pin_prefix" >/dev/null 2>&1; then
+    test_fail "--unpin non-pinned" "should exit non-zero when nothing to unpin"
+  else
+    test_pass "--unpin non-pinned exits non-zero"
+  fi
+  rm -rf "$_pin_proj"
+else
+  test_fail "executable present" "$HOME/bin/claude-pin missing"
+fi
+
+# ─── cc-lock-stop-hook ────────────────────────────────
+section "cc-lock-stop-hook"
+if [[ -x "$HOME/bin/cc-lock-stop-hook" ]]; then
+  if bash -n "$HOME/bin/cc-lock-stop-hook"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # Empty JSON → no session_id → exit 0 (no-op, cc-lock not called)
+  if echo '{}' | "$HOME/bin/cc-lock-stop-hook" >/dev/null 2>&1; then
+    test_pass "JSON without session_id exits 0 (no-op)"
+  else
+    test_fail "no-session-id JSON" "expected exit 0"
+  fi
+  # End-to-end: acquire lock as session, stop-hook releases it.
+  # Guarded — cc-lock must also be installed; skip gracefully if not.
+  if [[ -x "$HOME/bin/cc-lock" ]]; then
+    rm -rf /tmp/cc-locks
+    "$HOME/bin/cc-lock" acquire stop-hook-test /tmp/cc-sh-lock 2>/dev/null
+    echo '{"session_id":"stop-hook-test"}' | "$HOME/bin/cc-lock-stop-hook" >/dev/null 2>&1
+    if "$HOME/bin/cc-lock" acquire other-session /tmp/cc-sh-lock 2>/dev/null; then
+      test_pass "stop-hook releases lock (subsequent acquirer unblocked)"
+      "$HOME/bin/cc-lock" release-by-session other-session 2>/dev/null
+    else
+      test_fail "stop-hook end-to-end" "lock not released — other-session still blocked"
+    fi
+  else
+    test_pass "stop-hook end-to-end (skipped — cc-lock not at ~/bin)"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/cc-lock-stop-hook missing"
+fi
+
+# ─── tmux-mute-indicator ──────────────────────────────
+section "tmux-mute-indicator"
+if [[ -x "$HOME/bin/tmux-mute-indicator" ]]; then
+  if sh -n "$HOME/bin/tmux-mute-indicator" 2>/dev/null; then
+    test_pass "sh syntax valid"
+  else
+    test_fail "sh syntax" "parse error"
+  fi
+  # Save/restore mute state to keep the test hermetic
+  _was_muted=0
+  [[ -f "$HOME/.claude/.muted" ]] && _was_muted=1
+  # Muted → emits non-empty output (the 🔇 format string)
+  mkdir -p "$HOME/.claude"
+  touch "$HOME/.claude/.muted"
+  _mute_out=$("$HOME/bin/tmux-mute-indicator" 2>/dev/null)
+  if [[ -n "$_mute_out" ]]; then
+    test_pass "muted state emits non-empty output"
+  else
+    test_fail "muted output" "expected non-empty when .muted exists"
+  fi
+  # Unmuted → empty output
+  rm -f "$HOME/.claude/.muted"
+  _mute_out=$("$HOME/bin/tmux-mute-indicator" 2>/dev/null)
+  if [[ -z "$_mute_out" ]]; then
+    test_pass "unmuted state emits empty output"
+  else
+    test_fail "unmuted output" "expected empty, got: $_mute_out"
+  fi
+  [[ $_was_muted -eq 1 ]] && touch "$HOME/.claude/.muted"
+else
+  test_fail "executable present" "$HOME/bin/tmux-mute-indicator missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"
