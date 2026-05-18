@@ -95,6 +95,19 @@ for s in claude-tmux claude-sessions-list claude-search claude-grep claude-workt
   else emit FAIL "$s" "missing or not executable"; fi
 done
 
+# cc-lock-pre-hook must use the same sanitize_path() logic as cc-lock so the
+# deny-message holder lookup resolves the right lock file. Both must include
+# the s|^\.|DOT| substitution that converts a leading dot (from root-level
+# hidden-dir paths like /.config/...) before the double-slash stripping
+# produces a dot-prefixed key.
+if [[ -x "$HOME/bin/cc-lock-pre-hook" ]]; then
+  if grep -qF 's|^\.|DOT|' "$HOME/bin/cc-lock-pre-hook" 2>/dev/null; then
+    emit PASS "cc-lock-pre-hook: sanitize_path parity (dot→DOT matches cc-lock)"
+  else
+    emit WARN "cc-lock-pre-hook: sanitize_path" "missing dot-at-start substitution — deny message shows empty holder for /.hidden-dir paths"
+  fi
+fi
+
 section "Claude settings (~/.claude/settings.json)"
 if ! python3 -c "import json; json.load(open('$HOME/.claude/settings.json'))" 2>/dev/null; then
   emit FAIL "settings.json parses" "invalid JSON"

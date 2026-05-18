@@ -780,6 +780,166 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── claude-dirty ─────────────────────────────────────
+section "claude-dirty"
+if [[ -x "$HOME/bin/claude-dirty" ]]; then
+  if bash -n "$HOME/bin/claude-dirty"; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+  # ── dirty case: worktree with staged but uncommitted change ──
+  TEST_D="/tmp/cc-test-dirty-$$"
+  rm -rf "$TEST_D"
+  mkdir -p "$TEST_D"
+  (
+    cd "$TEST_D"
+    git init -q -b main 2>/dev/null || git init -q
+    git config user.email "test@test.com"
+    git config user.name "test"
+    git commit --allow-empty -q -m initial
+    git worktree add -q -b feat-dirty .worktrees/dirty
+    echo "change" > .worktrees/dirty/x.txt
+    git -C .worktrees/dirty add x.txt
+  ) 2>/dev/null
+  if [[ -d "$TEST_D/.worktrees/dirty" ]]; then
+    dirty_out=$(cd "$TEST_D" && "$HOME/bin/claude-dirty" 2>/dev/null)
+    if echo "$dirty_out" | grep -q "dirty worktrees in"; then
+      test_pass "dirty case: header rendered"
+    else
+      test_fail "dirty case: header" "expected 'dirty worktrees in'"
+    fi
+    if ! echo "$dirty_out" | grep -q "all clean"; then
+      test_pass "dirty case: does not say 'all clean'"
+    else
+      test_fail "dirty case" "said 'all clean' despite staged changes"
+    fi
+  else
+    test_pass "claude-dirty dirty-case (skipped — git worktree setup failed)"
+  fi
+  rm -rf "$TEST_D"
+  # ── clean case: worktree with no changes ──
+  TEST_C="/tmp/cc-test-dirty2-$$"
+  rm -rf "$TEST_C"
+  mkdir -p "$TEST_C"
+  (
+    cd "$TEST_C"
+    git init -q -b main 2>/dev/null || git init -q
+    git config user.email "test@test.com"
+    git config user.name "test"
+    git commit --allow-empty -q -m initial
+    git worktree add -q -b feat-clean .worktrees/clean
+  ) 2>/dev/null
+  if [[ -d "$TEST_C/.worktrees/clean" ]]; then
+    clean_out=$(cd "$TEST_C" && "$HOME/bin/claude-dirty" 2>/dev/null)
+    if echo "$clean_out" | grep -q "all clean"; then
+      test_pass "clean case: reports 'all clean'"
+    else
+      test_fail "clean case" "expected 'all clean', got: $(echo "$clean_out" | head -3 | tr '\n' ' ')"
+    fi
+  else
+    test_pass "claude-dirty clean-case (skipped — git worktree setup failed)"
+  fi
+  rm -rf "$TEST_C"
+else
+  test_fail "executable present" "$HOME/bin/claude-dirty missing"
+fi
+
+# ─── claude-stats ─────────────────────────────────────
+section "claude-stats"
+if [[ -x "$HOME/bin/claude-stats" ]]; then
+  if python3 -c "import ast; ast.parse(open('$HOME/bin/claude-stats').read())" 2>/dev/null; then
+    test_pass "python syntax valid"
+  else
+    test_fail "python syntax" "parse error"
+  fi
+  # Empty projects → clean message
+  FAKE_S="/tmp/cc-test-stats-$$"
+  mkdir -p "$FAKE_S/.claude/projects"
+  out_s=$(HOME="$FAKE_S" "$HOME/bin/claude-stats" 2>/dev/null)
+  rm -rf "$FAKE_S"
+  if echo "$out_s" | grep -q "No assistant token data"; then
+    test_pass "empty projects → 'No assistant token data'"
+  else
+    test_fail "empty-projects" "expected 'No assistant token data'"
+  fi
+  # Synthetic JSONL → summary header + cache hit rate
+  FAKE_S2="/tmp/cc-test-stats2-$$"
+  mkdir -p "$FAKE_S2/.claude/projects/test"
+  python3 -c "
+import json, datetime
+now = datetime.datetime.utcnow().isoformat()+'Z'
+for line in [
+    {'type':'user','timestamp':now,'cwd':'/tmp'},
+    {'type':'assistant','timestamp':now,'message':{'usage':{'input_tokens':500,'output_tokens':200,'cache_read_input_tokens':100,'cache_creation_input_tokens':0}}},
+]:
+    print(json.dumps(line))
+" > "$FAKE_S2/.claude/projects/test/abc12345.jsonl"
+  out_s2=$(HOME="$FAKE_S2" "$HOME/bin/claude-stats" 2>/dev/null)
+  rm -rf "$FAKE_S2"
+  if echo "$out_s2" | grep -q "token usage"; then
+    test_pass "with data → renders 'token usage' header"
+  else
+    test_fail "with data" "expected 'token usage' header"
+  fi
+  if echo "$out_s2" | grep -q "cache hit rate"; then
+    test_pass "with data → shows cache hit rate"
+  else
+    test_fail "cache hit rate" "expected 'cache hit rate' line"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/claude-stats missing"
+fi
+
+# ─── claude-touched ───────────────────────────────────
+section "claude-touched"
+if [[ -x "$HOME/bin/claude-touched" ]]; then
+  if python3 -c "import ast; ast.parse(open('$HOME/bin/claude-touched').read())" 2>/dev/null; then
+    test_pass "python syntax valid"
+  else
+    test_fail "python syntax" "parse error"
+  fi
+  # Empty projects → clean message
+  FAKE_T="/tmp/cc-test-touched-$$"
+  mkdir -p "$FAKE_T/.claude/projects"
+  out_t=$(HOME="$FAKE_T" "$HOME/bin/claude-touched" 2>/dev/null)
+  rm -rf "$FAKE_T"
+  if echo "$out_t" | grep -q "No file edits"; then
+    test_pass "empty projects → 'No file edits'"
+  else
+    test_fail "empty-projects" "expected 'No file edits found'"
+  fi
+  # Synthetic JSONL with Edit+Write tool_use → files-edited header
+  FAKE_T2="/tmp/cc-test-touched2-$$"
+  mkdir -p "$FAKE_T2/.claude/projects/test"
+  python3 -c "
+import json, datetime
+now = datetime.datetime.utcnow().isoformat()+'Z'
+for line in [
+    {'type':'user','timestamp':now,'cwd':'/tmp'},
+    {'type':'assistant','timestamp':now,'message':{'content':[
+        {'type':'tool_use','id':'t1','name':'Edit','input':{'file_path':'/tmp/foo.py','old_string':'a','new_string':'b'}},
+        {'type':'tool_use','id':'t2','name':'Write','input':{'file_path':'/tmp/bar.txt','content':'hello'}},
+    ]}},
+]:
+    print(json.dumps(line))
+" > "$FAKE_T2/.claude/projects/test/abc12345.jsonl"
+  out_t2=$(HOME="$FAKE_T2" "$HOME/bin/claude-touched" 2>/dev/null)
+  rm -rf "$FAKE_T2"
+  if echo "$out_t2" | grep -q "files Claude edited"; then
+    test_pass "with edits → renders 'files Claude edited' header"
+  else
+    test_fail "with edits" "expected 'files Claude edited' header"
+  fi
+  if echo "$out_t2" | grep -q "edits across"; then
+    test_pass "with edits → shows edit count summary"
+  else
+    test_fail "edit count" "expected 'edits across N files' line"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/claude-touched missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"
