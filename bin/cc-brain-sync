@@ -87,7 +87,7 @@ case "$cmd" in
     build_filelist | head -100
     echo "---"
     n=$(build_filelist | wc -l | tr -d ' ')
-    bytes=$(build_filelist | tr '\n' '\0' | (cd "$HOME/.claude" && xargs -0 du -b 2>/dev/null) | awk '{s+=$1} END {print s+0}')
+    bytes=$(build_filelist | tr '\n' '\0' | (cd "$HOME/.claude" && xargs -0 stat -f %z 2>/dev/null) | awk '{s+=$1} END {print s+0}')
     echo "$n files, $((bytes / 1024)) KB uncompressed"
     ;;
 
