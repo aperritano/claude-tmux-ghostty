@@ -87,7 +87,16 @@ case "$cmd" in
     build_filelist | head -100
     echo "---"
     n=$(build_filelist | wc -l | tr -d ' ')
-    bytes=$(build_filelist | tr '\n' '\0' | (cd "$HOME/.claude" && xargs -0 du -b 2>/dev/null) | awk '{s+=$1} END {print s+0}')
+    bytes=$(build_filelist | (cd "$HOME/.claude" && python3 -c "
+import sys, os
+total = 0
+for f in sys.stdin:
+    f = f.rstrip()
+    if f:
+        try: total += os.path.getsize(f)
+        except: pass
+print(total)
+"))
     echo "$n files, $((bytes / 1024)) KB uncompressed"
     ;;
 
