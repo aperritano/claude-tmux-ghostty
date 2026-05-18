@@ -357,6 +357,29 @@ else
   test_fail "executable present" "$HOME/bin/cc-attention missing"
 fi
 
+# Portability regression — repo-path fallback fires in CI.
+# stat -f %m exits 0 on Linux with multiline filesystem output; set -u then
+# throws "File: unbound variable" (exit 127). Verify the fix (_mtime helper)
+# is in place and that gc actually prunes a stale marker without crashing.
+_CC_ATTN_SRC="$(dirname "$0")/cc-attention"
+if [[ -f "$_CC_ATTN_SRC" ]]; then
+  if ! grep -qE '\$\(stat -f %m' "$_CC_ATTN_SRC"; then
+    test_pass "cc-attention: no raw stat -f %m calls (Linux-portable)"
+  else
+    test_fail "cc-attention portability" "stat -f %m still present — crashes on Linux"
+  fi
+  mkdir -p /tmp/cc-attention
+  _CC_TFILE="/tmp/cc-attention/portability_test_$$"
+  touch -t 200001010000 "$_CC_TFILE"
+  bash "$_CC_ATTN_SRC" gc >/dev/null 2>&1
+  if [[ ! -e "$_CC_TFILE" ]]; then
+    test_pass "cc-attention gc: stale marker pruned (stat portability)"
+  else
+    rm -f "$_CC_TFILE"
+    test_fail "cc-attention gc stale prune" "marker not removed — possible stat crash"
+  fi
+fi
+
 # ─── tmux-cell-daemon: pane-headers cache ─────────────
 section "tmux-cell-daemon (pane-headers cache)"
 PANE_HEADER_CACHE="/tmp/tmux-pane-headers-$UID.cache"
