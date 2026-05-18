@@ -35,12 +35,14 @@ N = "\033[0m"
 def short_label(p: str) -> str:
     if p.startswith(HOME):
         p = "~" + p[len(HOME):]
-    if "/.worktrees/" in p:
-        repo = p.split("/.worktrees/")[0].rsplit("/", 1)[-1]
-        wt = p.split("/.worktrees/")[1].split("/")[0]
-        if len(wt) > 30:
-            wt = wt[:27] + "..."
-        return f"{repo}:wt/{wt}"
+    # Handle both user-managed (.worktrees/) and agent-managed (.claude/worktrees/)
+    for marker in ("/.worktrees/", "/.claude/worktrees/"):
+        if marker in p:
+            repo = p.split(marker)[0].rsplit("/", 1)[-1]
+            wt = p.split(marker)[1].split("/")[0]
+            if len(wt) > 30:
+                wt = wt[:27] + "..."
+            return f"{repo}:wt/{wt}"
     if p in ("~", "/"):
         return p
     parts = p.rstrip("/").split("/")
