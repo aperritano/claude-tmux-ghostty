@@ -780,6 +780,36 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── tmux-kill-teammate-pane ──────────────────────────
+section "tmux-kill-teammate-pane"
+if [[ -x "$HOME/bin/tmux-kill-teammate-pane" ]]; then
+  test_pass "executable present"
+  # Safety guard: script must never kill the last pane in a window.
+  if grep -q 'pane_count > 1' "$HOME/bin/tmux-kill-teammate-pane"; then
+    test_pass "safety guard present (pane_count > 1 before kill)"
+  else
+    test_fail "safety guard" "missing 'pane_count > 1' check — last pane could be killed"
+  fi
+  # No-tmux guard: must exit 0 silently when not inside a tmux session.
+  if TMUX="" "$HOME/bin/tmux-kill-teammate-pane" 2>/dev/null; then
+    test_pass "exits 0 cleanly when \$TMUX is unset"
+  else
+    test_fail "no-tmux exit" "expected exit 0 with TMUX unset"
+  fi
+  # Zsh syntax check (script uses #!/bin/zsh shebang).
+  if command -v zsh >/dev/null 2>&1; then
+    if zsh -n "$HOME/bin/tmux-kill-teammate-pane" 2>/dev/null; then
+      test_pass "zsh syntax valid"
+    else
+      test_fail "zsh syntax" "parse error"
+    fi
+  else
+    test_pass "zsh syntax (skipped — zsh not on PATH)"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-kill-teammate-pane missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"

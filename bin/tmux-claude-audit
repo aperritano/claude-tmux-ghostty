@@ -90,7 +90,7 @@ section "Helper scripts (~/bin)"
 # README documenting the script suite
 if [[ -r "$HOME/dev/dotfiles/bin/README.md" ]]; then emit PASS "bin/README.md (documentation)"
 else emit WARN "bin/README.md" "missing — scripts undocumented"; fi
-for s in claude-tmux claude-sessions-list claude-search claude-grep claude-worktrees claude-prune-worktrees claude-tail claude-today claude-touched claude-stats claude-dirty claude-export claude-pin claude-running claude-jump cc-attention cc-config-sync cc-burn-rate cc-lock cc-lock-pre-hook cc-lock-stop-hook cc-brain-sync tmux-claude-state tmux-claude-resurrect-restore tmux-claude-prune tmux-claude-test tmux-window-cell tmux-save-dot tmux-cell-daemon tmux-fleet-count tmux-mute-indicator tmux-resurrect-housekeep tmux-git-info tmux-claude-session tmux-tile-session tmux-pane-header tmux-burn-segment cc-rich-shim cc-rich-sidebar cc-replay-shim; do
+for s in claude-tmux claude-sessions-list claude-search claude-grep claude-worktrees claude-prune-worktrees claude-tail claude-today claude-touched claude-stats claude-dirty claude-export claude-pin claude-running claude-jump cc-attention cc-config-sync cc-burn-rate cc-lock cc-lock-pre-hook cc-lock-stop-hook cc-brain-sync tmux-claude-state tmux-claude-resurrect-restore tmux-claude-prune tmux-claude-test tmux-window-cell tmux-save-dot tmux-cell-daemon tmux-fleet-count tmux-mute-indicator tmux-resurrect-housekeep tmux-git-info tmux-claude-session tmux-tile-session tmux-pane-header tmux-burn-segment cc-rich-shim cc-rich-sidebar cc-replay-shim tmux-kill-teammate-pane; do
   if [[ -x "$HOME/bin/$s" ]]; then emit PASS "$s"
   else emit FAIL "$s" "missing or not executable"; fi
 done
@@ -116,6 +116,24 @@ else
     if [[ "$(settings_has_hook "$evt")" == "y" ]]; then emit PASS "hook: $evt"
     else emit WARN "hook: $evt" "missing"; fi
   done
+
+  # README claims tmux-kill-teammate-pane auto-cleans panes on SubagentStop,
+  # but the hook command may intentionally omit it (owner undecided). Surface
+  # as WARN so the skew is visible without blocking on the design question.
+  if python3 -c "
+import json, sys
+try:
+    d = json.load(open('$HOME/.claude/settings.json'))
+    hooks = (d.get('hooks') or {}).get('SubagentStop') or []
+    cmds = [h.get('command','') for item in hooks for h in (item.get('hooks') or [])]
+    print('y' if any('tmux-kill-teammate-pane' in c for c in cmds) else 'n')
+except Exception:
+    print('n')
+" 2>/dev/null | grep -q 'y'; then
+    emit PASS "SubagentStop calls tmux-kill-teammate-pane"
+  else
+    emit WARN "SubagentStop → tmux-kill-teammate-pane" "not wired — README claims auto-cleanup; intentional gap or missing hook?"
+  fi
 
   for d in dotfiles .claude .config; do
     if grep -q "/$d" "$HOME/.claude/settings.json" 2>/dev/null; then
