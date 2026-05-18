@@ -3,7 +3,8 @@
 p="${1/#$HOME/~}"
 
 # For worktree paths, just show "wt:<name>"
-if [[ "$p" == */.worktrees/* ]]; then
+# Handles both manual (.worktrees/) and Claude-managed (.claude/worktrees/) layouts.
+if [[ "$p" == */.worktrees/* || "$p" == */.claude/worktrees/* ]]; then
   wtname="${p##*/}"
   (( ${#wtname} > 18 )) && wtname="${wtname:0:15}…"
   echo "wt:${wtname}"
