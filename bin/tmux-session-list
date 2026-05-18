@@ -3,7 +3,7 @@
 # "agents" session gets cyan coloring
 current="$1"
 result=""
-for session in $(tmux list-sessions -F '#S' 2>/dev/null); do
+while IFS= read -r session; do
   if [ "$session" = "$current" ]; then
     result+="#[fg=#F5F3FF,bg=#7C3AED,bold] ${session} #[fg=#A78BFA,bg=#1A1028,nobold] "
   elif [ "$session" = "agents" ]; then
@@ -11,5 +11,5 @@ for session in $(tmux list-sessions -F '#S' 2>/dev/null); do
   else
     result+="#[fg=#5B4D7A,bg=#1A1028] ${session} "
   fi
-done
+done < <(tmux list-sessions -F '#S' 2>/dev/null)
 printf '%s' "$result"
