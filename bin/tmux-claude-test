@@ -587,6 +587,19 @@ if [[ -x "$HOME/bin/claude-grep" ]]; then
       test_fail "TSV shape" "got $fields fields, expected 5"
     fi
   fi
+  # short_label: ~/foo (direct home child) must render as "~/foo" not bare "foo"
+  label=$(python3 - <<PY
+import os
+ns = {"__name__": "notmain"}
+exec(compile(open("$HOME/bin/claude-grep").read(), "claude-grep", "exec"), ns)
+print(ns["short_label"](os.path.expanduser("~") + "/myproject"))
+PY
+  2>/dev/null)
+  if [[ "$label" == "~/myproject" ]]; then
+    test_pass "short_label: direct home child renders as ~/name"
+  else
+    test_fail "short_label: direct home child" "got '$label', expected '~/myproject'"
+  fi
 else
   test_fail "executable present" "$HOME/bin/claude-grep missing"
 fi
