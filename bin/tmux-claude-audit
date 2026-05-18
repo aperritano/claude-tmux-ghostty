@@ -90,10 +90,23 @@ section "Helper scripts (~/bin)"
 # README documenting the script suite
 if [[ -r "$HOME/dev/dotfiles/bin/README.md" ]]; then emit PASS "bin/README.md (documentation)"
 else emit WARN "bin/README.md" "missing — scripts undocumented"; fi
-for s in claude-tmux claude-sessions-list claude-search claude-grep claude-worktrees claude-prune-worktrees claude-tail claude-today claude-touched claude-stats claude-dirty claude-export claude-pin claude-running claude-jump cc-attention cc-config-sync cc-burn-rate cc-lock cc-lock-pre-hook cc-lock-stop-hook cc-brain-sync tmux-claude-state tmux-claude-resurrect-restore tmux-claude-prune tmux-claude-test tmux-window-cell tmux-save-dot tmux-cell-daemon tmux-fleet-count tmux-mute-indicator tmux-resurrect-housekeep tmux-git-info tmux-claude-session tmux-tile-session tmux-pane-header tmux-burn-segment cc-rich-shim cc-rich-sidebar cc-replay-shim; do
+for s in claude-tmux claude-sessions-list claude-search claude-grep claude-worktrees claude-prune-worktrees claude-tail claude-today claude-touched claude-stats claude-dirty claude-export claude-pin claude-running claude-jump cc-attention cc-config-sync cc-burn-rate cc-lock cc-lock-pre-hook cc-lock-stop-hook cc-brain-sync tmux-claude-state tmux-claude-resurrect-restore tmux-claude-prune tmux-claude-test tmux-window-cell tmux-save-dot tmux-cell-daemon tmux-fleet-count tmux-mute-indicator tmux-resurrect-housekeep tmux-git-info tmux-claude-session tmux-tile-session tmux-pane-header tmux-burn-segment cc-rich-shim cc-rich-sidebar cc-replay-shim tmux-pane-label tmux-short-path tmux-session-list tmux-tutorial; do
   if [[ -x "$HOME/bin/$s" ]]; then emit PASS "$s"
   else emit FAIL "$s" "missing or not executable"; fi
 done
+
+section "cc-lock fleet wiring"
+# cc-lock-pre-hook must use the same path-sanitization as cc-lock's sanitize_path.
+# Missing 's|^\.|DOT|' causes holder lookup to fail for paths starting with /.<name>.
+if [[ -r "$HOME/bin/cc-lock-pre-hook" ]]; then
+  if grep -q 'DOT' "$HOME/bin/cc-lock-pre-hook"; then
+    emit PASS "cc-lock-pre-hook DOT-prefix matches cc-lock sanitize_path"
+  else
+    emit FAIL "cc-lock-pre-hook DOT-prefix" "missing 's|^\\.|DOT|' — holder display broken for paths under /."
+  fi
+else
+  emit WARN "cc-lock-pre-hook" "not installed — skipping DOT-prefix check"
+fi
 
 section "Claude settings (~/.claude/settings.json)"
 if ! python3 -c "import json; json.load(open('$HOME/.claude/settings.json'))" 2>/dev/null; then
