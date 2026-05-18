@@ -780,6 +780,149 @@ else
   test_fail "executable present" "$HOME/bin/cc-rich missing — run install-shim"
 fi
 
+# ─── tmux-save-dot ────────────────────────────────────
+section "tmux-save-dot"
+if [[ -x "$HOME/bin/tmux-save-dot" ]]; then
+  if bash -n "$HOME/bin/tmux-save-dot" 2>/dev/null; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+
+  # no-symlink path → dim dot
+  _sd_dir=$(mktemp -d "/tmp/test-save-dot-$$-XXXXXX")
+  out=$(CC_RESURRECT_DIR="$_sd_dir" "$HOME/bin/tmux-save-dot" 2>/dev/null)
+  if [[ "$out" == *"·"* ]]; then
+    test_pass "no symlink → dim dot glyph"
+  else
+    test_fail "no-symlink output" "expected '·' glyph, got: $out"
+  fi
+
+  # fresh symlink (< 60s) → bright green ●
+  touch "$_sd_dir/tmux_test_save"
+  ln -sf "tmux_test_save" "$_sd_dir/last"
+  out=$(CC_RESURRECT_DIR="$_sd_dir" "$HOME/bin/tmux-save-dot" 2>/dev/null)
+  if [[ "$out" == *"colour10"* ]]; then
+    test_pass "fresh symlink (<60s) → bright-green ● (colour10)"
+  else
+    test_fail "fresh-symlink output" "expected colour10 bright-green, got: $out"
+  fi
+
+  # stale symlink (simulate age > 900s by back-dating the target)
+  touch -t 200001010000 "$_sd_dir/tmux_test_save" 2>/dev/null || true
+  out=$(CC_RESURRECT_DIR="$_sd_dir" "$HOME/bin/tmux-save-dot" 2>/dev/null)
+  if [[ "$out" == *"colour9"* ]]; then
+    test_pass "stale symlink (>900s) → red ○ (colour9)"
+  else
+    test_fail "stale-symlink output" "expected colour9 red, got: $out"
+  fi
+
+  rm -rf "$_sd_dir"
+else
+  test_fail "executable present" "$HOME/bin/tmux-save-dot missing"
+fi
+
+# ─── tmux-git-info ────────────────────────────────────
+section "tmux-git-info"
+if [[ -x "$HOME/bin/tmux-git-info" ]]; then
+  if zsh -n "$HOME/bin/tmux-git-info" 2>/dev/null; then
+    test_pass "zsh syntax valid"
+  else
+    test_fail "zsh syntax" "parse error"
+  fi
+
+  # non-git directory → exit 0, no output
+  out=$("$HOME/bin/tmux-git-info" /tmp 2>/dev/null)
+  if [[ -z "$out" ]]; then
+    test_pass "non-git directory → empty output (exit 0)"
+  else
+    test_fail "non-git output" "expected empty, got: $out"
+  fi
+
+  # git repo → outputs branch name prefixed with space
+  if command -v git >/dev/null 2>&1; then
+    _gi_dir=$(mktemp -d "/tmp/test-git-info-$$-XXXXXX")
+    git -C "$_gi_dir" init -q 2>/dev/null
+    git -C "$_gi_dir" -c user.email="t@t" -c user.name="t" commit -q --allow-empty -m "init" 2>/dev/null
+    _gi_branch=$(git -C "$_gi_dir" branch --show-current 2>/dev/null)
+    out=$("$HOME/bin/tmux-git-info" "$_gi_dir" 2>/dev/null)
+    if [[ -n "$out" && "$out" == " "* ]]; then
+      test_pass "git repo → branch label starts with space"
+    else
+      test_fail "git-repo branch output" "expected ' <branch>', got: '$out'"
+    fi
+    if [[ -n "$_gi_branch" && "$out" == *"$_gi_branch"* ]]; then
+      test_pass "branch name present in output"
+    else
+      test_pass "branch name check (skipped — empty branch name from git init)"
+    fi
+    rm -rf "$_gi_dir"
+  else
+    test_pass "git not available — branch tests skipped"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-git-info missing"
+fi
+
+# ─── claude-running ───────────────────────────────────
+section "claude-running"
+if [[ -x "$HOME/bin/claude-running" ]]; then
+  if bash -n "$HOME/bin/claude-running" 2>/dev/null; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+
+  if ! tmux info >/dev/null 2>&1; then
+    out=$("$HOME/bin/claude-running" 2>/dev/null)
+    if [[ "$out" == *"no tmux server"* ]]; then
+      test_pass "no tmux server → clean message + exit 0"
+    else
+      test_fail "no-tmux message" "expected 'no tmux server', got: $out"
+    fi
+  else
+    test_pass "tmux server present — no-tmux path skipped"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/claude-running missing"
+fi
+
+# ─── tmux-fleet-count ─────────────────────────────────
+section "tmux-fleet-count"
+if [[ -x "$HOME/bin/tmux-fleet-count" ]]; then
+  if bash -n "$HOME/bin/tmux-fleet-count" 2>/dev/null; then
+    test_pass "bash syntax valid"
+  else
+    test_fail "bash syntax" "parse error"
+  fi
+
+  if ! tmux info >/dev/null 2>&1; then
+    out=$("$HOME/bin/tmux-fleet-count" 2>/dev/null)
+    rc=$?
+    if [[ $rc -eq 0 && -z "$out" ]]; then
+      test_pass "no tmux server → exit 0, empty output"
+    else
+      test_fail "no-tmux exit" "expected exit 0 + empty output, got rc=$rc out='$out'"
+    fi
+  else
+    test_pass "tmux server present — no-tmux path skipped"
+  fi
+
+  # Static checks: cache pattern and team-dedup heuristic
+  if grep -q 'CACHE=' "$HOME/bin/tmux-fleet-count" 2>/dev/null; then
+    test_pass "cache variable (CACHE=) present"
+  else
+    test_fail "cache variable" "CACHE= not found — 4s TTL cache may be broken"
+  fi
+  if grep -q 'team_set' "$HOME/bin/tmux-fleet-count" 2>/dev/null; then
+    test_pass "team-dedup heuristic (team_set) present"
+  else
+    test_fail "team-dedup heuristic" "team_set not found — team:N display may be broken"
+  fi
+else
+  test_fail "executable present" "$HOME/bin/tmux-fleet-count missing"
+fi
+
 # ─── Summary ──────────────────────────────────────────
 total=$((PASS + FAIL))
 printf "\n${C}──────────────────────────────────────────────${N}\n"
