@@ -16,17 +16,18 @@ KEEP="${1:-200}"
 
 [[ ! -d "$DIR" ]] && exit 0
 
-# Sort by mtime newest-first, skip the first KEEP, delete the rest.
+# Sort newest-first by filename (tmux-resurrect embeds ISO 8601 timestamps
+# in filenames: tmux_resurrect_YYYY-MM-DDTHH:MM:SS.txt — lexicographic
+# sort is equivalent to time sort, no stat(1) needed).
 deleted=0
 while IFS= read -r f; do
+  [[ -f "$f" ]] || continue
   rm -f "$f"
   deleted=$((deleted + 1))
 done < <(
-  find "$DIR" -name "tmux_resurrect_*.txt" -type f -print0 \
-    | xargs -0 stat -f '%m %N' \
-    | sort -rn \
-    | tail -n +$((KEEP + 1)) \
-    | awk '{$1=""; sub(/^ /, ""); print}'
+  find "$DIR" -name "tmux_resurrect_*.txt" -type f \
+    | sort -r \
+    | tail -n +$((KEEP + 1))
 )
 
 # Verbose mode for manual invocation
