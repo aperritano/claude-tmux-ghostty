@@ -503,6 +503,23 @@ if [[ -x "$HOME/bin/cc-lock" ]]; then
     test_fail "release-by-session" "B still blocked after A's session released"
   fi
   "$HOME/bin/cc-lock" release-by-session testB 2>/dev/null
+  # holder subcommand — dot-file path must use canonical sanitize_path
+  rm -rf /tmp/cc-locks
+  "$HOME/bin/cc-lock" acquire sHolder .env >/dev/null 2>&1
+  h=$("$HOME/bin/cc-lock" holder .env 2>/dev/null)
+  if [[ "$h" == "sHolder" ]]; then
+    test_pass "holder: dot-file path returns correct session_id"
+  else
+    test_fail "holder dot-file" "expected 'sHolder', got '$h'"
+  fi
+  # holder for unlocked path → empty
+  h2=$("$HOME/bin/cc-lock" holder /tmp/never-locked-path 2>/dev/null)
+  if [[ -z "$h2" ]]; then
+    test_pass "holder: unlocked path returns empty"
+  else
+    test_fail "holder unlocked" "expected empty, got '$h2'"
+  fi
+  "$HOME/bin/cc-lock" release-by-session sHolder 2>/dev/null
 else
   test_fail "executable present" "$HOME/bin/cc-lock missing"
 fi
@@ -528,6 +545,21 @@ if [[ -x "$HOME/bin/cc-lock-pre-hook" ]]; then
     test_fail "deny-JSON" "unexpected output: $out"
   fi
   "$HOME/bin/cc-lock" release-by-session sA 2>/dev/null
+  # Regression: dot-file path (.env) must name the actual holder in deny reason.
+  # Bug: cc-lock-pre-hook used duplicated sed missing `s|^\.|DOT|`, so holder
+  # lookup read from the wrong lock file and printed an empty name.
+  rm -rf /tmp/cc-locks
+  echo '{"session_id":"sE","tool_name":"Edit","tool_input":{"file_path":".env"}}' \
+    | "$HOME/bin/cc-lock-pre-hook" >/dev/null 2>&1
+  out=$(echo '{"session_id":"sF","tool_name":"Edit","tool_input":{"file_path":".env"}}' \
+        | "$HOME/bin/cc-lock-pre-hook" 2>/dev/null)
+  if echo "$out" | grep -q '"permissionDecision":"deny"' \
+     && echo "$out" | grep -q 'sE'; then
+    test_pass "dot-file deny names the actual holder (sanitize_path regression)"
+  else
+    test_fail "dot-file deny holder" "expected 'sE' in deny reason, got: $out"
+  fi
+  "$HOME/bin/cc-lock" release-by-session sE 2>/dev/null
 else
   test_fail "executable present" "$HOME/bin/cc-lock-pre-hook missing"
 fi

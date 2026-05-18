@@ -15,6 +15,7 @@
 #                                       exit 1 if held by another live session (caller blocks)
 #   release <session_id> <file_path>  → release this lock if held by this session
 #   release-by-session <session_id>   → release ALL locks held by this session
+#   holder <file_path>                → print current holder session_id (empty if unlocked/stale)
 #   list                              → show active locks with ages
 #   gc                                → prune stale locks (>TTL)
 #
@@ -124,6 +125,22 @@ case "$cmd" in
       fi
     done
     [[ "${VERBOSE:-0}" == "1" ]] && echo "pruned $n stale lock(s)"
+    exit 0
+    ;;
+  holder)
+    path="${2:-}"
+    [[ -z "$path" ]] && { echo "usage: cc-lock holder <path>" >&2; exit 2; }
+    key=$(sanitize_path "$path")
+    f="$DIR/$key"
+    if [[ -e "$f" ]]; then
+      holder=$(head -1 "$f" 2>/dev/null)
+      ts=$(sed -n '2p' "$f" 2>/dev/null)
+      ts=${ts:-0}
+      age=$(( $(date +%s) - ts ))
+      if is_alive "$age"; then
+        echo "$holder"
+      fi
+    fi
     exit 0
     ;;
   ""|help|-h|--help)
