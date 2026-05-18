@@ -29,6 +29,11 @@
 
 set -uo pipefail
 
+case "$(uname 2>/dev/null)" in
+  Darwin) _fsize() { stat -f %z "$1" 2>/dev/null || echo 0; } ;;
+  *)      _fsize() { stat -c %s  "$1" 2>/dev/null || echo 0; } ;;
+esac
+
 KEY="${CC_BRAIN_KEY:-$HOME/.config/cc-brain/key.txt}"
 OUT="${CC_BRAIN_OUT:-$HOME/dev/dotfiles/.brain.tar.gz.age}"
 
@@ -87,7 +92,7 @@ case "$cmd" in
     build_filelist | head -100
     echo "---"
     n=$(build_filelist | wc -l | tr -d ' ')
-    bytes=$(build_filelist | tr '\n' '\0' | (cd "$HOME/.claude" && xargs -0 du -b 2>/dev/null) | awk '{s+=$1} END {print s+0}')
+    bytes=$(build_filelist | (cd "$HOME/.claude" 2>/dev/null && python3 -c 'import os,sys; print(sum(os.path.getsize(p) for p in (l.rstrip("\n") for l in sys.stdin) if p and os.path.isfile(p)))' || echo 0))
     echo "$n files, $((bytes / 1024)) KB uncompressed"
     ;;
 
@@ -105,7 +110,7 @@ case "$cmd" in
     cd "$HOME/.claude" || exit 1
     build_filelist | tar -czf "$tmp_tar" -T -
     age -r "$pub" -o "$OUT" "$tmp_tar"
-    sz=$(stat -f %z "$OUT" 2>/dev/null || echo 0)
+    sz=$(_fsize "$OUT")
     printf 'cc-brain-sync: wrote %s (%d KB, encrypted to %s)\n' "$OUT" "$((sz / 1024))" "${pub:0:24}…"
     ;;
 

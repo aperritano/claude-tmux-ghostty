@@ -540,6 +540,18 @@ if [[ -x "$HOME/bin/cc-brain-sync" ]]; then
   else
     test_fail "bash syntax" "parse error"
   fi
+  # Static regression guard: du -b is GNU-only (macOS BSD du ignores -b → 0 KB)
+  if ! grep -q 'du -b' "$HOME/bin/cc-brain-sync"; then
+    test_pass "list: portable byte counter (no du -b)"
+  else
+    test_fail "list: du -b" "du -b is GNU-only; macOS shows 0 KB — use python3 getsize"
+  fi
+  # Static regression guard: stat -f %z is BSD-only for file size
+  if ! grep -q 'stat -f %z' "$HOME/bin/cc-brain-sync"; then
+    test_pass "push: portable file size (no BSD stat -f %z)"
+  else
+    test_fail "push: stat -f %z" "stat -f %z is BSD-only; breaks on Linux — use _fsize()"
+  fi
   # `list` works without age, without key
   if "$HOME/bin/cc-brain-sync" list >/dev/null 2>&1; then
     test_pass "list works without age installed"
