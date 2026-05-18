@@ -503,6 +503,19 @@ if [[ -x "$HOME/bin/cc-lock" ]]; then
     test_fail "release-by-session" "B still blocked after A's session released"
   fi
   "$HOME/bin/cc-lock" release-by-session testB 2>/dev/null
+  # Path-collision regression: __ in a dirname must not collide with / separator.
+  # Old sanitize_path used __ as separator, so /foo__bar/baz and /foo/bar__baz
+  # both produced the key foo__bar__baz — the second lock would be wrongly blocked.
+  rm -rf /tmp/cc-locks
+  "$HOME/bin/cc-lock" acquire holderA /foo__bar/baz 2>/dev/null
+  if "$HOME/bin/cc-lock" acquire holderB /foo/bar__baz 2>/dev/null; then
+    test_pass "no key collision: __ in dirname vs path separator"
+    "$HOME/bin/cc-lock" release-by-session holderA 2>/dev/null
+    "$HOME/bin/cc-lock" release-by-session holderB 2>/dev/null
+  else
+    test_fail "path-collision" "/foo/bar__baz blocked by /foo__bar/baz (same lock key)"
+    rm -rf /tmp/cc-locks
+  fi
 else
   test_fail "executable present" "$HOME/bin/cc-lock missing"
 fi
