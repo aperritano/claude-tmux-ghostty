@@ -9,6 +9,12 @@
 
 set -uo pipefail
 
+# Portable mtime: BSD stat (macOS) uses -f %m; GNU stat (Linux) uses -c %Y
+case "$(uname 2>/dev/null)" in
+  Darwin) _mtime() { stat -f %m "$1" 2>/dev/null || echo 0; } ;;
+  *)      _mtime() { stat -c %Y "$1" 2>/dev/null || echo 0; } ;;
+esac
+
 idx="${1:-}"
 active="${2:-0}"
 [[ -z "$idx" ]] && exit 0
@@ -22,7 +28,7 @@ if [[ ! -f "$PIDFILE" ]]; then
   need_start=1
 elif ! kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
   need_start=1
-elif [[ -f "$CACHE" ]] && (( $(date +%s) - $(stat -f %m "$CACHE") > 30 )); then
+elif [[ -f "$CACHE" ]] && (( $(date +%s) - $(_mtime "$CACHE") > 30 )); then
   need_start=1
 fi
 if (( need_start )); then

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # tmux-save-dot — emit a colored glyph for continuum auto-save freshness.
 #
+# Portable mtime: BSD stat (macOS) uses -f %m; GNU stat (Linux) uses -c %Y
+case "$(uname 2>/dev/null)" in
+  Darwin) _mtime() { stat -f %m "$1" 2>/dev/null || echo 0; } ;;
+  *)      _mtime() { stat -c %Y "$1" 2>/dev/null || echo 0; } ;;
+esac
+#
 #   ●  bright green   < 1 min   (very fresh)
 #   ●  green          1-6 min   (healthy)
 #   ◐  yellow         6-15 min  (overdue)
@@ -14,7 +20,7 @@ if [[ ! -L "$last" ]]; then
   exit 0
 fi
 resolved=$(readlink "$last")
-mtime=$(stat -f %m "$HOME/.tmux/resurrect/$resolved" 2>/dev/null || echo 0)
+mtime=$(_mtime "$HOME/.tmux/resurrect/$resolved")
 age=$(( $(date +%s) - mtime ))
 
 if   (( age < 60   )); then echo "#[fg=colour10,bold]●#[default]"

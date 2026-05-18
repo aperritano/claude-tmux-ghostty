@@ -7,6 +7,12 @@
 
 set -uo pipefail
 
+# Portable mtime: BSD stat (macOS) uses -f %m; GNU stat (Linux) uses -c %Y
+case "$(uname 2>/dev/null)" in
+  Darwin) _mtime() { stat -f %m "$1" 2>/dev/null || echo 0; } ;;
+  *)      _mtime() { stat -c %Y "$1" 2>/dev/null || echo 0; } ;;
+esac
+
 if ! tmux info >/dev/null 2>&1; then
   exit 0
 fi
@@ -14,7 +20,7 @@ fi
 # Cache (4s TTL — jitter prevention)
 CACHE="/tmp/tmux-fleet-count-$UID"
 if [[ -f "$CACHE" ]]; then
-  age=$(( $(date +%s) - $(stat -f %m "$CACHE" 2>/dev/null || echo 0) ))
+  age=$(( $(date +%s) - $(_mtime "$CACHE") ))
   if (( age < 4 )); then
     cat "$CACHE"
     exit 0

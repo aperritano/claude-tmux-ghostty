@@ -19,6 +19,12 @@
 
 set -uo pipefail
 
+# Portable mtime: BSD stat (macOS) uses -f %m; GNU stat (Linux) uses -c %Y
+case "$(uname 2>/dev/null)" in
+  Darwin) _mtime() { stat -f %m "$1" 2>/dev/null || echo 0; } ;;
+  *)      _mtime() { stat -c %Y "$1" 2>/dev/null || echo 0; } ;;
+esac
+
 PROJECTS="${CC_BURN_FIXTURE:-$HOME/.claude/projects}"
 THRESHOLD="${CC_BURN_THRESHOLD:-30}"
 CACHE="/tmp/tmux-burn-segment-$UID"
@@ -28,7 +34,7 @@ JSONL_CAP=50        # safety cap; tmux refresh shouldn't scan everything
 # Cache hot path — tmux refreshes status-right on every event; 4s TTL avoids
 # scanning the projects dir on every keystroke.
 if [[ -f "$CACHE" && -z "${CC_BURN_FIXTURE:-}${CC_BURN_DEBUG:-}" ]]; then
-  age=$(( $(date +%s) - $(stat -f %m "$CACHE" 2>/dev/null || echo 0) ))
+  age=$(( $(date +%s) - $(_mtime "$CACHE") ))
   if (( age < 4 )); then
     cat "$CACHE"
     exit 0

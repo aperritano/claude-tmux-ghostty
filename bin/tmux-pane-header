@@ -28,6 +28,12 @@
 
 set -uo pipefail
 
+# Portable mtime: BSD stat (macOS) uses -f %m; GNU stat (Linux) uses -c %Y
+case "$(uname 2>/dev/null)" in
+  Darwin) _mtime() { stat -f %m "$1" 2>/dev/null || echo 0; } ;;
+  *)      _mtime() { stat -c %Y "$1" 2>/dev/null || echo 0; } ;;
+esac
+
 # --compute bypasses the daemon-cache and emits a freshly-computed value.
 # Used by tmux-cell-daemon to populate the pane-headers cache.
 compute_only=0
@@ -44,7 +50,7 @@ cwd="${2:-}"
 # The daemon refreshes this every 4s; reads are O(panes) awk lookups.
 DAEMON_CACHE="/tmp/tmux-pane-headers-$UID.cache"
 if (( ! compute_only )) && [[ -f "$DAEMON_CACHE" ]]; then
-  age=$(( $(date +%s) - $(stat -f %m "$DAEMON_CACHE" 2>/dev/null || echo 0) ))
+  age=$(( $(date +%s) - $(_mtime "$DAEMON_CACHE") ))
   if (( age < 30 )); then
     awk -F'\t' -v p="$pane_id" '$1 == p { sub(/^[^\t]*\t/, ""); print; exit }' "$DAEMON_CACHE"
     exit 0
